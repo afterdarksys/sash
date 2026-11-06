@@ -22,6 +22,9 @@ const (
 	exitUnknown = 127
 )
 
+// fnDepth matches globDepth. A deeper call exits 2 and does not run.
+const fnDepth = globDepth
+
 const (
 	valStr = iota
 	valBytes
@@ -96,6 +99,7 @@ type machine struct {
 	out   strings.Builder
 	err   strings.Builder
 	trace bool
+	depth int
 }
 
 func (m *machine) prefix() string {
@@ -690,6 +694,12 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 }
 
 func (m *machine) callFn(st expStage) (int, bool) {
+	if m.depth >= fnDepth {
+		m.err.WriteString("fn depth\n")
+		return exitType, true
+	}
+	m.depth++
+	defer func() { m.depth-- }()
 	fn := st.call
 	saved := map[string]value{}
 	had := map[string]bool{}

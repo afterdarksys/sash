@@ -262,6 +262,27 @@ func TestFnChecksEveryCall(t *testing.T) {
 	}
 }
 
+func TestFnDepthCapsRecursion(t *testing.T) {
+	src := "fn secretname() {\n  echo x\n  secretname\n}\nsecretname\n"
+	got := Run(src, grant.Grant{}, &fake{}, Options{})
+	wantOut := strings.Repeat("x\n", fnDepth)
+	if got.Status != exitType || got.Stdout != wantOut || got.Stderr != "fn depth\n" {
+		t.Fatalf("status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	if strings.Contains(got.Stderr, "secretname") || strings.Contains(got.Stdout, "secretname") {
+		t.Fatalf("name leaked stdout %q stderr %q", got.Stdout, got.Stderr)
+	}
+	var seq strings.Builder
+	seq.WriteString("fn once() { echo a }\n")
+	for i := 0; i < fnDepth+1; i++ {
+		seq.WriteString("once\n")
+	}
+	got = Run(seq.String(), grant.Grant{}, &fake{}, Options{})
+	if got.Status != 0 || got.Stdout != strings.Repeat("a\n", fnDepth+1) || got.Stderr != "" {
+		t.Fatalf("seq status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+}
+
 func TestJSONRecordsPipeline(t *testing.T) {
 	f := &fake{}
 	got := Run(`echo hello | json`, grant.Grant{}, f, Options{})
