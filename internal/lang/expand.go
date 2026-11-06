@@ -4,6 +4,7 @@ package lang
 // audit argv see. It does not authorize a call and it does not hide a
 // mutation behind a short name. A glob lists through file.read (argv ls)
 // only after Has and AllowsRead, and drops anything outside that directory.
+// A trailing (/) keeps directories only and does not run a host binary.
 // History, braces, and globs fail closed. This file does not log the line,
 // a path, or a grant, and it does not compare secret bytes.
 
@@ -665,7 +666,7 @@ func expandGlobs(src string, g grant.Grant, p parent.Parent, opt Options) (strin
 }
 
 func globWord(word string, g grant.Grant, p parent.Parent, opt Options) (string, *ExpandProblem) {
-	dir, pat, rec, prob := splitStar(word)
+	dir, pat, rec, dirs, prob := splitStar(word)
 	if prob != nil {
 		return "", prob
 	}
@@ -683,7 +684,7 @@ func globWord(word string, g grant.Grant, p parent.Parent, opt Options) (string,
 		return "", &ExpandProblem{Status: 1, Msg: "parent file.read"}
 	}
 	var matches []string
-	if prob := walk(p, g, full, full, pat, rec, 0, &matches); prob != nil {
+	if prob := walk(p, g, full, full, pat, rec, dirs, 0, &matches); prob != nil {
 		return "", prob
 	}
 	if len(matches) == 0 {
@@ -724,22 +725,30 @@ func globDir(dir string, opt Options) (string, *ExpandProblem) {
 	return full, nil
 }
 
-func splitStar(word string) (string, string, bool, *ExpandProblem) {
+func splitStar(word string) (string, string, bool, bool, *ExpandProblem) {
+	dirs := false
+	if strings.HasSuffix(word, "(/)") {
+		dirs = true
+		word = word[:len(word)-len("(/)")]
+		if !strings.Contains(word, "*") {
+			return "", "", false, false, globProb()
+		}
+	}
 	if strings.Contains(word, "***") {
-		return "", "", false, globProb()
+		return "", "", false, false, globProb()
 	}
 	at := segmentStarStar(word)
 	if strings.Contains(word, "**") && at < 0 {
-		return "", "", false, globProb()
+		return "", "", false, false, globProb()
 	}
 	if at >= 0 {
 		if strings.Count(word, "**") != 1 {
-			return "", "", false, globProb()
+			return "", "", false, false, globProb()
 		}
 		pre := word[:at]
 		post := word[at+2:]
 		if strings.Contains(pre, "*") || strings.HasPrefix(post, "*") {
-			return "", "", false, globProb()
+			return "", "", false, false, globProb()
 		}
 		var pat string
 		switch {
@@ -748,7 +757,7 @@ func splitStar(word string) (string, string, bool, *ExpandProblem) {
 		case strings.HasPrefix(post, "/"):
 			name := post[1:]
 			if strings.Contains(name, "/") {
-				return "", "", false, globProb()
+				return "", "", false, false, globProb()
 			}
 			if name == "" {
 				pat = "*"
@@ -756,34 +765,34 @@ func splitStar(word string) (string, string, bool, *ExpandProblem) {
 				pat = name
 			}
 		default:
-			return "", "", false, globProb()
+			return "", "", false, false, globProb()
 		}
 		if pre != "" && !strings.HasSuffix(pre, "/") {
-			return "", "", false, globProb()
+			return "", "", false, false, globProb()
 		}
 		dir := ""
 		if pre != "" {
 			dir = path.Clean(pre)
 		}
-		return dir, pat, true, nil
+		return dir, pat, true, dirs, nil
 	}
 	star := strings.IndexByte(word, '*')
 	if star < 0 {
-		return "", word, false, nil
+		return "", word, false, dirs, nil
 	}
 	if strings.Contains(word[star+1:], "/") {
-		return "", "", false, globProb()
+		return "", "", false, false, globProb()
 	}
 	pre := word[:star]
 	rest := word[star:]
 	if strings.HasSuffix(pre, "/") {
-		return path.Clean(pre), rest, false, nil
+		return path.Clean(pre), rest, false, dirs, nil
 	}
 	if strings.Contains(pre, "/") {
 		cleaned := path.Clean(pre)
-		return path.Dir(cleaned), path.Base(pre) + rest, false, nil
+		return path.Dir(cleaned), path.Base(pre) + rest, false, dirs, nil
 	}
-	return "", word, false, nil
+	return "", word, false, dirs, nil
 }
 
 func segmentStarStar(word string) int {
@@ -807,7 +816,7 @@ func segmentStarStar(word string) int {
 	return -1
 }
 
-func walk(p parent.Parent, g grant.Grant, root, dir, pat string, rec bool, depth int, matches *[]string) *ExpandProblem {
+func walk(p parent.Parent, g grant.Grant, root, dir, pat string, rec, dirs bool, depth int, matches *[]string) *ExpandProblem {
 	if len(*matches) > globWordCap {
 		return globProb()
 	}
@@ -836,7 +845,7 @@ func walk(p parent.Parent, g grant.Grant, root, dir, pat string, rec bool, depth
 		if merr != nil {
 			return globProb()
 		}
-		if ok {
+		if ok && (!dirs || typ == "dir") {
 			*matches = append(*matches, full)
 			if len(*matches) > globWordCap {
 				return globProb()
@@ -851,7 +860,7 @@ func walk(p parent.Parent, g grant.Grant, root, dir, pat string, rec bool, depth
 		if !g.AllowsRead(cd) {
 			continue
 		}
-		if prob := walk(p, g, root, cd, pat, true, depth+1, matches); prob != nil {
+		if prob := walk(p, g, root, cd, pat, true, dirs, depth+1, matches); prob != nil {
 			return prob
 		}
 	}

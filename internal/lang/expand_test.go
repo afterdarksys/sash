@@ -346,6 +346,75 @@ func TestGlobCaps(t *testing.T) {
 	}
 }
 
+func TestGlobDirQualifier(t *testing.T) {
+	rows := map[string][]parent.Row{
+		"/var/log": {
+			{"name": "a.log", "type": "file"},
+			{"name": "sub", "type": "dir"},
+			{"name": "link", "type": "symlink"},
+			{"name": "nest", "type": "dir"},
+		},
+		"/var/log/sub": {
+			{"name": "inner", "type": "dir"},
+			{"name": "c.txt", "type": "file"},
+		},
+		"/var/log/nest": {
+			{"name": "d.txt", "type": "file"},
+		},
+		"/var/log/sub/inner": {},
+	}
+	g := readGrant("/var/log")
+	p := &listParent{rows: rows}
+	got := Run("echo /var/log/*(/)", g, p, Options{})
+	if got.Status != 0 || got.Stdout != "/var/log/nest /var/log/sub\n" || lsCount(p.calls) != 1 {
+		t.Fatalf("dirs status %d stdout %q ls %d stderr %q", got.Status, got.Stdout, lsCount(p.calls), got.Stderr)
+	}
+	if p.calls[0].Key != "file.read" || strings.Join(p.calls[0].Argv, " ") != "ls /var/log" || strings.Contains(p.calls[0].Path, "(") {
+		t.Fatalf("ls %+v", p.calls[0])
+	}
+	p = &listParent{rows: rows}
+	got = Run("echo /var/log/*", g, p, Options{})
+	if got.Status != 0 || got.Stdout != "/var/log/a.log /var/log/nest /var/log/sub\n" {
+		t.Fatalf("star stdout %q stderr %q", got.Stdout, got.Stderr)
+	}
+	p = &listParent{rows: rows}
+	got = Run("echo *(/)", g, p, Options{Prefix: "/var/log"})
+	if got.Status != 0 || got.Stdout != "/var/log/nest /var/log/sub\n" || lsCount(p.calls) != 1 {
+		t.Fatalf("rel status %d stdout %q ls %d stderr %q", got.Status, got.Stdout, lsCount(p.calls), got.Stderr)
+	}
+	p = &listParent{rows: map[string][]parent.Row{"/var/log": {{"name": "a.log", "type": "file"}}}}
+	got = Run("echo /var/log/*(/)", g, p, Options{})
+	if got.Status != exitType || got.Stderr != "type glob\n" || got.Stdout != "" || lsCount(p.calls) != 1 {
+		t.Fatalf("empty status %d stdout %q stderr %q ls %d", got.Status, got.Stdout, got.Stderr, lsCount(p.calls))
+	}
+	p = &listParent{rows: rows}
+	got = Run("echo /var/log/*(/foo)", g, p, Options{})
+	if got.Status != exitType || got.Stderr != "type glob\n" || len(p.calls) != 0 {
+		t.Fatalf("other status %d stderr %q calls %d", got.Status, got.Stderr, len(p.calls))
+	}
+	p = &listParent{rows: rows}
+	got = Run("echo '*(/)'", g, p, Options{Prefix: "/var/log"})
+	if got.Status != 0 || got.Stdout != "*(/)\n" || len(p.calls) != 0 {
+		t.Fatalf("quote status %d stdout %q calls %d", got.Status, got.Stdout, len(p.calls))
+	}
+	p = &listParent{rows: rows}
+	got = Run("echo /etc/*(/)", g, p, Options{})
+	if got.Status != exitDenied || got.Stderr != "denied file.read\n" || len(p.calls) != 0 {
+		t.Fatalf("etc status %d stderr %q calls %d", got.Status, got.Stderr, len(p.calls))
+	}
+	p = &listParent{rows: rows}
+	got = Run("echo /var/log/**(/)", g, p, Options{})
+	want := "/var/log/nest /var/log/sub /var/log/sub/inner\n"
+	if got.Status != 0 || got.Stdout != want {
+		t.Fatalf("rec status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	for _, c := range p.calls {
+		if c.Key != "file.read" || len(c.Argv) == 0 || c.Argv[0] != "ls" {
+			t.Fatalf("not ls %+v", c)
+		}
+	}
+}
+
 func TestGlobDepthCap(t *testing.T) {
 	p := &depthParent{}
 	got := Run("echo /var/**", readGrant("/var"), p, Options{})
