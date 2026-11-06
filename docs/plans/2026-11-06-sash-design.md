@@ -1,8 +1,8 @@
 # sash design
 
-Status: commits 1–7 are landed. Commit 7 expands `!!`, `!$`, braces, globs, and here-strings on the line before the grant check. A glob is `file.read` with argv `ls`. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
+Status: commits 1–8 are landed. Commit 8 stores suggestion history for this actor on this host. A private session returns no suggestions. The verb audit and the PTY recording still contain the session. `trace` prints each stage key and stays off until the session turns it on. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
 
-Next action: commit 8, history, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
+Next action: commit 9, novice menu. Done when `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, a choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs.
 
 ## What this is
 
@@ -266,7 +266,7 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 5. Emergency parent. Landed. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
 6. Live line. Landed. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
 7. Visible expansion. Landed. `!!`, `!$`, braces, `*` and `**` via `file.read` argv `ls`, here-strings, Alt-.. A short name is not rewritten. Done when the audit row shows the expanded command.
-8. History, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
+8. History, private session, vi bindings, trace. Landed. Suggestion history is this actor on this host. A private session returns no suggestions. The verb audit and the PTY recording still contain the session. `trace` prints the stage key before the stage runs.
 9. Novice menu. `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, and a choice inserts sash source onto the line. Done when a menu-built mutation shows the danger color before it runs.
 
 ## Deferred
@@ -295,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-Commit 8, history, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
+Commit 9, novice menu. Done when `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, a choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs.
