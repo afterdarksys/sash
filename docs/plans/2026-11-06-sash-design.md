@@ -1,8 +1,8 @@
 # sash design
 
-Status: commits 1–9 are landed. Commit 9 lists the closed table from `prompt menu`. A denied row stays visible and inserts nothing. A choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs. `prompt` does not change the grant. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
+Status: commits 1–9 are landed. The later series landed `rows`, `json`, a function depth cap, and the directory glob `*(/)`. Commit 9 lists the closed table from `prompt menu`. A denied row stays visible and inserts nothing. A choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs. `prompt` does not change the grant. Module `github.com/afterdarksys/sash`. This file is the contract. `sash-mcp`, the skill, and voice are source doors in `2026-11-06-sash-doors.md`. They insert sash source and do not run a helper.
 
-Next action: the numbered series is done. The next series starts when Ryan asks. Its first commit is the `rows` command that lifts text into rows. `config.write` stays deferred. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks for that design.
+Next action: `config.write`, fleet-wide suggestion history, background jobs, aliases, and darwin and windows login stay blocked. The reasons are in [Deferred](#deferred). `sash-mcp` and voice stay designs. The skill inserts source.
 
 ## What this is
 
@@ -22,7 +22,7 @@ Module path: `github.com/afterdarksys/sash`, directory `/Users/ryan/development/
 
 The systemapi agent is the parent for fleet login. `adssh` is the parent for emergency. Both exec the same binary.
 
-Today `systemapi-agent/pty.go` sets `argv0` from the passwd shell, then `ptyCfg.Shell`, then `loginShell()` (`bash`, or `zsh` on darwin, or `powershell.exe` on windows). Break-glass already resolves `adssh` and returns `adssh_missing` rather than falling open to a login shell. Recording is HMAC-chained and a failed record refuses or ends the session. An ordinary session does not call `adssh` (`systemapi.io/docs/sah-suite.md` Wired join item 7).
+On Linux, `pty` and `pty_root` exec sash. `sessionEnv` still records the passwd shell. After `prepareSash` succeeds, `SHELL` is the looked-up sash path. A path that is not a safe env token does not start, and the path is not logged. Other actions keep the passwd shell. Break-glass resolves `adssh` and returns `adssh_missing` rather than falling open to a login shell. Recording is HMAC-chained and a failed record refuses or ends the session. An ordinary session does not call `adssh` (`systemapi.io/docs/sah-suite.md` Wired join item 7).
 
 ### Fleet login
 
@@ -31,7 +31,7 @@ Today `systemapi-agent/pty.go` sets `argv0` from the passwd shell, then `ptyCfg.
 3. The agent opens the grant pipe and the verb socket before the privilege drop. The grant pipe carries one signed `sash/1` document; the agent writes it and closes its end. The verb socket carries requests from sash and answers from the agent. Byte layout is the Wire section. The PTY stays user keystrokes and screen bytes. The existing input loop stays the only writer of user input to the PTY.
 4. A keystroke does not travel to the control plane. The control plane authorized the session and receives the audit row. The local agent fulfills verbs.
 5. sash holds no API key. The grant is not an environment variable. The child env keeps today's drops: names starting with `SYSTEMAPI`, names containing `API_KEY`, names starting with `ADSTELCO`.
-6. This swap is the Linux fleet path. darwin and windows `loginShell` values stay until a later series names those platforms.
+6. This swap is the Linux fleet path. darwin and windows stay `sash_missing`. `sashLogin` is false there. The identity drop and the fd path are Linux-only.
 7. When step 1 lands, edit the agent, sash, and Wired join item 7 in the same change. A roadmap sentence does not make the call real. Say that an ordinary session execs `sash` and still does not call `adssh`.
 
 ### Emergency
@@ -127,13 +127,13 @@ Values stay values. A variable is not parsed again as syntax. There is no word-s
 
 `|` renders the left side to text. The right side reads bytes. `ps -ef | egrep sshd | head` is the legacy line. A row command with no row consumer prints its text table, so `ps -ef` looks like the classic table.
 
-`|>` accepts rows only. `unit status |> where state == "failed"` keeps rows. `egrep sshd |> where pid > 1` is a type error: exit 2, nothing runs. Lifting text into rows is the later `rows` command. It is absent in this series, so nothing lifts text silently.
+`|>` accepts rows only. `unit status |> where state == "failed"` keeps rows. `egrep sshd |> where pid > 1` is a type error: exit 2, nothing runs. `rows` is the lift from text to rows. With no names, each line is the column `line`. Named columns split on whitespace and the last name keeps the rest of the line. A byte pipeline does not call `rows` implicitly. `echo hello |> where line == "hello"` stays a type error and runs nothing.
 
 `if` is true for a row pipeline when it yields a row, and true for a byte pipeline when the exit is 0. A `where` that keeps nothing is success and is false in `if`. `for` walks rows.
 
 A byte pipeline fails when any stage is non-zero. Its status is the rightmost non-zero, or 0 when every stage is 0.
 
-`>` writes the text rendering through `file.write`. Record-to-JSON is a later series.
+`>` writes the text rendering through `file.write`. `json` records bytes as one JSON string and rows as one JSON array. `>` of a row value stays the text table. `>` after `json` writes that JSON text. Invalid UTF-8 is exit 2 and stderr `json utf8`, and nothing is printed.
 
 ### When a line runs
 
@@ -149,7 +149,7 @@ A script continues after a statement whose status is 1, such as an `egrep` that 
 
 `echo` is ungated. It writes its words and a newline. `cat` with no path copies bytes already in the pipeline and does not require `file.read`. `cat` with a path is `file.read`.
 
-`fn` is a statement. A function name used as a pipe stage, or a function call with a redirect, is exit 2 and stderr `type fn`. Each call checks the grant again. A function cannot be named one of the closed-table commands.
+`fn` is a statement. A function name used as a pipe stage, or a function call with a redirect, is exit 2 and stderr `type fn`. Each call checks the grant again. A function cannot be named one of the closed-table commands. A call deeper than the glob depth, eight, is exit 2 and stderr `fn depth`. The message does not include the call. Sequential calls still run.
 
 An unset `$name`, or a field on a value that has no fields, is exit 2 and stderr `type value`.
 
@@ -159,7 +159,7 @@ Commit 7 expands `!!`, `!$`, braces, and unquoted `*` / `**`. The lexer still tr
 
 ## Where work runs
 
-In sash, ungated, because they only transform values already in the process: `echo`, `egrep`, `head`, `cut`, `wc`, `where`, `select`, `let`, `if`, `for`, `fn`, `dirs`, `popd`.
+In sash, ungated, because they only transform values already in the process: `echo`, `egrep`, `head`, `cut`, `wc`, `where`, `select`, `rows`, `json`, `let`, `if`, `for`, `fn`, `dirs`, `popd`.
 
 The local agent fulfills these, each behind its key. The verb shape matches the systemapi sys and file channels. Fulfillment is local. There is no control-plane HTTP call per command.
 
@@ -177,7 +177,7 @@ The local agent fulfills these, each behind its key. The verb shape matches the 
 | `cat`, `ls`, `<`, globs | `file.read` | file helper |
 | `>` | `file.write` | file helper |
 
-`config write` is not in this series. It waits for a later series that adds a `config.write` key and a write binding.
+`config write` is not a sash command. The existing helper needs a signed `sys_config` lease whose payload is the path and the content hash. A sash session only has the terminal lease. The agent does not mint a sys lease and does not pass one into the helper.
 
 The agent caps one verb result at 8 MiB and returns `result_too_large` above that. sash treats it as a failed stage. The cap bounds memory in the pty-user process.
 
@@ -191,11 +191,11 @@ The session prefix is sash state, a string under one granted root. It is not the
 
 `cd` and `pushd` move that prefix. The target must already be inside a `file_read` root. The helper `stat`s it (verb key `file.read`, argv `stat`, the resolved path). A prefix that would leave the roots is `denied file.read` and the prefix stays put. `dirs` prints the stack and does not call the parent. `popd` drops the top when at least two entries remain and does not call the parent. Popping the last entry is exit 2 and stderr `usage popd`. With an empty `file_read`, the prefix is unset and path commands fail closed (`prefix_unset`, exit 2).
 
-A glob is the existing file helper list: verb key `file.read`, argv `ls`, path under a read root. There is no `file.list` entitlement. `*` matches names in that directory. `**` asks `ls` again for child directories that stay under the same root. sash never opens the directory itself. `cat /var/log/*.log` lists, then cats each kept path. Names outside the roots are dropped. Qualifiers such as `*(/)` wait for a later series.
+A glob is the existing file helper list: verb key `file.read`, argv `ls`, path under a read root. There is no `file.list` entitlement. `*` matches names in that directory, files and directories. `**` asks `ls` again for child directories that stay under the same root. `*(/)` and `**(/)` keep directories only. Any other qualifier is a type error and does not list. sash never opens the directory itself. `cat /var/log/*.log` lists, then cats each kept path. Names outside the roots are dropped.
 
 ## Interactive layer
 
-Lands after the first five commits. The line editor calls the real parser. A novice menu and the advanced line emit the same sash source. Voice, `sash-mcp`, and a sash skill are the series after commit 9, and only when Ryan asks for that design.
+The line editor calls the real parser. A novice menu and the advanced line emit the same sash source. `sash-mcp`, the skill, and voice are specified in `2026-11-06-sash-doors.md`. Each inserts sash source. None runs a helper.
 
 ### Feel
 
@@ -245,15 +245,15 @@ A private session exists only when `allow_private` is true. Those lines are stor
 
 ### Voice, MCP, and skills
 
-The series after commit 9, and only when Ryan asks for that design:
+Specified in `2026-11-06-sash-doors.md`.
 
 | Door | Behavior |
 | --- | --- |
-| `sash-mcp` | A separate process. It submits sash source to the same executor. It does not import `github.com/afterdarksys/adssh`. The agent re-checks the grant. |
-| sash skill | Teaches an agent the two pipes, the closed table, and the denial tokens. |
-| voice | Speech becomes text on the visible line. A yes runs that line. Audio alone does not run a mutation. |
+| `sash-mcp` | Not a process in this tree. A later process returns sash source for the visible line. It does not run a helper and does not import `github.com/afterdarksys/adssh`. |
+| sash skill | Teaches the language and inserts source onto the visible line. It does not contain a runner. |
+| voice | Speech becomes text on the visible line. A yes runs that line. Audio alone does not run a mutation. This tree has no audio capture. |
 
-Why they wait: the language and the line have to exist before a second door can target them. A voice client or an MCP client that runs a helper on its own would be a second policy.
+A door that runs a helper on its own would be a second policy. These doors do not.
 
 ## Commit series
 
@@ -273,15 +273,15 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 | Work | When |
 | --- | --- |
-| `rows` command that lifts text into rows | The series after commit 9, its own commit. |
-| `config.write` | The series that adds the write binding and a separate key. |
-| Record pipelines saved as JSON | After `rows` exists. |
-| Fleet-wide suggestion history | A later series that names a control-plane store. v1 history stays on the agent. |
-| Background jobs, `&`, job control | A later series that replaces the single-process reap rule. |
-| Aliases, programmable completion beyond the closed table | A later series. v1 completion is the closed table only. |
-| Glob qualifiers such as `*(/)` | A later series. Commit 7 has `*` and `**` only. |
-| `sash-mcp`, the sash skill, and voice | The series after commit 9, its own design, when Ryan asks. Voice fills a visible line. Audio alone does not run a mutation. |
-| darwin and windows login shells | A later series that names those platforms. |
+| `rows` command that lifts text into rows | Landed. No names uses the column `line`. Named columns split on whitespace and the last name keeps the rest of the line. |
+| `config.write` | Blocked. The helper needs a signed `sys_config` lease for the path and content hash. A sash session has the terminal lease only. The agent does not mint one. |
+| Record pipelines saved as JSON | Landed as `json`. `>` of a row value stays the text table. |
+| Fleet-wide suggestion history | Blocked until a control-plane store is named. v1 history stays on the agent. |
+| Background jobs, `&`, job control | Blocked until the single-process reap rule is replaced. |
+| Aliases, programmable completion beyond the closed table | Blocked. v1 has no alias store, and an alias must not hide the verb. Completion stays the closed table. |
+| Glob qualifiers such as `*(/)` | Landed for `*(/)` and `**(/)`. Any other qualifier is a type error and does not list. |
+| `sash-mcp`, the sash skill, and voice | Specified as source doors. The skill inserts source. `sash-mcp` and voice are not processes in this tree. Audio alone does not run a mutation. |
+| darwin and windows login shells | Blocked. The identity drop and the fd path are Linux-only. `sashLogin` stays false. |
 | Embedding Starlark or a `star` bridge | Stays in `adssh`. A future change needs an explicit Ryan request. |
 
 ## Threats
@@ -295,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-The numbered series is done. The next series starts when Ryan asks. Its first commit is the `rows` command that lifts text into rows. `config.write` stays deferred. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks for that design.
+`rows`, `json`, the function depth cap, and `*(/)` are landed. Linux login sets `SHELL` to the looked-up sash path after `prepareSash` succeeds. `config.write`, fleet-wide history, jobs, aliases, and non-Linux login stay blocked for the reasons in the table above. `sash-mcp` and voice stay designs. The skill inserts source.
