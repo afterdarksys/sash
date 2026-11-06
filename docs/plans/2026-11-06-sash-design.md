@@ -1,8 +1,8 @@
 # sash design
 
-Status: commits 1–6 are landed. Commit 6 is the live line: a terminal `--session` prompts, a denied name stays dim, and Enter runs nothing. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
+Status: commits 1–7 are landed. Commit 7 expands `!!`, `!$`, braces, globs, and here-strings on the line before the grant check. A glob is `file.read` with argv `ls`. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
 
-Next action: commit 7, visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
+Next action: commit 8, history, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
 
 ## What this is
 
@@ -137,7 +137,7 @@ A byte pipeline fails when any stage is non-zero. Its status is the rightmost no
 
 ### When a line runs
 
-1. Expand abbreviations, history tokens, braces, and globs on the line (see [Visible expansion](#visible-expansion)).
+1. Expand history tokens, braces, and globs on the line (see [Visible expansion](#visible-expansion)). A short name is not rewritten.
 2. Parse the expanded line.
 3. Resolve every stage and every redirect path.
 4. If any stage is denied or any path is outside the grant roots, run nothing. Denial prints `denied <key>` and exits 126. A bad path prints `denied file.read` or `denied file.write` and exits 126.
@@ -155,7 +155,7 @@ An unset `$name`, or a field on a value that has no fields, is exit 2 and stderr
 
 `<` is legal only on the first stage of a pipeline. `>` is legal only on the last stage. `>` writes the rendered text through `file.write` and leaves stdout empty.
 
-Commit 1 keeps a `*` word, abbreviations, `!!`, and `!$` as literal words. Globs and those expansions arrive in commit 7. `sash` with no arguments reads stdin as one script. A hand start uses an empty grant, so toolkit verbs deny and filters still run. `--session` is the Wire section. The live line editor arrives in commit 6.
+Commit 7 expands `!!`, `!$`, braces, and unquoted `*` / `**`. The lexer still treats `*` as a word until that expansion. A short name such as `unt` stays literal. `sash` with no arguments reads stdin as one script. A hand start uses an empty grant, so toolkit verbs deny and filters still run. `--session` is the Wire section. The live line editor arrived in commit 6.
 
 ## Where work runs
 
@@ -191,7 +191,7 @@ The session prefix is sash state, a string under one granted root. It is not the
 
 `cd` and `pushd` move that prefix. The target must already be inside a `file_read` root. The helper `stat`s it (verb key `file.read`, argv `stat`, the resolved path). A prefix that would leave the roots is `denied file.read` and the prefix stays put. `dirs` prints the stack and does not call the parent. `popd` drops the top when at least two entries remain and does not call the parent. Popping the last entry is exit 2 and stderr `usage popd`. With an empty `file_read`, the prefix is unset and path commands fail closed (`prefix_unset`, exit 2).
 
-A glob is a `file.list` under a read root. `*` matches names in that directory. `**` matches descendants that stay under the same root. The helper does the walk. `cat /var/log/*.log` never reads the directory inside sash. Names outside the roots are not returned. Qualifiers such as `*(/)` wait for a later series.
+A glob is the existing file helper list: verb key `file.read`, argv `ls`, path under a read root. There is no `file.list` entitlement. `*` matches names in that directory. `**` asks `ls` again for child directories that stay under the same root. sash never opens the directory itself. `cat /var/log/*.log` lists, then cats each kept path. Names outside the roots are dropped. Qualifiers such as `*(/)` wait for a later series.
 
 ## Interactive layer
 
@@ -231,7 +231,7 @@ This is commit 9. Done when a denied row inserts nothing and a mutation built by
 
 ### Visible expansion
 
-Abbreviations expand on space. `!!` and `!$` rewrite on the line before they run. Brace expansion is local. Alt-. inserts the last argument. Here-strings land in this commit.
+No short token is rewritten on space. `unt ` stays `unt `. `!!` and `!$` rewrite on the line before they run. Brace expansion is local. Alt-. inserts the last argument. A here-string `<<< word` is stdin bytes plus a newline and is not a file read.
 
 The grant check, the agent, and the audit row all see the expanded command.
 
@@ -265,7 +265,7 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 4. Writes. Landed. `unit restart`, `package install`, `sysctl set`, and `>`. Preflight every stage. The agent re-checks the lease before the helper. Done when a denied write performs no helper call, and an allowed write matches the existing sys-channel binding.
 5. Emergency parent. Landed. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
 6. Live line. Landed. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
-7. Visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
+7. Visible expansion. Landed. `!!`, `!$`, braces, `*` and `**` via `file.read` argv `ls`, here-strings, Alt-.. A short name is not rewritten. Done when the audit row shows the expanded command.
 8. History, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
 9. Novice menu. `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, and a choice inserts sash source onto the line. Done when a menu-built mutation shows the danger color before it runs.
 
@@ -295,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-Commit 7, visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
+Commit 8, history, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
