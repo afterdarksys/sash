@@ -1,8 +1,8 @@
 # sash design
 
-Status: commits 1–8 are landed. Commit 8 stores suggestion history for this actor on this host. A private session returns no suggestions. The verb audit and the PTY recording still contain the session. `trace` prints each stage key and stays off until the session turns it on. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
+Status: commits 1–9 are landed. Commit 9 lists the closed table from `prompt menu`. A denied row stays visible and inserts nothing. A choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs. `prompt` does not change the grant. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
 
-Next action: commit 9, novice menu. Done when `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, a choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs.
+Next action: the numbered series is done. The next series starts when Ryan asks. Its first commit is the `rows` command that lifts text into rows. `config.write` stays deferred. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks for that design.
 
 ## What this is
 
@@ -227,7 +227,7 @@ Entitled rows are selectable. Denied rows stay visible, dimmed, with the missing
 
 Why both faces exist: a new operator can see what this grant allows, and an operator who already thinks in pipes stays on the line. `prompt` is ungated session UI. It does not change the grant.
 
-This is commit 9. Done when a denied row inserts nothing and a mutation built by the menu shows the danger color before it runs.
+Commit 9 landed. A denied row inserts nothing and a mutation built by the menu shows the danger color before it runs.
 
 ### Visible expansion
 
@@ -267,7 +267,7 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 6. Live line. Landed. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
 7. Visible expansion. Landed. `!!`, `!$`, braces, `*` and `**` via `file.read` argv `ls`, here-strings, Alt-.. A short name is not rewritten. Done when the audit row shows the expanded command.
 8. History, private session, vi bindings, trace. Landed. Suggestion history is this actor on this host. A private session returns no suggestions. The verb audit and the PTY recording still contain the session. `trace` prints the stage key before the stage runs.
-9. Novice menu. `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, and a choice inserts sash source onto the line. Done when a menu-built mutation shows the danger color before it runs.
+9. Novice menu. Landed. `prompt menu` lists the closed table. A denied row stays visible and inserts nothing. A choice inserts sash source onto the line. A menu-built mutation shows the danger color before it runs.
 
 ## Deferred
 
@@ -295,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-Commit 9, novice menu. Done when `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, a choice inserts sash source onto the line, and a menu-built mutation shows the danger color before it runs.
+The numbered series is done. The next series starts when Ryan asks. Its first commit is the `rows` command that lifts text into rows. `config.write` stays deferred. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks for that design.
