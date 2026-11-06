@@ -2,8 +2,9 @@ package line
 
 // Enter on a Block line does not call Run. Denial is the authorization gate
 // in the editor; lang.Run repeats it. Syntax colors off does not clear a
-// denial. Do not log the line, the grant, or a path. The editor holds no
-// signing key.
+// denial. prompt menu inserts sash source onto the line and does not change
+// the grant. A denied menu row inserts nothing. Do not log the line, the
+// grant, or a path. The editor holds no signing key.
 
 import (
 	"errors"
@@ -24,7 +25,7 @@ const (
 	maxHist = 200
 )
 
-// MenuRow is one Tab row. Denied rows stay visible and insert nothing.
+// MenuRow is one menu row. Denied rows stay visible and insert nothing.
 type MenuRow struct {
 	Insert string
 	Desc   string
@@ -48,7 +49,8 @@ type View struct {
 }
 
 // Editor is the live line. Suggestion history comes from the agent for
-// this actor on this host. A private session loads none.
+// this actor on this host. A private session loads none. prompt line is
+// the default. prompt menu lists the closed table.
 type Editor struct {
 	g      grant.Grant
 	opt    lang.Options
@@ -68,6 +70,7 @@ type Editor struct {
 	menu     []completion
 	menuOpen bool
 	menuIdx  int
+	novice   [][]noviceItem
 
 	searching      bool
 	searchQ        string
@@ -206,7 +209,18 @@ func (e *Editor) View() View {
 		sug = e.suggestionSuffix()
 	}
 	var rows []MenuRow
-	if e.menuOpen {
+	if e.noviceOn() {
+		frame := e.novice[len(e.novice)-1]
+		rows = make([]MenuRow, len(frame))
+		for i, item := range frame {
+			rows[i] = MenuRow{
+				Insert: item.label,
+				Desc:   item.desc,
+				Key:    item.key,
+				Denied: item.key != "" && !e.g.Has(item.key),
+			}
+		}
+	} else if e.menuOpen {
 		rows = make([]MenuRow, len(e.menu))
 		for i, c := range e.menu {
 			rows[i] = MenuRow{
@@ -237,10 +251,15 @@ func (e *Editor) handle(k key) {
 		e.handleSearch(k)
 		return
 	}
-	switch k.kind {
-	case keyCtrlC:
+	if k.kind == keyCtrlC {
 		e.ctrlC()
 		return
+	}
+	if e.noviceOn() {
+		e.handleNovice(k)
+		return
+	}
+	switch k.kind {
 	case keyCtrlG:
 		e.menuOpen = false
 		return
@@ -576,6 +595,7 @@ func (e *Editor) ctrlC() {
 	e.searching = false
 	e.searchQ = ""
 	e.searchHit = false
+	e.novice = nil
 	e.menuOpen = false
 	e.browseAt = -1
 	e.browse = nil
@@ -594,10 +614,11 @@ func (e *Editor) ctrlD() {
 
 func (e *Editor) tab() {
 	if e.menuOpen {
-		if len(e.menu) == 0 {
+		n := e.menuLen()
+		if n == 0 {
 			return
 		}
-		e.menuIdx = (e.menuIdx + 1) % len(e.menu)
+		e.menuIdx = (e.menuIdx + 1) % n
 		return
 	}
 	prefix := strings.TrimRight(e.line, " \t")
@@ -662,7 +683,7 @@ func (e *Editor) histUp() {
 
 func (e *Editor) histDown() {
 	if e.menuOpen {
-		if e.menuIdx < len(e.menu)-1 {
+		if e.menuIdx < e.menuLen()-1 {
 			e.menuIdx++
 		}
 		return
@@ -842,6 +863,10 @@ func (e *Editor) applySession(cmd string) {
 		e.opt.Trace = false
 	case "trace on":
 		e.opt.Trace = true
+	case "prompt line":
+		e.closeNovice()
+	case "prompt menu":
+		e.openNovice()
 	}
 }
 
@@ -862,7 +887,7 @@ func sessionKind(line string) (paint bool, exact string) {
 		return false, ""
 	}
 	switch f[0] {
-	case "bind", "syntax", "trace":
+	case "bind", "syntax", "trace", "prompt":
 	default:
 		return false, ""
 	}
@@ -882,6 +907,14 @@ func sessionKind(line string) (paint bool, exact string) {
 			return true, ""
 		}
 		return false, ""
+	case "prompt":
+		if second == "menu" || second == "line" {
+			return true, "prompt " + second
+		}
+		if strings.HasPrefix("menu", second) || strings.HasPrefix("line", second) {
+			return true, ""
+		}
+		return false, ""
 	default:
 		if second == "on" || second == "off" {
 			return true, f[0] + " " + second
@@ -896,6 +929,146 @@ func sessionKind(line string) (paint bool, exact string) {
 func sessionExact(line string) string {
 	_, exact := sessionKind(line)
 	return exact
+}
+
+// noviceItem is one prompt-menu row. kids opens the next list.
+// insert is sash source with a trailing space. A denied key inserts nothing.
+type noviceItem struct {
+	label  string
+	desc   string
+	key    string
+	insert string
+	kids   []noviceItem
+}
+
+func (e *Editor) noviceOn() bool { return len(e.novice) > 0 }
+
+func (e *Editor) menuLen() int {
+	if e.noviceOn() {
+		return len(e.novice[len(e.novice)-1])
+	}
+	return len(e.menu)
+}
+
+func (e *Editor) openNovice() {
+	e.novice = [][]noviceItem{noviceTop()}
+	e.menu = nil
+	e.menuOpen = true
+	e.menuIdx = 0
+	e.browseAt = -1
+	e.browse = nil
+}
+
+func (e *Editor) closeNovice() {
+	e.novice = nil
+	e.menuOpen = false
+	e.menuIdx = 0
+}
+
+func (e *Editor) handleNovice(k key) {
+	switch k.kind {
+	case keyEsc, keyCtrlG:
+		e.closeNovice()
+		if k.kind == keyEsc && e.Vi {
+			e.viCmd = true
+		}
+	case keyEnter, keyRight, keyCtrlF:
+		e.acceptNovice()
+	case keyLeft, keyCtrlB:
+		e.noviceBack()
+	case keyUp:
+		e.histUp()
+	case keyDown:
+		e.histDown()
+	case keyTab:
+		n := e.menuLen()
+		if n == 0 {
+			return
+		}
+		e.menuIdx = (e.menuIdx + 1) % n
+	}
+}
+
+func (e *Editor) acceptNovice() {
+	if !e.noviceOn() {
+		return
+	}
+	frame := e.novice[len(e.novice)-1]
+	if e.menuIdx < 0 || e.menuIdx >= len(frame) {
+		return
+	}
+	item := frame[e.menuIdx]
+	if len(item.kids) > 0 {
+		e.novice = append(e.novice, item.kids)
+		e.menuIdx = 0
+		e.menuOpen = true
+		return
+	}
+	if item.key != "" && !e.g.Has(item.key) {
+		return
+	}
+	if item.insert == "" {
+		return
+	}
+	e.line = item.insert
+	e.cursor = len(e.line)
+	e.closeNovice()
+	e.touch()
+}
+
+func (e *Editor) noviceBack() {
+	if !e.noviceOn() {
+		return
+	}
+	if len(e.novice) > 1 {
+		e.novice = e.novice[:len(e.novice)-1]
+		e.menuIdx = 0
+		e.menuOpen = true
+		return
+	}
+	e.closeNovice()
+}
+
+func noviceTop() []noviceItem {
+	var out []noviceItem
+	for i := 0; i < len(table); {
+		form := strings.Fields(table[i].form)
+		if len(form) == 0 {
+			i++
+			continue
+		}
+		if len(form) == 1 {
+			out = append(out, noviceLeaf(table[i]))
+			i++
+			continue
+		}
+		word := form[0]
+		var kids []noviceItem
+		for i < len(table) {
+			f := strings.Fields(table[i].form)
+			if len(f) < 2 || f[0] != word {
+				break
+			}
+			kids = append(kids, noviceItem{
+				label:  strings.Join(f[1:], " ") + " ",
+				desc:   table[i].desc,
+				key:    table[i].key,
+				insert: table[i].insert,
+			})
+			i++
+		}
+		out = append(out, noviceItem{label: word + " ", kids: kids})
+	}
+	return out
+}
+
+func noviceLeaf(row completion) noviceItem {
+	return noviceItem{
+		label:  row.insert,
+		desc:   row.desc,
+		key:    row.key,
+		insert: row.insert,
+	}
 }
 
 // Loop is the login prompt. It sets raw mode only on a terminal.

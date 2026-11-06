@@ -353,6 +353,135 @@ func TestTraceSessionPrintsStage(t *testing.T) {
 	}
 }
 
+func menuLabel(e *Editor, label string) int {
+	v := e.View()
+	for i, row := range v.Menu {
+		if strings.TrimRight(row.Insert, " ") == label {
+			return i
+		}
+	}
+	return -1
+}
+
+func chooseMenu(t *testing.T, e *Editor, label string) {
+	t.Helper()
+	idx := menuLabel(e, label)
+	if idx < 0 {
+		t.Fatalf("missing %q in %+v", label, e.View().Menu)
+	}
+	for e.menuIdx > idx {
+		e.Feed([]byte{0x1b, '[', 'A'})
+	}
+	for e.menuIdx < idx {
+		e.Feed([]byte{0x1b, '[', 'B'})
+	}
+	e.Feed([]byte{0x1b, '[', 'C'})
+}
+
+func TestPromptLineIsDefault(t *testing.T) {
+	p := &countParent{}
+	g := grant.Grant{Entitlements: []string{"unit.restart"}}
+	e := New(g, p)
+	if e.noviceOn() || e.View().MenuOpen {
+		t.Fatal("menu open at start")
+	}
+	e.Feed([]byte("prompt line\n"))
+	if e.Runs != 0 || e.noviceOn() || p.n != 0 || strings.Join(e.g.Entitlements, ",") != "unit.restart" {
+		t.Fatalf("runs %d novice %v calls %d grant %v", e.Runs, e.noviceOn(), p.n, e.g.Entitlements)
+	}
+	e.Feed([]byte("prompt m"))
+	if strings.Contains(e.View().Smile, "unknown") {
+		t.Fatalf("smile %q", e.View().Smile)
+	}
+	e.Feed([]byte("enu\n"))
+	if !e.noviceOn() || !e.View().MenuOpen || e.Runs != 0 || e.line != "" {
+		t.Fatalf("open %v line %q runs %d", e.View().MenuOpen, e.line, e.Runs)
+	}
+	if menuLabel(e, "unit") < 0 || menuLabel(e, "echo") < 0 || menuLabel(e, "ps") < 0 {
+		t.Fatalf("rows %+v", e.View().Menu)
+	}
+	e.Feed([]byte{0x1b, 0x07})
+	if e.noviceOn() || e.View().MenuOpen || e.line != "" {
+		t.Fatal("esc left the menu open")
+	}
+	got := lang.Run("prompt menu", grant.Grant{}, nil, lang.Options{})
+	if got.Status != 127 || !strings.Contains(got.Stderr, "unknown prompt") {
+		t.Fatalf("status %d stderr %q", got.Status, got.Stderr)
+	}
+	e.Feed([]byte("prompt foo\n"))
+	if e.Runs != 1 || e.Last.Status != 127 || p.n != 0 {
+		t.Fatalf("runs %d status %d calls %d stderr %q", e.Runs, e.Last.Status, p.n, e.Last.Stderr)
+	}
+}
+
+func TestPromptMenuBuildsDanger(t *testing.T) {
+	p := &countParent{}
+	g := grant.Grant{Entitlements: []string{"unit.restart"}}
+	e := New(g, p)
+	e.Feed([]byte("prompt menu\n"))
+	chooseMenu(t, e, "unit")
+	if e.line != "" || menuLabel(e, "restart") < 0 || menuLabel(e, "status") < 0 {
+		t.Fatalf("line %q rows %+v", e.line, e.View().Menu)
+	}
+	if !e.View().Menu[menuLabel(e, "status")].Denied || e.View().Menu[menuLabel(e, "restart")].Denied {
+		t.Fatalf("rows %+v", e.View().Menu)
+	}
+	e.Feed([]byte{0x1b, '[', 'D'})
+	if e.line != "" || menuLabel(e, "unit") < 0 || e.noviceOn() != true {
+		t.Fatalf("back line %q novice %v rows %+v", e.line, e.noviceOn(), e.View().Menu)
+	}
+	chooseMenu(t, e, "unit")
+	chooseMenu(t, e, "restart")
+	if e.line != "unit restart " || e.Runs != 0 || e.noviceOn() || p.n != 0 {
+		t.Fatalf("line %q runs %d novice %v calls %d", e.line, e.Runs, e.noviceOn(), p.n)
+	}
+	v := e.View()
+	if v.Block || v.Denied || !strings.Contains(paintOf(e), "\x1b[31m") {
+		t.Fatalf("block %v denied %v paint %q smile %q", v.Block, v.Denied, paintOf(e), v.Smile)
+	}
+	if strings.Join(e.g.Entitlements, ",") != "unit.restart" || e.g.AllowPrivate {
+		t.Fatalf("grant %+v", e.g)
+	}
+	e.Feed([]byte("\n"))
+	if e.Runs != 1 {
+		t.Fatalf("runs %d stderr %q", e.Runs, e.Last.Stderr)
+	}
+}
+
+func TestPromptMenuDeniedInsertsNothing(t *testing.T) {
+	p := &countParent{}
+	e := New(grant.Grant{}, p)
+	e.Feed([]byte("prompt menu\n"))
+	v := e.View()
+	j := menuLabel(e, "journal")
+	if j < 0 || !v.Menu[j].Denied || v.Menu[j].Key != "journal" {
+		t.Fatalf("journal %+v", v.Menu)
+	}
+	echo := menuLabel(e, "echo")
+	if echo < 0 || v.Menu[echo].Denied || v.Menu[echo].Key != "" {
+		t.Fatalf("echo %+v", v.Menu[echo])
+	}
+	e.Syntax = false
+	framed := Frame(e.View())
+	if !strings.Contains(framed, "\x1b[2m") || !strings.Contains(framed, "journal") {
+		t.Fatalf("frame %q", framed)
+	}
+	chooseMenu(t, e, "ps")
+	if e.line != "" || !e.noviceOn() || !e.View().Menu[menuLabel(e, "ps")].Denied {
+		t.Fatalf("line %q novice %v", e.line, e.noviceOn())
+	}
+	chooseMenu(t, e, "unit")
+	chooseMenu(t, e, "restart")
+	if e.line != "" || !e.noviceOn() || !e.View().Menu[menuLabel(e, "restart")].Denied || p.n != 0 {
+		t.Fatalf("line %q rows %+v calls %d", e.line, e.View().Menu, p.n)
+	}
+	e.Feed([]byte{0x1b, '[', 'D'})
+	chooseMenu(t, e, "echo")
+	if e.line != "echo " || e.Runs != 0 || e.noviceOn() || len(e.g.Entitlements) != 0 {
+		t.Fatalf("line %q runs %d novice %v grant %v", e.line, e.Runs, e.noviceOn(), e.g.Entitlements)
+	}
+}
+
 func TestIsTermDevNull(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
