@@ -165,6 +165,78 @@ func TestIfRowTruth(t *testing.T) {
 	}
 }
 
+func TestRowsLiftsText(t *testing.T) {
+	f := &fake{}
+	got := Run(`echo "a  b" | rows |> where line == "a  b"`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "a  b\n" || len(f.calls) != 0 {
+		t.Fatalf("status %d stdout %q stderr %q calls %d", got.Status, got.Stdout, got.Stderr, len(f.calls))
+	}
+	got = Run(`echo "root 1 /usr/sbin/sshd -D" | rows user pid cmd`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "root  1  /usr/sbin/sshd -D\n" {
+		t.Fatalf("named status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	got = Run(`echo only | rows user pid cmd`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "only    \n" {
+		t.Fatalf("short stdout %q stderr %q", got.Stdout, got.Stderr)
+	}
+	got = Run(`echo "sshd  -D" | rows cmd`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "sshd  -D\n" {
+		t.Fatalf("remainder stdout %q", got.Stdout)
+	}
+	src := "for row in echo \"root 1 sshd -D\" | rows user pid cmd {\n  echo $row.cmd\n}\n"
+	got = Run(src, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "sshd -D\n" {
+		t.Fatalf("for status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	got = Run("if cat | rows {\n  echo yes\n} else {\n  echo no\n}\n", grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "no\n" || len(f.calls) != 0 {
+		t.Fatalf("empty status %d stdout %q stderr %q calls %d", got.Status, got.Stdout, got.Stderr, len(f.calls))
+	}
+}
+
+func TestRowsDoesNotLiftSilently(t *testing.T) {
+	f := &fake{}
+	got := Run(`echo hello |> where line == "hello"`, grant.Grant{}, f, Options{})
+	if got.Status != exitType || !strings.Contains(got.Stderr, "type |>") || got.Stdout != "" || len(f.calls) != 0 {
+		t.Fatalf("status %d stdout %q stderr %q calls %d", got.Status, got.Stdout, got.Stderr, len(f.calls))
+	}
+	got = Run(`echo hello | rows line |> where line == "hello"`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "hello\n" {
+		t.Fatalf("lift status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	got = Run(`ps -ef | rows user pid cmd |> where pid == "1"`, allow(), f, Options{})
+	if got.Status != 0 || got.Stdout != "root  1  /usr/sbin/sshd\n" || strings.Join(keys(f), ",") != "ps" {
+		t.Fatalf("ps status %d stdout %q stderr %q calls %v", got.Status, got.Stdout, got.Stderr, keys(f))
+	}
+	f.calls = nil
+	g := grant.Grant{}
+	got = Run(`ps | rows`, g, f, Options{})
+	if got.Status != exitDenied || len(f.calls) != 0 || got.Stdout != "" {
+		t.Fatalf("denied status %d stdout %q stderr %q calls %d", got.Status, got.Stdout, got.Stderr, len(f.calls))
+	}
+}
+
+func TestRowsUsagePrintsNoValue(t *testing.T) {
+	f := &fake{}
+	for _, src := range []string{
+		`echo secret | rows 1bad`,
+		`echo secret | rows a a`,
+		`echo secret | rows ""`,
+		"fn rows() {\n  echo no\n}\n",
+	} {
+		got := Run(src, grant.Grant{}, f, Options{})
+		if got.Status != exitType || got.Stdout != "" || strings.Contains(got.Stdout, "secret") || strings.Contains(got.Stderr, "secret") {
+			t.Fatalf("src %q status %d stdout %q stderr %q", src, got.Status, got.Stdout, got.Stderr)
+		}
+		if !strings.Contains(got.Stderr, "usage rows") && !strings.Contains(got.Stderr, "usage fn") {
+			t.Fatalf("src %q stderr %q", src, got.Stderr)
+		}
+		if len(f.calls) != 0 {
+			t.Fatalf("src %q calls %v", src, keys(f))
+		}
+	}
+}
+
 func TestForWalksRows(t *testing.T) {
 	f := &fake{}
 	src := "for row in unit status |> where state == \"failed\" {\n  echo $row.name\n}\n"

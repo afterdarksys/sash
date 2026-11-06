@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/afterdarksys/sash/internal/grant"
 	"github.com/afterdarksys/sash/internal/parent"
@@ -403,6 +405,15 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage where"}
 		}
 		return classified{in: inRows, out: inRows}, nil
+	case "rows":
+		seen := map[string]bool{}
+		for _, name := range argv[1:] {
+			if !rowName(name) || seen[name] {
+				return classified{}, &problem{exitType, "usage rows"}
+			}
+			seen[name] = true
+		}
+		return classified{in: inBytes, out: inRows}, nil
 	case "select":
 		if len(argv) < 2 {
 			return classified{}, &problem{exitType, "usage select"}
@@ -536,6 +547,8 @@ func stageShape(st expStage) (int, int) {
 		return inBytes, inBytes
 	case "where", "select":
 		return inRows, inRows
+	case "rows":
+		return inBytes, inRows
 	case "head", "wc":
 		return inFlex, inFlex
 	case "ps", "journal", "ls":
@@ -710,6 +723,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 			return value{}, exitType
 		}
 		return value{kind: valRows, rows: rows, cols: in.cols}, 0
+	case "rows":
+		return runRows(asBytes(in), st.argv[1:]), 0
 	case "select":
 		return value{kind: valRows, rows: in.rows, cols: append([]string(nil), st.argv[1:]...)}, 0
 	case "dirs":
@@ -1047,13 +1062,94 @@ func resolvePath(prefix, p string) (string, error) {
 
 func reserved(name string) bool {
 	switch name {
-	case "echo", "egrep", "head", "cut", "wc", "where", "select",
+	case "echo", "egrep", "head", "cut", "wc", "where", "select", "rows",
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in":
 		return true
 	default:
 		return false
 	}
+}
+
+// runRows is the only lift from text to rows. No names keeps each line,
+// spaces included, in the column line. Names split on whitespace. The last
+// name keeps the remainder of the line, so a command with spaces stays one
+// field. A short line leaves the missing fields empty.
+func runRows(text string, names []string) value {
+	lines := splitLines(text)
+	if len(names) == 0 {
+		rows := make([]parent.Row, len(lines))
+		for i, line := range lines {
+			rows[i] = parent.Row{"line": line}
+		}
+		return value{kind: valRows, rows: rows, cols: []string{"line"}}
+	}
+	cols := append([]string(nil), names...)
+	rows := make([]parent.Row, len(lines))
+	for i, line := range lines {
+		rows[i] = splitNamed(line, cols)
+	}
+	return value{kind: valRows, rows: rows, cols: cols}
+}
+
+func splitNamed(line string, cols []string) parent.Row {
+	row := make(parent.Row, len(cols))
+	fields := strings.Fields(line)
+	last := len(cols) - 1
+	for i, col := range cols {
+		if i == last {
+			if i < len(fields) {
+				row[col] = fieldRemainder(line, i)
+			}
+			break
+		}
+		if i < len(fields) {
+			row[col] = fields[i]
+		}
+	}
+	return row
+}
+
+func fieldRemainder(line string, n int) string {
+	seen := 0
+	i := 0
+	for i < len(line) {
+		r, w := utf8.DecodeRuneInString(line[i:])
+		if unicode.IsSpace(r) {
+			i += w
+			continue
+		}
+		if seen == n {
+			return line[i:]
+		}
+		for i < len(line) {
+			r, w = utf8.DecodeRuneInString(line[i:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			i += w
+		}
+		seen++
+	}
+	return ""
+}
+
+func rowName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if !isNameStart(r) {
+				return false
+			}
+			continue
+		}
+		if !isName(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func isOp(s string) bool {

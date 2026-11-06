@@ -397,7 +397,7 @@ func TestPromptLineIsDefault(t *testing.T) {
 	if !e.noviceOn() || !e.View().MenuOpen || e.Runs != 0 || e.line != "" {
 		t.Fatalf("open %v line %q runs %d", e.View().MenuOpen, e.line, e.Runs)
 	}
-	if menuLabel(e, "unit") < 0 || menuLabel(e, "echo") < 0 || menuLabel(e, "ps") < 0 {
+	if menuLabel(e, "unit") < 0 || menuLabel(e, "echo") < 0 || menuLabel(e, "ps") < 0 || menuLabel(e, "rows") < 0 {
 		t.Fatalf("rows %+v", e.View().Menu)
 	}
 	e.Feed([]byte{0x1b, 0x07})
