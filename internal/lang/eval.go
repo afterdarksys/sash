@@ -41,10 +41,11 @@ type Outcome struct {
 }
 
 // Options carries the session prefix and the history newest-last.
-// The process cwd is not this prefix.
+// The process cwd is not this prefix. Trace prints each stage key.
 type Options struct {
 	Prefix  string
 	History []string
+	Trace   bool
 }
 
 // Run expands src, then parses and executes it. Toolkit names call p.
@@ -59,10 +60,11 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 		return Outcome{Status: exitType, Stderr: err.Error() + "\n", Prefix: opt.Prefix}
 	}
 	m := &machine{
-		g:    g,
-		p:    p,
-		vars: map[string]value{},
-		fns:  map[string]*Fn{},
+		g:     g,
+		p:     p,
+		vars:  map[string]value{},
+		fns:   map[string]*Fn{},
+		trace: opt.Trace,
 	}
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
@@ -88,6 +90,7 @@ type machine struct {
 	fns   map[string]*Fn
 	out   strings.Builder
 	err   strings.Builder
+	trace bool
 }
 
 func (m *machine) prefix() string {
@@ -592,8 +595,26 @@ func (m *machine) needRead(st *expStage, p string) *problem {
 	return nil
 }
 
+func (m *machine) traceStage(st expStage) error {
+	if !m.trace {
+		return nil
+	}
+	label := st.key
+	if label == "" && len(st.argv) > 0 {
+		label = st.argv[0]
+	}
+	if label == "" {
+		return nil
+	}
+	_, err := m.err.WriteString("trace " + label + "\n")
+	return err
+}
+
 func (m *machine) execPrepared(exp []expStage) (int, value) {
 	if len(exp) == 1 && exp[0].call != nil {
+		if err := m.traceStage(exp[0]); err != nil {
+			return 1, value{}
+		}
 		st, _ := m.callFn(exp[0])
 		return st, value{kind: valBytes}
 	}
@@ -612,6 +633,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 	for i, st := range exp {
 		if st.op == "|" && cur.kind == valRows {
 			cur = value{kind: valBytes, b: []byte(render(cur))}
+		}
+		if err := m.traceStage(st); err != nil {
+			return 1, cur
 		}
 		v, code := m.execStage(st, cur)
 		exits[i] = code

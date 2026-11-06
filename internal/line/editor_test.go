@@ -14,7 +14,10 @@ type countParent struct {
 	n int
 }
 
-func (c *countParent) Do(parent.Verb) (parent.Result, error) {
+func (c *countParent) Do(v parent.Verb) (parent.Result, error) {
+	if v.Key == "history" {
+		return parent.Result{Kind: parent.KindRows, Cols: []string{"line"}}, nil
+	}
 	c.n++
 	return parent.Result{Kind: parent.KindBytes}, nil
 }
@@ -186,6 +189,9 @@ type argvParent struct {
 }
 
 func (a *argvParent) Do(v parent.Verb) (parent.Result, error) {
+	if v.Key == "history" {
+		return parent.Result{Kind: parent.KindRows, Cols: []string{"line"}}, nil
+	}
 	a.calls = append(a.calls, v)
 	return parent.Result{Kind: parent.KindBytes}, nil
 }
@@ -272,6 +278,78 @@ func TestBangOverlongHolds(t *testing.T) {
 	v := e.View()
 	if e.line != "!!" || e.Runs != 0 || v.Smile != "type brace" || !v.Block {
 		t.Fatalf("line %q runs %d smile %q block %v", e.line, e.Runs, v.Smile, v.Block)
+	}
+}
+
+type histParent struct {
+	rows    []parent.Row
+	gets    int
+	appends []string
+}
+
+func (h *histParent) Do(v parent.Verb) (parent.Result, error) {
+	if v.Key != "history" {
+		return parent.Result{Kind: parent.KindBytes}, nil
+	}
+	if len(v.Argv) == 1 && v.Argv[0] == "get" {
+		h.gets++
+		return parent.Result{Kind: parent.KindRows, Cols: []string{"line"}, Rows: append([]parent.Row(nil), h.rows...)}, nil
+	}
+	if len(v.Argv) == 1 && v.Argv[0] == "append" {
+		h.appends = append(h.appends, string(v.Body))
+		return parent.Result{}, nil
+	}
+	return parent.Result{}, os.ErrInvalid
+}
+
+func TestHistoryLoadsAndViSearch(t *testing.T) {
+	p := &histParent{rows: []parent.Row{{"line": "echo persisted"}}}
+	e := New(grant.Grant{}, p)
+	if p.gets != 1 || len(e.history) != 1 || e.history[0] != "echo persisted" {
+		t.Fatalf("gets %d hist %v", p.gets, e.history)
+	}
+	e.Feed([]byte("bind vi\n"))
+	e.Feed([]byte{0x1b, 0x12})
+	e.Feed([]byte("pers"))
+	if e.line != "echo persisted" || !e.Vi {
+		t.Fatalf("line %q vi %v", e.line, e.Vi)
+	}
+}
+
+func TestPrivateSessionSkipsSuggestions(t *testing.T) {
+	p := &histParent{rows: []parent.Row{{"line": "echo persisted"}}}
+	e := New(grant.Grant{AllowPrivate: true}, p)
+	if p.gets != 0 || len(e.history) != 0 {
+		t.Fatalf("gets %d hist %v", p.gets, e.history)
+	}
+	e.Feed([]byte("echo hi\n"))
+	if e.Runs != 1 || e.Last.Stdout != "hi\n" || len(p.appends) != 1 || p.appends[0] != "echo hi" {
+		t.Fatalf("runs %d stdout %q appends %v", e.Runs, e.Last.Stdout, p.appends)
+	}
+	if len(e.history) != 1 || e.history[0] != "echo hi" {
+		t.Fatalf("hist %v", e.history)
+	}
+}
+
+func TestTraceSessionPrintsStage(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.Feed([]byte("trace"))
+	v := e.View()
+	if v.Smile != "" || strings.Contains(v.Smile, "unknown") {
+		t.Fatalf("smile %q", v.Smile)
+	}
+	e.Feed([]byte(" on\necho hi\n"))
+	if e.Runs != 1 || e.Last.Stdout != "hi\n" || e.Last.Stderr != "trace echo\n" || !e.opt.Trace {
+		t.Fatalf("runs %d stdout %q stderr %q trace %v", e.Runs, e.Last.Stdout, e.Last.Stderr, e.opt.Trace)
+	}
+	e.Feed([]byte("trace off\necho yo\n"))
+	if e.Last.Stdout != "yo\n" || e.Last.Stderr != "" || e.opt.Trace {
+		t.Fatalf("stdout %q stderr %q trace %v", e.Last.Stdout, e.Last.Stderr, e.opt.Trace)
+	}
+	denied := New(grant.Grant{}, nil)
+	denied.Feed([]byte("trace on\nunit restart nginx\n"))
+	if denied.Runs != 0 || strings.Contains(denied.Last.Stderr, "trace") {
+		t.Fatalf("runs %d stderr %q", denied.Runs, denied.Last.Stderr)
 	}
 }
 

@@ -47,7 +47,8 @@ type View struct {
 	Denied     bool
 }
 
-// Editor is the live line. History for this commit is in memory.
+// Editor is the live line. Suggestion history comes from the agent for
+// this actor on this host. A private session loads none.
 type Editor struct {
 	g      grant.Grant
 	opt    lang.Options
@@ -112,7 +113,34 @@ func New(g grant.Grant, p parent.Parent) *Editor {
 		opt.History = append([]string(nil), e.history...)
 		return lang.Run(src, e.g, e.parent, opt)
 	}
+	e.loadHist()
 	return e
+}
+
+func (e *Editor) loadHist() {
+	if e.g.AllowPrivate {
+		return
+	}
+	res, err := e.parent.Do(parent.Verb{Key: "history", Argv: []string{"get"}})
+	if err != nil || res.Exit != 0 || res.Kind != parent.KindRows {
+		return
+	}
+	for _, row := range res.Rows {
+		line := row["line"]
+		if line == "" || strings.ContainsAny(line, "\n\r\x00") || len(line) > maxLine {
+			continue
+		}
+		e.history = append(e.history, line)
+	}
+	if len(e.history) > maxHist {
+		e.history = append([]string(nil), e.history[len(e.history)-maxHist:]...)
+	}
+}
+
+func (e *Editor) persist(s string) {
+	if _, err := e.parent.Do(parent.Verb{Key: "history", Argv: []string{"append"}, Body: []byte(s)}); err != nil {
+		return
+	}
 }
 
 // Feed applies a byte stream. A lone Esc stays pending until the next call.
@@ -810,6 +838,10 @@ func (e *Editor) applySession(cmd string) {
 		e.Syntax = false
 	case "syntax on":
 		e.Syntax = true
+	case "trace off":
+		e.opt.Trace = false
+	case "trace on":
+		e.opt.Trace = true
 	}
 }
 
@@ -821,11 +853,17 @@ func (e *Editor) pushHist(s string) {
 	if len(e.history) > maxHist {
 		e.history = append([]string(nil), e.history[len(e.history)-maxHist:]...)
 	}
+	e.persist(s)
 }
 
 func sessionKind(line string) (paint bool, exact string) {
 	f := strings.Fields(line)
-	if len(f) == 0 || (f[0] != "bind" && f[0] != "syntax") {
+	if len(f) == 0 {
+		return false, ""
+	}
+	switch f[0] {
+	case "bind", "syntax", "trace":
+	default:
 		return false, ""
 	}
 	if len(f) == 1 {
@@ -835,7 +873,8 @@ func sessionKind(line string) (paint bool, exact string) {
 		return false, ""
 	}
 	second := f[1]
-	if f[0] == "bind" {
+	switch f[0] {
+	case "bind":
 		if second == "vi" || second == "emacs" {
 			return true, "bind " + second
 		}
@@ -843,14 +882,15 @@ func sessionKind(line string) (paint bool, exact string) {
 			return true, ""
 		}
 		return false, ""
+	default:
+		if second == "on" || second == "off" {
+			return true, f[0] + " " + second
+		}
+		if strings.HasPrefix("on", second) || strings.HasPrefix("off", second) {
+			return true, ""
+		}
+		return false, ""
 	}
-	if second == "on" || second == "off" {
-		return true, "syntax " + second
-	}
-	if strings.HasPrefix("on", second) || strings.HasPrefix("off", second) {
-		return true, ""
-	}
-	return false, ""
 }
 
 func sessionExact(line string) string {
