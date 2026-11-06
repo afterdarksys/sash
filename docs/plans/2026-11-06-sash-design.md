@@ -1,8 +1,8 @@
 # sash design
 
-Status: commits 1–5 are landed. Commit 5 is the emergency parent: adssh signs purpose emergency and execs sash. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
+Status: commits 1–6 are landed. Commit 6 is the live line: a terminal `--session` prompts, a denied name stays dim, and Enter runs nothing. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
 
-Next action: commit 6, live line. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
+Next action: commit 7, visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
 
 ## What this is
 
@@ -264,7 +264,7 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 3. Login reads. Landed. The systemapi agent execs sash for `pty` and `pty_root` on Linux and fulfills `ps`, `unit` status, `package query`, `cat`, `ls`, `config read`, `sysctl get`. `journal` stays denied until a reader exists; the agent does not shell out to journalctl. darwin and windows keep the passwd shell. Done when a Linux login can run `ps -ef | egrep sshd` and Wired join item 7 names sash.
 4. Writes. Landed. `unit restart`, `package install`, `sysctl set`, and `>`. Preflight every stage. The agent re-checks the lease before the helper. Done when a denied write performs no helper call, and an allowed write matches the existing sys-channel binding.
 5. Emergency parent. Landed. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
-6. Live line. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
+6. Live line. Landed. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
 7. Visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
 8. History, private session, vi bindings, trace. Done when suggestions for actor A on host 1 are absent for actor B and for host 2, a private session returns no suggestions, and the verb audit and PTY recording still contain the private session.
 9. Novice menu. `prompt menu` lists the closed table, a denied row stays visible and inserts nothing, and a choice inserts sash source onto the line. Done when a menu-built mutation shows the danger color before it runs.
@@ -295,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-Commit 6, live line. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
+Commit 7, visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
