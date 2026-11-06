@@ -1,8 +1,8 @@
 # sash design
 
-Status: design validated in conversation on 2026-11-06. No module, no git repo, no code. This file is the contract a fresh session implements. Do not commit it unless Ryan asks.
+Status: commit 1 (language) and commit 2 (signed session) are in `/Users/ryan/development/sash` on `main`. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
 
-Next action: implement from `docs/plans/2026-11-06-sash-commit-1.md` only after Ryan says to build. That plan is the language commit. Commits 2–9 stay in this file until their own plans.
+Next action: commit 3, login reads. In one change, edit the systemapi agent, sash, and Wired join item 7 in `/Users/ryan/development/systemapi.io/docs/sah-suite.md`. An ordinary session execs sash and still does not call adssh. Read `~/development/ads-fable-utils/SECURITY-RULES.md` before that edit.
 
 ## What this is
 
@@ -16,7 +16,7 @@ sash is the login shell and the emergency shell for the SAH fleet. One Go binary
 
 People script in sash. Starlark is the daemon language. A fresh session does not add a `star` command, an embedded Starlark interpreter, or an import of `github.com/afterdarksys/adssh` from sash or from the systemapi agent.
 
-Module path when the repo is created: `github.com/afterdarksys/sash`, directory `/Users/ryan/development/sash`. Names that stay until Ryan says otherwise: the `adssh` binary, `github.com/afterdarksys/adssh`, `adssh-mcp`, `~/.adssh`, the adssh GitHub repo. `sahcore` stays docs-only. `computeapi.io` does not grow a shell.
+Module path: `github.com/afterdarksys/sash`, directory `/Users/ryan/development/sash`. Names that stay until Ryan says otherwise: the `adssh` binary, `github.com/afterdarksys/adssh`, `adssh-mcp`, `~/.adssh`, the adssh GitHub repo. `sahcore` stays docs-only. `computeapi.io` does not grow a shell.
 
 ## Parents
 
@@ -28,7 +28,7 @@ Today `systemapi-agent/pty.go` sets `argv0` from the passwd shell, then `ptyCfg.
 
 1. For agent actions `pty` and `pty_root` (ticket purposes `terminal:open` and `terminal:root`), `argv0` is a fixed `sash` lookup. Missing binary ends the session with `sash_missing`. The passwd shell is not used.
 2. Account drop, the lease timer, and HMAC recording of every PTY byte stay as they are. `pty_root` still runs only when recording mode is agent (`root_unavailable` otherwise). Root is still refused as the ordinary pty user.
-3. The agent opens two pipes before the privilege drop. Pipe 1 carries one signed `sash/1` grant; the agent writes it and closes its end. Pipe 2 carries verb requests from sash and answers from the agent. The PTY stays user keystrokes and screen bytes. The existing input loop stays the only writer of user input to the PTY.
+3. The agent opens the grant pipe and the verb socket before the privilege drop. The grant pipe carries one signed `sash/1` document; the agent writes it and closes its end. The verb socket carries requests from sash and answers from the agent. Byte layout is the Wire section. The PTY stays user keystrokes and screen bytes. The existing input loop stays the only writer of user input to the PTY.
 4. A keystroke does not travel to the control plane. The control plane authorized the session and receives the audit row. The local agent fulfills verbs.
 5. sash holds no API key. The grant is not an environment variable. The child env keeps today's drops: names starting with `SYSTEMAPI`, names containing `API_KEY`, names starting with `ADSTELCO`.
 6. This swap is the Linux fleet path. darwin and windows `loginShell` values stay until a later series names those platforms.
@@ -36,7 +36,7 @@ Today `systemapi-agent/pty.go` sets `argv0` from the passwd shell, then `ptyCfg.
 
 ### Emergency
 
-Break-glass stays `adssh` as the agent's child. `adssh` then execs the same sash binary with a locally signed grant, purpose `emergency`, on the same two pipes. The agent still records the PTY.
+Break-glass stays `adssh` as the agent's child. `adssh` then execs the same sash binary with a locally signed grant, purpose `emergency`, on the same fds as the Wire section. The agent still records the PTY.
 
 ## Grant
 
@@ -68,7 +68,9 @@ Exit before the prompt, one stderr line, no REPL, when any of these hold:
 | `grant_bad_shape` | `v` is not `sash/1`, a required field is missing, or a file root is relative. |
 | `grant_star` | Any entitlement is `*`. |
 | `grant_bad_sig` | Signature does not verify for this purpose's key. |
-| `grant_expired` | `exp` is in the past. |
+| `grant_expired` | `exp` is in the past. `exp` equal to now is still valid. |
+
+Check order is the Wire section. A tampered document is `grant_bad_sig` even when it also contains `*` or an old `exp`. A validly signed `*` is `grant_star`.
 
 A script, function, or loop cannot grow this set. Each invocation checks the same grant.
 
@@ -80,9 +82,34 @@ The control plane signs fleet grants (`terminal:open`, `terminal:root`) with an 
 
 `adssh` signs only purpose `emergency`, with a per-host key. A fleet signature on an emergency grant fails `grant_bad_sig`, and the reverse fails too, because the purpose is inside the signed bytes and selects the key.
 
-Pubkey delivery: the parent opens the matching pubkey file as root before the privilege drop and passes the fd. sash reads that fd and does not open the path itself. The pty user cannot swap the file after the drop.
+Pubkey delivery: the parent opens both pubkey files as root before the privilege drop and passes the fds. sash reads those fds and does not open either path. The pty user cannot swap the file after the drop. Which fd is which is the Wire section.
 
-Signature covers the canonical JSON of every field except `sig`.
+Signature covers the canonical JSON of every field except `sig`. Canonical bytes are the Wire section.
+
+### Wire (commit 2)
+
+`sash --session` is the only argv that reads these fds. It is argv[1], then the same `-c`, file, or stdin script. A hand start leaves the fds alone and keeps the empty grant. Grant failure prints the token on stderr and exits 2, before the script runs.
+
+| FD | Direction | Bytes |
+| --- | --- | --- |
+| 3 | parent writes, sash reads to EOF | One `sash/1` document, at most 64 KiB. Zero bytes is `grant_missing`. One byte past 64 KiB is `grant_bad_shape`. |
+| 4 | parent writes, sash reads | Fleet public key. Raw 32 bytes. Any other length is `grant_bad_sig`. |
+| 5 | parent writes, sash reads | Emergency public key. Raw 32 bytes. Same length rule. |
+| 6 | duplex | Verb socket. One process, both directions. |
+
+The two public keys must differ. Identical keys are `grant_bad_sig`, so a purpose cannot collapse onto one key. `terminal:open` and `terminal:root` verify with fd 4. `emergency` verifies with fd 5. A fleet signature on an emergency grant is `grant_bad_sig`, and the reverse is too.
+
+Check order, stop at the first hit:
+
+1. Empty document: `grant_missing`.
+2. Not JSON, unknown field, trailing value, `v` other than `sash/1`, missing required field, bad purpose, empty name, relative or unclean file root, or oversize: `grant_bad_shape`.
+3. Keys unusable or identical, or the signature against the purpose-selected key fails: `grant_bad_sig`. A forged `*` lands here.
+4. Any entitlement `*` after a valid signature: `grant_star`.
+5. `exp` less than now: `grant_expired`.
+
+The signed message is the prefix `sash-grant-v1\n` plus compact JSON of every field except `sig`, in this order: `v`, `actor`, `host`, `purpose`, `exp`, `lease_id`, `entitlements`, `file_read`, `file_write`, `allow_private`. Nil slices encode as `[]`. `allow_private` is always present. Verification rebuilds that message from the parsed fields. Raw whitespace and key order do not have to match. `sig` is standard base64 of 64 ed25519 bytes. The prefix is not `systemapi-lease-v1`, and a lease message does not verify as a grant.
+
+A verb frame is a big-endian uint32 length and one JSON object. A length above 8 MiB is `frame too large` and the body stays unread. Request fields: `key`, `argv`, `path`, `body` (standard base64, omitted when empty). Response fields: `kind` (`bytes` or `rows`), `bytes` (standard base64), `rows`, `cols`, `exit`, `error`. Unknown JSON fields are rejected.
 
 ### What the agent re-checks
 
@@ -128,7 +155,7 @@ An unset `$name`, or a field on a value that has no fields, is exit 2 and stderr
 
 `<` is legal only on the first stage of a pipeline. `>` is legal only on the last stage. `>` writes the rendered text through `file.write` and leaves stdout empty.
 
-Commit 1 keeps a `*` word, abbreviations, `!!`, and `!$` as literal words. Globs and those expansions arrive in commit 7. Commit 1 has no signature check and no grant pipe. `sash` with no arguments reads stdin as one script. A hand start uses an empty grant, so toolkit verbs deny and filters still run. The live line editor arrives in commit 6.
+Commit 1 keeps a `*` word, abbreviations, `!!`, and `!$` as literal words. Globs and those expansions arrive in commit 7. `sash` with no arguments reads stdin as one script. A hand start uses an empty grant, so toolkit verbs deny and filters still run. `--session` is the Wire section. The live line editor arrives in commit 6.
 
 ## Where work runs
 
@@ -232,8 +259,8 @@ Why they wait: the language and the line have to exist before a second door can 
 
 Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the agent half of 3) read `~/development/ads-fable-utils/SECURITY-RULES.md` first, carry a `Threats:` note, and include negative tests: tampered grant, expired grant, `*`, wrong purpose key, path outside roots, symlink escape refused by the helper contract, lease denied on the agent re-check.
 
-1. Language. Grammar, both pipes, `let` / `if` / `for` / `fn`, scripts, filters, preflight denial. Toolkit names call a `Parent` interface. Tests use a fake parent and a fixture grant. Done when `ps -ef | egrep sshd` and a row `|>` pipeline pass against the fake, a denial runs nothing, and a type error exits 2 before any call.
-2. Protocol. Signed `sash/1` on one pipe, verb request and response on the other. A test double answers verbs. Done when a bad, missing, expired, or `*` grant exits before the prompt with the stderr token in the table above.
+1. Language. Landed. Grammar, both pipes, `let` / `if` / `for` / `fn`, scripts, filters, preflight denial. Toolkit names call a `Parent` interface. Tests use a fake parent and a fixture grant. Done when `ps -ef | egrep sshd` and a row `|>` pipeline pass against the fake, a denial runs nothing, and a type error exits 2 before any call.
+2. Protocol. Landed. Signed `sash/1` on fd 3, verb frames on fd 6. A test double answers verbs. Done when a bad, missing, expired, or `*` grant exits before the prompt with the stderr token in the table above.
 3. Login reads. The systemapi agent execs sash for `pty` and `pty_root` and fulfills `ps`, `unit` status, `journal`, `package query`, `cat`, `ls`, `config read`, `sysctl get`. Done when a real login can run `ps -ef | egrep sshd` and Wired join item 7 names sash. Pair the suite-contract edit with the caller and callee in this commit.
 4. Writes. `unit restart`, `package install`, `sysctl set`, and `>`. Preflight every stage. The agent re-checks the lease before the helper. Done when a denied write performs no helper call, and an allowed write matches the existing sys-channel binding.
 5. Emergency parent. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
@@ -268,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-Implement commit 1 from `docs/plans/2026-11-06-sash-commit-1.md` when Ryan says to build. Commit 1 has no signature code. Before commit 2, read this file and `~/development/ads-fable-utils/SECURITY-RULES.md`.
+Commit 3, login reads. Edit the systemapi agent so `pty` and `pty_root` exec sash, fulfill the read verbs through the Wire section, and update Wired join item 7 in the same change. Read `~/development/ads-fable-utils/SECURITY-RULES.md` first. The live tree is `/Users/ryan/development/systemapi.io`.

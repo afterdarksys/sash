@@ -1,16 +1,18 @@
-// Command sash is the non-interactive entry for commit 1.
-// The live prompt arrives with the line editor. A hand start has an empty
-// grant, so toolkit verbs are denied and filters still run.
+// Command sash runs one script. --session reads the grant and verb pipes.
+// A hand start, without --session, has an empty grant: toolkit verbs are
+// denied and filters still run. The live prompt arrives with the line editor.
 package main
 
 import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/afterdarksys/sash/internal/grant"
 	"github.com/afterdarksys/sash/internal/lang"
 	"github.com/afterdarksys/sash/internal/parent"
+	"github.com/afterdarksys/sash/internal/session"
 )
 
 type closedParent struct{}
@@ -20,12 +22,24 @@ func (closedParent) Do(parent.Verb) (parent.Result, error) {
 }
 
 func main() {
-	src, err := readSource(os.Args[1:])
+	args := os.Args[1:]
+	g := grant.Grant{}
+	var p parent.Parent = closedParent{}
+	if len(args) > 0 && args[0] == "--session" {
+		args = args[1:]
+		var err error
+		g, p, err = session.Open(os.NewFile(3, "grant"), os.NewFile(4, "fleet"), os.NewFile(5, "emergency"), os.NewFile(6, "verb"), time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(2)
+		}
+	}
+	src, err := readSource(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(langExit(2))
 	}
-	got := lang.Run(src, grant.Grant{}, closedParent{}, lang.Options{})
+	got := lang.Run(src, g, p, lang.Options{})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	os.Exit(langExit(got.Status))

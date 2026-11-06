@@ -1,5 +1,6 @@
 // Package grant is the in-memory sash/1 entitlement set.
-// Commit 1 trusts the caller. Signature checks arrive in commit 2.
+// Commit 1 callers may pass a Grant they already trust.
+// Verify is the signed check used when a parent delivers the document.
 package grant
 
 import (
