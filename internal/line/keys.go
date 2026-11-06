@@ -29,6 +29,7 @@ const (
 	keyLeft
 	keyAltB
 	keyAltF
+	keyAltDot
 	keySkip
 )
 
@@ -136,6 +137,8 @@ func decodeEsc(buf []byte) (int, key, bool) {
 		return 2, key{kind: keyAltB}, true
 	case 'f':
 		return 2, key{kind: keyAltF}, true
+	case '.':
+		return 2, key{kind: keyAltDot}, true
 	default:
 		return 1, key{kind: keyEsc}, true
 	}

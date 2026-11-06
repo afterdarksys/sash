@@ -181,6 +181,100 @@ func TestTypePipeEnterRuns(t *testing.T) {
 	}
 }
 
+type argvParent struct {
+	calls []parent.Verb
+}
+
+func (a *argvParent) Do(v parent.Verb) (parent.Result, error) {
+	a.calls = append(a.calls, v)
+	return parent.Result{Kind: parent.KindBytes}, nil
+}
+
+func TestSpaceDoesNotAbbreviate(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.Feed([]byte("unt "))
+	if e.line != "unt " || e.Runs != 0 {
+		t.Fatalf("line %q runs %d", e.line, e.Runs)
+	}
+}
+
+func TestAltDotInsertsLastArg(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.history = []string{"echo hello world"}
+	e.Feed([]byte{0x1b, '.'})
+	if e.line != "world" || e.Runs != 0 {
+		t.Fatalf("line %q runs %d", e.line, e.Runs)
+	}
+	empty := New(grant.Grant{}, nil)
+	empty.Feed([]byte{0x1b, '.'})
+	if empty.line != "" || empty.Runs != 0 {
+		t.Fatalf("empty line %q runs %d", empty.line, empty.Runs)
+	}
+	blank := New(grant.Grant{}, nil)
+	blank.history = []string{" \t"}
+	blank.Feed([]byte{0x1b, '.'})
+	if blank.line != "" || blank.Runs != 0 {
+		t.Fatalf("blank line %q runs %d", blank.line, blank.Runs)
+	}
+	long := New(grant.Grant{}, nil)
+	long.history = []string{strings.Repeat("a", maxLine+1)}
+	long.Feed([]byte{0x1b, '.'})
+	if long.line != "" || long.Runs != 0 {
+		t.Fatalf("long line %q runs %d", long.line, long.Runs)
+	}
+}
+
+func TestViAltDotInsertsLastArg(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.Feed([]byte("bind vi\n"))
+	e.Feed([]byte{0x1b})
+	e.history = []string{"echo hello world"}
+	e.Feed([]byte{0x1b, '.'})
+	if e.line != "world" || e.Runs != 0 || !e.Vi {
+		t.Fatalf("line %q runs %d vi %v", e.line, e.Runs, e.Vi)
+	}
+}
+
+func TestBangDeniedStays(t *testing.T) {
+	p := &argvParent{}
+	e := New(grant.Grant{}, p)
+	e.history = []string{"unit restart nginx"}
+	e.Feed([]byte("!!\n"))
+	v := e.View()
+	if e.line != "unit restart nginx" || e.Runs != 0 || len(p.calls) != 0 || len(e.history) != 1 {
+		t.Fatalf("line %q runs %d calls %d hist %d", e.line, e.Runs, len(p.calls), len(e.history))
+	}
+	if v.Smile != "denied unit.restart" || !v.Block || !v.Denied {
+		t.Fatalf("smile %q block %v denied %v", v.Smile, v.Block, v.Denied)
+	}
+}
+
+func TestBangEntitledRunsExpanded(t *testing.T) {
+	p := &argvParent{}
+	e := New(grant.Grant{Entitlements: []string{"unit.restart"}}, p)
+	e.history = []string{"unit restart nginx"}
+	e.Feed([]byte("!!\n"))
+	if e.Runs != 1 || len(p.calls) != 1 || len(e.history) != 2 {
+		t.Fatalf("runs %d calls %d hist %v", e.Runs, len(p.calls), e.history)
+	}
+	if e.history[0] != "unit restart nginx" || e.history[1] != "unit restart nginx" {
+		t.Fatalf("hist %v", e.history)
+	}
+	if strings.Join(p.calls[0].Argv, " ") != "unit restart nginx" {
+		t.Fatalf("argv %v", p.calls[0].Argv)
+	}
+}
+
+func TestBangOverlongHolds(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.history = []string{strings.Repeat("a", maxLine+1)}
+	e.Feed([]byte("!!\n"))
+	v := e.View()
+	if e.line != "!!" || e.Runs != 0 || v.Smile != "type brace" || !v.Block {
+		t.Fatalf("line %q runs %d smile %q block %v", e.line, e.Runs, v.Smile, v.Block)
+	}
+}
+
 func TestIsTermDevNull(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {

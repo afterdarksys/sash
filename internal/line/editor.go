@@ -77,6 +77,7 @@ type Editor struct {
 
 	pending []byte
 	note    string
+	hold    string
 
 	Syntax bool
 	Vi     bool
@@ -107,7 +108,9 @@ func New(g grant.Grant, p parent.Parent) *Editor {
 		browseAt: -1,
 	}
 	e.run = func(src string) lang.Outcome {
-		return lang.Run(src, e.g, e.parent, e.opt)
+		opt := e.opt
+		opt.History = append([]string(nil), e.history...)
+		return lang.Run(src, e.g, e.parent, opt)
 	}
 	return e
 }
@@ -162,6 +165,13 @@ func (e *Editor) View() View {
 	}
 	if e.line == "" && e.note != "" && !e.searching {
 		smile = e.note
+	}
+	if e.hold != "" {
+		smile = e.hold
+		if strings.HasPrefix(e.hold, "denied ") {
+			denied = true
+		}
+		block = true
 	}
 	sug := ""
 	if !e.menuOpen && !e.searching && e.browseAt < 0 && e.cursor == len(e.line) && e.line != "" {
@@ -271,6 +281,8 @@ func (e *Editor) handleInsert(k key) {
 		e.wordLeft()
 	case keyAltF:
 		e.wordRight()
+	case keyAltDot:
+		e.insertLastArg()
 	case keyCtrlR:
 		e.startSearch()
 	case keyTab:
@@ -326,17 +338,33 @@ func (e *Editor) handleVi(k key) {
 		e.wordLeft()
 	case keyAltF:
 		e.wordRight()
+	case keyAltDot:
+		e.insertLastArg()
 	}
 }
 
 func (e *Editor) insert(r rune) {
-	s := string(r)
-	if len(e.line)+len(s) > maxLine {
+	e.insertText(string(r))
+}
+
+func (e *Editor) insertText(s string) {
+	if s == "" || len(e.line)+len(s) > maxLine {
 		return
 	}
 	e.touch()
 	e.line = e.line[:e.cursor] + s + e.line[e.cursor:]
 	e.cursor += len(s)
+}
+
+func (e *Editor) insertLastArg() {
+	if len(e.history) == 0 {
+		return
+	}
+	fields := strings.Fields(e.history[len(e.history)-1])
+	if len(fields) == 0 {
+		return
+	}
+	e.insertText(fields[len(fields)-1])
 }
 
 func (e *Editor) backspace() {
@@ -511,6 +539,7 @@ func (e *Editor) touch() {
 	e.menuOpen = false
 	e.browseAt = -1
 	e.browse = nil
+	e.hold = ""
 }
 
 func (e *Editor) ctrlC() {
@@ -727,6 +756,7 @@ func (e *Editor) submit() {
 	}
 	e.menuOpen = false
 	if exact := sessionExact(e.line); exact != "" {
+		e.hold = ""
 		e.applySession(exact)
 		e.pushHist(exact)
 		e.note = exact
@@ -735,6 +765,23 @@ func (e *Editor) submit() {
 		e.browseAt = -1
 		return
 	}
+	expanded, ep := lang.Expand(e.line, e.g, e.parent, lang.Options{
+		Prefix:  e.opt.Prefix,
+		History: append([]string(nil), e.history...),
+	})
+	if ep != nil {
+		e.hold = ep.Msg
+		return
+	}
+	if len(expanded) > maxLine {
+		e.hold = "type brace"
+		return
+	}
+	if expanded != e.line {
+		e.line = expanded
+		e.cursor = len(expanded)
+	}
+	e.hold = ""
 	v := e.View()
 	if v.Block {
 		return

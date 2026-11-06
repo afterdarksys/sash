@@ -194,6 +194,9 @@ func paintStage(st Stage, g grant.Grant, spans *[]Span) {
 
 func paintRedir(toks []token, st Stage, g grant.Grant, spans *[]Span) {
 	for _, r := range st.Redirs {
+		if r.Kind != "<" && r.Kind != ">" {
+			continue
+		}
 		k := kGT
 		key := "file.write"
 		if r.Kind == "<" {

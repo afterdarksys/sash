@@ -19,6 +19,7 @@ const (
 	kSemi
 	kGT
 	kLT
+	kHere
 	kLBrace
 	kRBrace
 	kLParen
@@ -122,6 +123,11 @@ func lex(src string) ([]token, error) {
 			emit(&out, kGT, Word{}, i, 1)
 			i++
 		case '<':
+			if i+2 < len(src) && src[i+1] == '<' && src[i+2] == '<' {
+				emit(&out, kHere, Word{}, i, 3)
+				i += 3
+				continue
+			}
 			if i+1 < len(src) && src[i+1] == '=' {
 				emit(&out, kWord, Word{Parts: []Part{{Lit: "<="}}}, i, 2)
 				i += 2

@@ -66,6 +66,30 @@ func TestLexCompareIsWord(t *testing.T) {
 	}
 }
 
+func TestLexHereString(t *testing.T) {
+	toks, err := lex("cat <<< hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toks[1].kind != kHere {
+		t.Fatalf("here %v", kinds(toks))
+	}
+	cmp, err := lex("a <= b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmp[1].kind != kWord || cmp[1].word.Parts[0].Lit != "<=" {
+		t.Fatalf("compare %+v", cmp[1])
+	}
+	two, err := lex("cat << hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if two[1].kind != kLT || two[2].kind != kLT {
+		t.Fatalf("two %v", kinds(two))
+	}
+}
+
 func TestLexStarIsLiteral(t *testing.T) {
 	toks, err := lex("echo *")
 	if err != nil {

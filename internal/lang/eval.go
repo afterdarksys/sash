@@ -40,15 +40,21 @@ type Outcome struct {
 	Prefix string
 }
 
-// Options carries the session prefix. The process cwd is not this prefix.
+// Options carries the session prefix and the history newest-last.
+// The process cwd is not this prefix.
 type Options struct {
-	Prefix string
+	Prefix  string
+	History []string
 }
 
-// Run parses src and executes it. Toolkit names call p. Filters stay in process.
-// A denied or mistyped pipeline performs no parent call.
+// Run expands src, then parses and executes it. Toolkit names call p.
+// Filters stay in process. A denied or mistyped pipeline performs no parent call.
 func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
-	prog, err := parse(src)
+	expanded, prob := Expand(src, g, p, opt)
+	if prob != nil {
+		return Outcome{Status: prob.Status, Stderr: prob.Msg + "\n", Prefix: opt.Prefix}
+	}
+	prog, err := parse(expanded)
 	if err != nil {
 		return Outcome{Status: exitType, Stderr: err.Error() + "\n", Prefix: opt.Prefix}
 	}
@@ -241,6 +247,8 @@ type expStage struct {
 	argv    []string
 	inPath  string
 	outPath string
+	here    []byte
+	paths   []string
 	path    string
 	key     string
 	op      string
@@ -260,42 +268,66 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		if err != nil {
 			return nil, &problem{exitType, err.Error()}
 		}
-		var inPath, outPath string
+		type redirText struct {
+			kind string
+			text string
+		}
+		var texts []redirText
+		reads, heres := 0, 0
 		for _, r := range st.Redirs {
 			text, err := m.expand(r.Path)
 			if err != nil {
 				return nil, &problem{exitType, err.Error()}
 			}
-			full, perr := resolvePath(m.prefix(), text)
-			if perr != nil {
-				return nil, &problem{exitType, "prefix_unset"}
+			texts = append(texts, redirText{r.Kind, text})
+			switch r.Kind {
+			case "<":
+				reads++
+			case "<<<":
+				heres++
 			}
-			if r.Kind == "<" {
-				if i != 0 || inPath != "" {
-					return nil, &problem{exitType, "usage <"}
+		}
+		if reads+heres > 1 || (i != 0 && reads+heres > 0) {
+			return nil, &problem{exitType, "usage <"}
+		}
+		var inPath, outPath string
+		var here []byte
+		for _, r := range texts {
+			if r.kind == "<<<" {
+				here = []byte(r.text + "\n")
+				continue
+			}
+			if r.kind == "<" {
+				full, perr := resolvePath(m.prefix(), r.text)
+				if perr != nil {
+					return nil, &problem{exitType, "prefix_unset"}
 				}
 				if !m.g.AllowsRead(full) {
 					return nil, &problem{exitDenied, "denied file.read"}
 				}
 				inPath = full
-			} else {
-				if i != len(pipe.Stages)-1 || outPath != "" {
-					return nil, &problem{exitType, "usage >"}
-				}
-				if !m.g.AllowsWrite(full) {
-					return nil, &problem{exitDenied, "denied file.write"}
-				}
-				outPath = full
+				continue
 			}
+			full, perr := resolvePath(m.prefix(), r.text)
+			if perr != nil {
+				return nil, &problem{exitType, "prefix_unset"}
+			}
+			if i != len(pipe.Stages)-1 || outPath != "" {
+				return nil, &problem{exitType, "usage >"}
+			}
+			if !m.g.AllowsWrite(full) {
+				return nil, &problem{exitDenied, "denied file.write"}
+			}
+			outPath = full
 		}
 		info, prob := classify(argv, m.fns)
 		if prob != nil {
 			return nil, prob
 		}
-		if info.call != nil && (len(pipe.Stages) != 1 || inPath != "" || outPath != "") {
+		if info.call != nil && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
 			return nil, &problem{exitType, "type fn"}
 		}
-		if info.mover && (len(pipe.Stages) != 1 || inPath != "" || outPath != "") {
+		if info.mover && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
 			return nil, &problem{exitType, "type " + argv[0]}
 		}
 		op := ""
@@ -303,7 +335,7 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 			op = pipe.Ops[i-1]
 		}
 		exp[i] = expStage{
-			argv: argv, inPath: inPath, outPath: outPath,
+			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover,
 		}
 	}
@@ -396,10 +428,7 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		if len(argv) == 1 {
 			return classified{in: inBytes, out: inBytes}, nil
 		}
-		if len(argv) == 2 {
-			return classified{key: "file.read", in: inNone, out: inBytes}, nil
-		}
-		return classified{}, &problem{exitType, "usage cat"}
+		return classified{key: "file.read", in: inNone, out: inBytes}, nil
 	case "unit":
 		sub := "status"
 		if len(argv) > 1 {
@@ -531,8 +560,11 @@ func stageShape(st expStage) (int, int) {
 func (m *machine) bindPaths(st *expStage) *problem {
 	switch st.argv[0] {
 	case "cat":
-		if len(st.argv) == 2 {
-			return m.needRead(st, st.argv[1])
+		for _, a := range st.argv[1:] {
+			if prob := m.needRead(st, a); prob != nil {
+				return prob
+			}
+			st.paths = append(st.paths, st.path)
 		}
 	case "ls":
 		p := m.prefix()
@@ -566,7 +598,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		return st, value{kind: valBytes}
 	}
 	cur := value{kind: valBytes}
-	if exp[0].inPath != "" {
+	if len(exp[0].here) > 0 {
+		cur = value{kind: valBytes, b: append([]byte(nil), exp[0].here...)}
+	} else if exp[0].inPath != "" {
 		res, err := m.p.Do(parent.Verb{Key: "file.read", Argv: []string{"<", exp[0].inPath}, Path: exp[0].inPath})
 		if err != nil {
 			m.err.WriteString("parent file.read\n")
@@ -671,10 +705,22 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 	case "cd", "pushd":
 		return m.move(st)
 	case "cat":
-		if st.path == "" {
+		if len(st.paths) == 0 {
 			return value{kind: valBytes, b: []byte(asBytes(in))}, 0
 		}
-		return m.toolkit(st)
+		var b []byte
+		for _, pth := range st.paths {
+			res, err := m.p.Do(parent.Verb{Key: "file.read", Argv: []string{"cat", pth}, Path: pth})
+			if err != nil {
+				m.err.WriteString("parent file.read\n")
+				return value{}, 1
+			}
+			if res.Exit != 0 {
+				return fromResult(res), res.Exit
+			}
+			b = append(b, res.Bytes...)
+		}
+		return value{kind: valBytes, b: b}, 0
 	default:
 		return m.toolkit(st)
 	}

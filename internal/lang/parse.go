@@ -66,7 +66,7 @@ type Stage struct {
 	Redirs []Redir
 }
 
-// Redir is "<" or ">".
+// Redir is "<", "<<<", or ">".
 type Redir struct {
 	Kind string
 	Path Word
@@ -316,10 +316,12 @@ func (p *parser) stage() (Stage, error) {
 		case kWord:
 			st.Argv = append(st.Argv, p.peek().word)
 			p.i++
-		case kGT, kLT:
+		case kGT, kLT, kHere:
 			kind := ">"
 			if p.peek().kind == kLT {
 				kind = "<"
+			} else if p.peek().kind == kHere {
+				kind = "<<<"
 			}
 			p.i++
 			if p.peek().kind != kWord {
