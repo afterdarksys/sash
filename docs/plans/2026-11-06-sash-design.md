@@ -1,8 +1,8 @@
 # sash design
 
-Status: commits 1–3 are landed. Commit 3 is the systemapi agent: on Linux, `pty` and `pty_root` exec `sash --session` and fulfill the read verbs. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
+Status: commits 1–4 are landed. Commit 4 fulfills `unit restart`, `package install`, `sysctl set`, and `file.write` on the systemapi agent. Module `github.com/afterdarksys/sash`. This file is the contract. Voice, `sash-mcp`, and the sash skill stay deferred until Ryan asks.
 
-Next action: commit 4, writes. In `/Users/ryan/development/systemapi.io`, fulfill `unit restart`, `package install`, `sysctl set`, and `>` / `file.write` when the grant has that key and the channel policy allows the target. A denied write performs no helper call. Read `~/development/ads-fable-utils/SECURITY-RULES.md` before that edit. `journal` stays denied. darwin and windows keep the passwd shell.
+Next action: commit 5, emergency parent. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
 
 ## What this is
 
@@ -262,7 +262,7 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 1. Language. Landed. Grammar, both pipes, `let` / `if` / `for` / `fn`, scripts, filters, preflight denial. Toolkit names call a `Parent` interface. Tests use a fake parent and a fixture grant. Done when `ps -ef | egrep sshd` and a row `|>` pipeline pass against the fake, a denial runs nothing, and a type error exits 2 before any call.
 2. Protocol. Landed. Signed `sash/1` on fd 3, verb frames on fd 6. A test double answers verbs. Done when a bad, missing, expired, or `*` grant exits before the prompt with the stderr token in the table above.
 3. Login reads. Landed. The systemapi agent execs sash for `pty` and `pty_root` on Linux and fulfills `ps`, `unit` status, `package query`, `cat`, `ls`, `config read`, `sysctl get`. `journal` stays denied until a reader exists; the agent does not shell out to journalctl. darwin and windows keep the passwd shell. Done when a Linux login can run `ps -ef | egrep sshd` and Wired join item 7 names sash.
-4. Writes. `unit restart`, `package install`, `sysctl set`, and `>`. Preflight every stage. The agent re-checks the lease before the helper. Done when a denied write performs no helper call, and an allowed write matches the existing sys-channel binding.
+4. Writes. Landed. `unit restart`, `package install`, `sysctl set`, and `>`. Preflight every stage. The agent re-checks the lease before the helper. Done when a denied write performs no helper call, and an allowed write matches the existing sys-channel binding.
 5. Emergency parent. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
 6. Live line. Real parser, denial dimming, danger color, completions, history suggestion keys, near miss. Done when a denied name is visible and Enter runs nothing, including with syntax colors off.
 7. Visible expansion. Abbreviations, `!!`, `!$`, braces, `*` and `**` via `file.list`, here-strings, Alt-.. Done when the audit row shows the expanded command.
@@ -295,4 +295,4 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 
 ## Next action
 
-Commit 4, writes. In `/Users/ryan/development/systemapi.io`, fulfill `unit restart`, `package install`, `sysctl set`, and `>` / `file.write` when the grant has that key and the channel policy allows the target. A denied write performs no helper call. Read `~/development/ads-fable-utils/SECURITY-RULES.md` first. `journal` stays denied. darwin and windows keep the passwd shell.
+Commit 5, emergency parent. `adssh` execs the same binary with a locally signed grant, purpose `emergency`. Done when a fleet signature on that grant exits `grant_bad_sig`, and a valid emergency grant reaches the same prompt.
