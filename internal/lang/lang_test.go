@@ -262,6 +262,67 @@ func TestFnChecksEveryCall(t *testing.T) {
 	}
 }
 
+func TestJSONRecordsPipeline(t *testing.T) {
+	f := &fake{}
+	got := Run(`echo hello | json`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "\"hello\\n\"\n" || len(f.calls) != 0 {
+		t.Fatalf("bytes status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	got = Run(`echo '<ok>' | json`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "\"<ok>\\n\"\n" {
+		t.Fatalf("html stdout %q stderr %q", got.Stdout, got.Stderr)
+	}
+	got = Run(`echo 'a"b' | rows line |> json`, grant.Grant{}, f, Options{})
+	if got.Status != 0 || got.Stdout != "[{\"line\":\"a\\\"b\"}]\n" {
+		t.Fatalf("quote stdout %q stderr %q", got.Stdout, got.Stderr)
+	}
+	got = Run(`unit status |> where state == "failed" |> json`, allow(), f, Options{})
+	if got.Status != 0 || got.Stdout != "[{\"name\":\"cron\",\"state\":\"failed\"}]\n" {
+		t.Fatalf("rows status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	got = Run(`echo x |> json`, grant.Grant{}, f, Options{})
+	if got.Status != exitType || !strings.Contains(got.Stderr, "type |>") || got.Stdout != "" {
+		t.Fatalf("type status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	f.calls = nil
+	got = Run(`ps -ef > /var/tmp/ops/text`, allow(), f, Options{})
+	if got.Status != 0 || len(f.calls) != 2 || strings.HasPrefix(string(f.calls[1].Body), "[") {
+		t.Fatalf("text body %q calls %v stderr %s", bodyOf(f), keys(f), got.Stderr)
+	}
+	f.calls = nil
+	got = Run(`ps -ef |> json > /var/tmp/ops/rows.json`, allow(), f, Options{})
+	if got.Status != 0 || strings.Join(keys(f), ",") != "ps,file.write" {
+		t.Fatalf("json write status %d calls %v stderr %s", got.Status, keys(f), got.Stderr)
+	}
+	want := "[{\"user\":\"root\",\"pid\":\"1\",\"cmd\":\"/usr/sbin/sshd\"},{\"user\":\"root\",\"pid\":\"2\",\"cmd\":\"cron\"}]\n"
+	if string(f.calls[1].Body) != want {
+		t.Fatalf("json body %q", f.calls[1].Body)
+	}
+	if b, err := encodeJSON(value{kind: valBytes, b: []byte{0xff}}); err == nil || len(b) != 0 {
+		t.Fatalf("bad utf8 bytes %q err %v", b, err)
+	}
+	m := &machine{}
+	v, st := m.execStage(expStage{argv: []string{"json"}}, value{kind: valBytes, b: []byte{0xff}})
+	if st != exitType || len(v.b) != 0 || m.err.String() != "json utf8\n" {
+		t.Fatalf("stage status %d bytes %q stderr %q", st, v.b, m.err.String())
+	}
+	got = Run(`echo secret | json extra`, grant.Grant{}, f, Options{})
+	if got.Status != exitType || got.Stdout != "" || strings.Contains(got.Stderr, "secret") || !strings.Contains(got.Stderr, "usage json") {
+		t.Fatalf("usage status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+	got = Run("fn json() {\n  echo no\n}\n", grant.Grant{}, f, Options{})
+	if got.Status != exitType || !strings.Contains(got.Stderr, "usage fn") || got.Stdout != "" {
+		t.Fatalf("fn status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+}
+
+func bodyOf(f *fake) string {
+	if len(f.calls) == 0 {
+		return ""
+	}
+	return string(f.calls[len(f.calls)-1].Body)
+}
+
 func TestRedirectPreflight(t *testing.T) {
 	f := &fake{}
 	got := Run(`ps -ef > /etc/passwd`, allow(), f, Options{})

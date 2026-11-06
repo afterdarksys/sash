@@ -33,6 +33,7 @@ var table = []completion{
 	{"where ", "where", "keep rows", ""},
 	{"select ", "select", "pick columns", ""},
 	{"rows ", "rows", "lift text into rows", ""},
+	{"json ", "json", "print JSON", ""},
 	{"let ", "let", "bind a name", ""},
 	{"if ", "if", "conditional", ""},
 	{"for ", "for", "walk rows", ""},

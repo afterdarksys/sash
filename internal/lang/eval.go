@@ -1,6 +1,8 @@
 package lang
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"path"
 	"regexp"
@@ -32,6 +34,7 @@ const (
 	inBytes
 	inRows
 	inFlex
+	inAny
 )
 
 // Outcome is the result of one script, one -c string, or one file.
@@ -414,6 +417,11 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			seen[name] = true
 		}
 		return classified{in: inBytes, out: inRows}, nil
+	case "json":
+		if len(argv) != 1 {
+			return classified{}, &problem{exitType, "usage json"}
+		}
+		return classified{in: inAny, out: inBytes}, nil
 	case "select":
 		if len(argv) < 2 {
 			return classified{}, &problem{exitType, "usage select"}
@@ -549,6 +557,8 @@ func stageShape(st expStage) (int, int) {
 		return inRows, inRows
 	case "rows":
 		return inBytes, inRows
+	case "json":
+		return inAny, inBytes
 	case "head", "wc":
 		return inFlex, inFlex
 	case "ps", "journal", "ls":
@@ -725,6 +735,13 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return value{kind: valRows, rows: rows, cols: in.cols}, 0
 	case "rows":
 		return runRows(asBytes(in), st.argv[1:]), 0
+	case "json":
+		b, err := encodeJSON(in)
+		if err != nil {
+			m.err.WriteString("json utf8\n")
+			return value{}, exitType
+		}
+		return value{kind: valBytes, b: b}, 0
 	case "select":
 		return value{kind: valRows, rows: in.rows, cols: append([]string(nil), st.argv[1:]...)}, 0
 	case "dirs":
@@ -900,6 +917,66 @@ func asBytes(v value) string {
 	return string(v.b)
 }
 
+// encodeJSON records a pipeline value. Rows become one JSON array, in column
+// order. Bytes become one JSON string. > of that text is the record. > of a
+// row value stays the text table.
+func encodeJSON(v value) ([]byte, error) {
+	if v.kind != valRows {
+		raw, err := marshalJSONString(asBytes(v))
+		if err != nil {
+			return nil, err
+		}
+		return append(raw, '\n'), nil
+	}
+	cols := append([]string(nil), v.cols...)
+	if len(cols) == 0 && len(v.rows) > 0 {
+		for k := range v.rows[0] {
+			cols = append(cols, k)
+		}
+		sort.Strings(cols)
+	}
+	var b bytes.Buffer
+	b.WriteByte('[')
+	for i, row := range v.rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('{')
+		for j, col := range cols {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			key, err := marshalJSONString(col)
+			if err != nil {
+				return nil, err
+			}
+			val, err := marshalJSONString(row[col])
+			if err != nil {
+				return nil, err
+			}
+			b.Write(key)
+			b.WriteByte(':')
+			b.Write(val)
+		}
+		b.WriteByte('}')
+	}
+	b.WriteString("]\n")
+	return b.Bytes(), nil
+}
+
+func marshalJSONString(s string) ([]byte, error) {
+	if !utf8.ValidString(s) {
+		return nil, fmt.Errorf("json utf8")
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
 func runEgrep(text, pat string) (value, int) {
 	re := regexp.MustCompile(pat)
 	var b strings.Builder
@@ -1062,7 +1139,7 @@ func resolvePath(prefix, p string) (string, error) {
 
 func reserved(name string) bool {
 	switch name {
-	case "echo", "egrep", "head", "cut", "wc", "where", "select", "rows",
+	case "echo", "egrep", "head", "cut", "wc", "where", "select", "rows", "json",
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in":
 		return true
