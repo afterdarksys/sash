@@ -29,11 +29,16 @@ const (
 type token struct {
 	kind kind
 	word Word
+	pos  int
+	end  int
 }
 
 // Word is one shell word. Expansion happens later, so a value is never parsed as syntax.
+// Pos and End are byte offsets into the source, covering quotes.
 type Word struct {
 	Parts []Part
+	Pos   int
+	End   int
 }
 
 // Part is a literal or a $name / $name.field reference.
@@ -43,6 +48,14 @@ type Part struct {
 }
 
 func (w Word) empty() bool { return len(w.Parts) == 0 }
+
+func emit(out *[]token, k kind, w Word, at, n int) {
+	if k == kWord {
+		w.Pos = at
+		w.End = at + n
+	}
+	*out = append(*out, token{kind: k, word: w, pos: at, end: at + n})
+}
 
 func lex(src string) ([]token, error) {
 	var out []token
@@ -54,7 +67,7 @@ func lex(src string) ([]token, error) {
 			i++
 			continue
 		case '\n':
-			out = append(out, token{kind: kNL})
+			emit(&out, kNL, Word{}, i, 1)
 			i++
 			continue
 		case '#':
@@ -63,70 +76,70 @@ func lex(src string) ([]token, error) {
 			}
 			continue
 		case ';':
-			out = append(out, token{kind: kSemi})
+			emit(&out, kSemi, Word{}, i, 1)
 			i++
 		case '{':
-			out = append(out, token{kind: kLBrace})
+			emit(&out, kLBrace, Word{}, i, 1)
 			i++
 		case '}':
-			out = append(out, token{kind: kRBrace})
+			emit(&out, kRBrace, Word{}, i, 1)
 			i++
 		case '(':
-			out = append(out, token{kind: kLParen})
+			emit(&out, kLParen, Word{}, i, 1)
 			i++
 		case ')':
-			out = append(out, token{kind: kRParen})
+			emit(&out, kRParen, Word{}, i, 1)
 			i++
 		case '|':
 			if i+1 < len(src) && src[i+1] == '>' {
-				out = append(out, token{kind: kRow})
+				emit(&out, kRow, Word{}, i, 2)
 				i += 2
 				continue
 			}
 			if i+1 < len(src) && src[i+1] == '|' {
-				out = append(out, token{kind: kOr})
+				emit(&out, kOr, Word{}, i, 2)
 				i += 2
 				continue
 			}
-			out = append(out, token{kind: kPipe})
+			emit(&out, kPipe, Word{}, i, 1)
 			i++
 		case ',':
 			i++
 			continue
 		case '&':
 			if i+1 < len(src) && src[i+1] == '&' {
-				out = append(out, token{kind: kAnd})
+				emit(&out, kAnd, Word{}, i, 2)
 				i += 2
 				continue
 			}
 			return nil, fmt.Errorf("lex: & is not in this series")
 		case '>':
 			if i+1 < len(src) && src[i+1] == '=' {
-				out = append(out, token{kind: kWord, word: Word{Parts: []Part{{Lit: ">="}}}})
+				emit(&out, kWord, Word{Parts: []Part{{Lit: ">="}}}, i, 2)
 				i += 2
 				continue
 			}
-			out = append(out, token{kind: kGT})
+			emit(&out, kGT, Word{}, i, 1)
 			i++
 		case '<':
 			if i+1 < len(src) && src[i+1] == '=' {
-				out = append(out, token{kind: kWord, word: Word{Parts: []Part{{Lit: "<="}}}})
+				emit(&out, kWord, Word{Parts: []Part{{Lit: "<="}}}, i, 2)
 				i += 2
 				continue
 			}
-			out = append(out, token{kind: kLT})
+			emit(&out, kLT, Word{}, i, 1)
 			i++
 		case '=':
 			if i+1 < len(src) && src[i+1] == '=' {
-				out = append(out, token{kind: kWord, word: Word{Parts: []Part{{Lit: "=="}}}})
+				emit(&out, kWord, Word{Parts: []Part{{Lit: "=="}}}, i, 2)
 				i += 2
 				continue
 			}
-			out = append(out, token{kind: kEq})
+			emit(&out, kEq, Word{}, i, 1)
 			i++
 		case '!':
 			if i+1 < len(src) && src[i+1] == '=' {
-				out = append(out, token{kind: kWord, word: Word{Parts: []Part{{Lit: "!="}}}})
+				emit(&out, kWord, Word{Parts: []Part{{Lit: "!="}}}, i, 2)
 				i += 2
 				continue
 			}
@@ -136,25 +149,25 @@ func lex(src string) ([]token, error) {
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, token{kind: kWord, word: w})
+			emit(&out, kWord, w, i, n)
 			i += n
 		case '"':
 			w, n, err := lexDouble(src[i:])
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, token{kind: kWord, word: w})
+			emit(&out, kWord, w, i, n)
 			i += n
 		default:
 			w, n, err := lexBare(src[i:])
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, token{kind: kWord, word: w})
+			emit(&out, kWord, w, i, n)
 			i += n
 		}
 	}
-	out = append(out, token{kind: kEOF})
+	emit(&out, kEOF, Word{}, len(src), 0)
 	return out, nil
 }
 

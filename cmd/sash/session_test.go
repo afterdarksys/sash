@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -59,6 +60,15 @@ func TestBinarySessionAndHandStart(t *testing.T) {
 		t.Fatalf("star code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 
+	stdout, stderr, code = runSessionIO(t, bin, doc, fleetPub, emergencyPub, []string{"--session"}, []byte("syntax off\necho hi\n"))
+	if code != 127 || stderr != "unknown syntax\n" || stdout != "" {
+		t.Fatalf("script syntax code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runSessionIO(t, bin, doc, fleetPub, emergencyPub, []string{"--session"}, []byte("echo hi\n"))
+	if code != 0 || stdout != "hi\n" || stderr != "" || strings.Contains(stdout, "sash>") || strings.Contains(stdout, "\x1b") {
+		t.Fatalf("script echo code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	held, heldW, err := os.Pipe()
@@ -76,6 +86,11 @@ func TestBinarySessionAndHandStart(t *testing.T) {
 }
 
 func runSession(t *testing.T, bin string, doc, fleet, emergency []byte, args []string) (string, string, int) {
+	t.Helper()
+	return runSessionIO(t, bin, doc, fleet, emergency, args, nil)
+}
+
+func runSessionIO(t *testing.T, bin string, doc, fleet, emergency []byte, args []string, stdin []byte) (string, string, int) {
 	t.Helper()
 	grantR, grantW, err := os.Pipe()
 	if err != nil {
@@ -131,6 +146,9 @@ func runSession(t *testing.T, bin string, doc, fleet, emergency []byte, args []s
 
 	cmd := exec.Command(bin, args...)
 	cmd.ExtraFiles = []*os.File{grantR, fleetR, emergencyR, childVerb}
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
