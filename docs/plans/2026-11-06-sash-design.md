@@ -40,7 +40,7 @@ Break-glass stays `adssh` as the agent's child. `adssh` then execs the same sash
 
 ## Grant
 
-Flat names only. The shell has no policy language. Group expansion happens in the parent before signing.
+Flat names only. The shell has no policy language. Group expansion happens in the parent before signing. The control plane signs a login grant from the host's channel policy, else the tenant default, else deny-all (`ps` only). Default profiles (`observe`, `operate`) are presets written into that policy: `2026-11-09-sash-default-profiles.md`.
 
 ```json
 {
@@ -166,8 +166,8 @@ The local agent fulfills these, each behind its key. The verb shape matches the 
 | Command | Key | Channel binding already on the agent |
 | --- | --- | --- |
 | `ps` | `ps` | process table, local |
-| `unit` status | `unit.status` | `sys:service` read |
-| `unit restart <name>` | `unit.restart` | `sys:service` restart |
+| `unit` status | `unit.status` | `service_policy.units` or `status_units` |
+| `unit restart <name>` | `unit.restart` | `sys:service` restart, `service_policy.units` only |
 | `journal` | `journal` | journal read, local |
 | `package query` | `package.query` | `sys:package` query |
 | `package install` | `package.install` | `sys:package` install |
