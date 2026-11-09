@@ -7,6 +7,7 @@ package line
 // grant, or a path. The editor holds no signing key.
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -590,6 +591,7 @@ func (e *Editor) touch() {
 }
 
 func (e *Editor) ctrlC() {
+	e.hold = ""
 	e.line = ""
 	e.cursor = 0
 	e.searching = false
@@ -1082,13 +1084,17 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		}
 		return 1
 	}
-	buf := make([]byte, 256)
+	// Process and display each key before consuming the next one. A paste can
+	// contain several submissions (and EOF); batching Feed would retain only
+	// the last outcome and could exit before displaying any of them.
+	reader := bufio.NewReader(in)
+	buf := make([]byte, 1)
 	for {
 		view := e.View()
 		if err := writeAll(out, []byte(Frame(view))); err != nil {
 			return finishRaw(restore, 1)
 		}
-		n, err := in.Read(buf)
+		n, err := reader.Read(buf)
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue

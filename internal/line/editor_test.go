@@ -27,6 +27,22 @@ func paintOf(e *Editor) string {
 	return Paint(v.Line, v.Suggestion, v.Spans, v.Syntax)
 }
 
+func TestCtrlCClearsExpansionError(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.Feed([]byte("!!\r"))
+	if e.hold == "" {
+		t.Fatal("expected expansion error with empty history")
+	}
+	e.Feed([]byte{0x03})
+	if v := e.View(); v.Block || v.Line != "" || v.Smile != "" {
+		t.Fatalf("cancelled line retains error: %+v", v)
+	}
+	e.Feed([]byte("echo recovered\r"))
+	if e.Last.Stdout != "recovered\n" {
+		t.Fatalf("next command failed: %+v", e.Last)
+	}
+}
+
 func TestDeniedStaysDimWithSyntaxOff(t *testing.T) {
 	for _, syntax := range []bool{false, true} {
 		p := &countParent{}

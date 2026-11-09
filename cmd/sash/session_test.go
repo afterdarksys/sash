@@ -83,6 +83,18 @@ func TestBinarySessionAndHandStart(t *testing.T) {
 	if err != nil || string(out) != "hi\n" {
 		t.Fatalf("hand start stdout %q err %v", out, err)
 	}
+	t.Run("terminal REPL", func(t *testing.T) {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip("PTY integration test requires python3")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, python, "testdata/repl.py", bin)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("terminal REPL: %v\n%s", err, out)
+		}
+	})
 }
 
 func runSession(t *testing.T, bin string, doc, fleet, emergency []byte, args []string) (string, string, int) {

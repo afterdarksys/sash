@@ -1,5 +1,5 @@
 // Command sash runs one script. --session reads the grant and verb pipes.
-// A terminal --session with no script is the live prompt. Non-tty stdin is
+// A terminal with no script is the live prompt. Non-tty stdin is
 // still one script. A hand start, without --session, has an empty grant:
 // toolkit verbs are denied and filters still run.
 package main
@@ -27,10 +27,8 @@ func main() {
 	args := os.Args[1:]
 	g := grant.Grant{}
 	var p parent.Parent = closedParent{}
-	sessionOn := false
 	if len(args) > 0 && args[0] == "--session" {
 		args = args[1:]
-		sessionOn = true
 		var err error
 		g, p, err = session.Open(os.NewFile(3, "grant"), os.NewFile(4, "fleet"), os.NewFile(5, "emergency"), os.NewFile(6, "verb"), time.Now())
 		if err != nil {
@@ -38,7 +36,7 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	if sessionOn && len(args) == 0 && line.IsTerm(os.Stdin) {
+	if len(args) == 0 && line.IsTerm(os.Stdin) {
 		os.Exit(line.Loop(os.Stdin, os.Stdout, os.Stderr, g, p))
 	}
 	src, err := readSource(args)
