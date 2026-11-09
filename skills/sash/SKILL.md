@@ -11,6 +11,6 @@ One language. A hand start has an empty grant. `--session` is the fleet or emerg
 
 `|` carries bytes. `|>` carries rows. `rows` lifts text into rows. `json` records bytes as a JSON string and rows as an array. `>` of a row value stays the text table.
 
-Closed table: `ps`, `unit status`, `unit restart`, `journal`, `package query`, `package install`, `sysctl get`, `sysctl set`, `config read`, `cat`, `ls`, `cd`, `pushd`, `echo`, `egrep`, `head`, `cut`, `wc`, `where`, `select`, `rows`, `json`, `let`, `if`, `for`, `fn`, `dirs`, `popd`. `config write` is not a command.
+Closed table: `ps`, `unit status`, `unit restart`, `journal`, `package query`, `package install`, `sysctl get`, `sysctl set`, `config read`, `cat`, `ls`, `cd`, `pushd`, `echo`, `egrep`, `head`, `cut`, `wc`, `where`, `select`, `rows`, `json`, `let`, `if`, `for`, `fn`, `dirs`, `popd`. `config write` is not a command. Session words, interactive only: `bind`, `syntax`, `trace`, `prompt`, and a bare `exit` or `logout`, which ends the session like Ctrl-D.
 
 A function call deeper than eight is exit 2 and stderr `fn depth`. `*(/)` and `**(/)` list directories through `file.read`. Any other glob qualifier is a type error.

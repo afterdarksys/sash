@@ -511,3 +511,46 @@ func TestIsTermDevNull(t *testing.T) {
 		t.Fatal("nil is a terminal")
 	}
 }
+
+func TestExitAndLogoutEndTheSession(t *testing.T) {
+	for _, in := range []string{"exit\r", "logout\r", "  exit  \n", "exit \r"} {
+		p := &countParent{}
+		e := New(grant.Grant{}, p)
+		e.Feed([]byte("echo hi\r"))
+		ran := p.n
+		if n := e.Feed([]byte(in + "echo after\r")); n != len(in) {
+			t.Fatalf("%q: consumed %d bytes after the session ended", in, n)
+		}
+		if !e.done || e.status != 0 || p.n != ran {
+			t.Fatalf("%q: done %v status %d calls %d", in, e.done, e.status, p.n-ran)
+		}
+	}
+}
+
+func TestExitWithArgumentsOrInsideALineDoesNotEnd(t *testing.T) {
+	for _, in := range []string{"exit now\r", "echo exit\r", "logouts\r"} {
+		e := New(grant.Grant{}, &countParent{})
+		e.Feed([]byte(in))
+		if e.done {
+			t.Fatalf("%q ended the session", in)
+		}
+	}
+}
+
+func TestExitPaintsAsKnown(t *testing.T) {
+	e := New(grant.Grant{}, nil)
+	e.Feed([]byte("exit"))
+	if v := e.View(); v.Block || strings.HasPrefix(v.Smile, "unknown ") {
+		t.Fatalf("exit shows %+v", v)
+	}
+}
+
+func TestHistoryExpandingToExitEndsTheSession(t *testing.T) {
+	p := &countParent{}
+	e := New(grant.Grant{}, p)
+	e.history = append(e.history, "exit")
+	e.Feed([]byte("!!\r"))
+	if !e.done || e.status != 0 || p.n != 0 {
+		t.Fatalf("done %v status %d calls %d hold %q", e.done, e.status, p.n, e.hold)
+	}
+}

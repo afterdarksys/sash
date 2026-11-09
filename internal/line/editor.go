@@ -806,6 +806,11 @@ func (e *Editor) submit() {
 		return
 	}
 	e.menuOpen = false
+	if leaves(e.line) {
+		e.done = true
+		e.status = 0
+		return
+	}
 	if exact := sessionExact(e.line); exact != "" {
 		e.hold = ""
 		e.applySession(exact)
@@ -831,6 +836,11 @@ func (e *Editor) submit() {
 	if expanded != e.line {
 		e.line = expanded
 		e.cursor = len(expanded)
+	}
+	if leaves(e.line) {
+		e.done = true
+		e.status = 0
+		return
 	}
 	e.hold = ""
 	v := e.View()
@@ -888,6 +898,9 @@ func sessionKind(line string) (paint bool, exact string) {
 	if len(f) == 0 {
 		return false, ""
 	}
+	if f[0] == "exit" || f[0] == "logout" {
+		return len(f) == 1, ""
+	}
 	switch f[0] {
 	case "bind", "syntax", "trace", "prompt":
 	default:
@@ -926,6 +939,12 @@ func sessionKind(line string) (paint bool, exact string) {
 		}
 		return false, ""
 	}
+}
+
+// leaves reports a bare exit or logout, which ends the session like Ctrl-D.
+func leaves(line string) bool {
+	f := strings.Fields(line)
+	return len(f) == 1 && (f[0] == "exit" || f[0] == "logout")
 }
 
 func sessionExact(line string) string {

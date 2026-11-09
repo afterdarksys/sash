@@ -219,6 +219,8 @@ Completion rows show the one-line description and the entitlement key. A gray su
 
 Emacs bindings are the default. `bind vi` switches them for the session.
 
+A bare `exit` or `logout` ends the interactive session with status 0, the same as Ctrl-D on an empty line. It also ends the session when `!!` or a history recall expands to it. Like `bind` and `prompt`, these are session words, not closed-table commands: with arguments, in a script, under `-c` or on piped stdin they stay unknown names (exit 127).
+
 ### Novice menu
 
 `prompt line` is the default. `prompt menu` lists the closed table.
