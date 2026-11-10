@@ -202,3 +202,25 @@ func TestCSVSafeLookalikes(t *testing.T) {
 		}
 	}
 }
+
+// Review: expansion that replaces the boundary before # must not turn the
+// comment into code.
+func TestCommentSurvivesExpansion(t *testing.T) {
+	for _, c := range []struct {
+		src   string
+		names []string
+	}{
+		{"echo *=# note; ps", []string{"ab="}},
+		{"echo {a,b}# note; ps", nil},
+		{"echo *)# x; ps", []string{"q)"}},
+	} {
+		p := hostileDir(c.names...)
+		out := Run(c.src, injectGrant(), p, Options{Prefix: "/var/log"})
+		if n := psCalls(p); n != 0 {
+			t.Errorf("%q ran ps: %+v", c.src, out)
+		}
+	}
+	if out := Run("let f = x; cat /var/log/$f*", injectGrant(), hostileDir("$f"), Options{}); out.Status != exitType || !strings.Contains(out.Stderr, "type glob $") {
+		t.Fatalf("glob with $: %+v", out)
+	}
+}

@@ -164,6 +164,7 @@ func expandLine(s string, hist []string) (string, *ExpandProblem) {
 			continue
 		}
 		if commentAt(s, i) {
+			keepComment(&b)
 			b.WriteString(s[i:])
 			break
 		}
@@ -290,6 +291,16 @@ func histBound(c byte) bool {
 	}
 }
 
+// keepComment keeps a comment a comment after expansion. The expanders
+// find a comment on the source, the parser on the expanded text: a glob or
+// brace that replaced the boundary byte before # would turn the comment
+// into words. A space restores the boundary.
+func keepComment(b *strings.Builder) {
+	if s := b.String(); s != "" && !histBound(s[len(s)-1]) {
+		b.WriteByte(' ')
+	}
+}
+
 func commentAt(s string, i int) bool {
 	return i < len(s) && s[i] == '#' && (i == 0 || histBound(s[i-1]))
 }
@@ -374,6 +385,7 @@ func mapWords(src string, fn func(string) (string, *ExpandProblem)) (string, *Ex
 			for j < len(src) && src[j] != '\n' {
 				j++
 			}
+			keepComment(&b)
 			b.WriteString(src[i:j])
 			i = j
 			continue
@@ -677,6 +689,11 @@ func expandGlobs(src string, g grant.Grant, p parent.Parent, opt Options) (strin
 	return mapWords(src, func(word string) (string, *ExpandProblem) {
 		if !strings.Contains(word, "*") {
 			return word, nil
+		}
+		// A glob runs before $ expansion, so it would match the name
+		// literally. Refuse it rather than surprise.
+		if strings.Contains(word, "$") {
+			return "", &ExpandProblem{Status: exitType, Msg: "type glob $"}
 		}
 		return globWord(word, g, p, opt)
 	})
