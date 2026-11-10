@@ -1,6 +1,9 @@
 package lang
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Program is a script: the prompt, sash -c, and sash file share this tree.
 type Program struct {
@@ -78,6 +81,16 @@ type Try struct {
 }
 
 func (*Try) stmt() {}
+
+// Declare sets flags on a name and may bind it: declare -r name = value.
+// With no name it lists; -p name shows one value.
+type Declare struct {
+	Flags string
+	Name  string
+	Value *Let
+}
+
+func (*Declare) stmt() {}
 
 // Fn defines a command. Each call checks entitlements again.
 type Fn struct {
@@ -179,6 +192,8 @@ func (p *parser) stmt() (Stmt, error) {
 			return p.jump()
 		case "try":
 			return p.try()
+		case "declare":
+			return p.declare()
 		}
 	}
 	return p.chain()
@@ -190,6 +205,11 @@ func (p *parser) let() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	return p.letValue(name)
+}
+
+// letValue reads "= word" or "= (pipeline)" after a name.
+func (p *parser) letValue(name string) (*Let, error) {
 	if p.peek().kind != kEq {
 		return nil, fmt.Errorf("parse: let needs =")
 	}
@@ -355,6 +375,36 @@ func (p *parser) jump() (Stmt, error) {
 		p.i++
 	}
 	return j, nil
+}
+
+func (p *parser) declare() (Stmt, error) {
+	p.i++
+	d := &Declare{}
+	for p.peek().kind == kWord && strings.HasPrefix(plain(p.peek().word), "-") {
+		f := plain(p.peek().word)[1:]
+		if f == "" || strings.Trim(f, "riaAp") != "" {
+			return nil, fmt.Errorf("usage declare: -r -i -a -A -p; there is no export")
+		}
+		d.Flags += f
+		p.i++
+	}
+	if p.peek().kind != kWord {
+		if strings.Contains(d.Flags, "p") {
+			return nil, fmt.Errorf("usage declare -p name")
+		}
+		return d, nil
+	}
+	name, err := p.plainName("declare")
+	if err != nil {
+		return nil, err
+	}
+	d.Name = name
+	if p.peek().kind == kEq {
+		if d.Value, err = p.letValue(name); err != nil {
+			return nil, err
+		}
+	}
+	return d, nil
 }
 
 func (p *parser) try() (Stmt, error) {

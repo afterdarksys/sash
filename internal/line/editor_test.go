@@ -355,12 +355,12 @@ func TestTraceSessionPrintsStage(t *testing.T) {
 		t.Fatalf("smile %q", v.Smile)
 	}
 	e.Feed([]byte(" on\necho hi\n"))
-	if e.Runs != 1 || e.Last.Stdout != "hi\n" || e.Last.Stderr != "trace echo\n" || !e.opt.Trace {
-		t.Fatalf("runs %d stdout %q stderr %q trace %v", e.Runs, e.Last.Stdout, e.Last.Stderr, e.opt.Trace)
+	if e.Runs != 1 || e.Last.Stdout != "hi\n" || e.Last.Stderr != "trace echo\n" || !e.opt.State.Xtrace() {
+		t.Fatalf("runs %d stdout %q stderr %q trace %v", e.Runs, e.Last.Stdout, e.Last.Stderr, e.opt.State.Xtrace())
 	}
 	e.Feed([]byte("trace off\necho yo\n"))
-	if e.Last.Stdout != "yo\n" || e.Last.Stderr != "" || e.opt.Trace {
-		t.Fatalf("stdout %q stderr %q trace %v", e.Last.Stdout, e.Last.Stderr, e.opt.Trace)
+	if e.Last.Stdout != "yo\n" || e.Last.Stderr != "" || e.opt.State.Xtrace() {
+		t.Fatalf("stdout %q stderr %q trace %v", e.Last.Stdout, e.Last.Stderr, e.opt.State.Xtrace())
 	}
 	denied := New(grant.Grant{}, nil)
 	denied.Feed([]byte("trace on\nunit restart nginx\n"))
@@ -614,5 +614,19 @@ func TestSessionBuiltinsAreHandled(t *testing.T) {
 		if !paint && !leaves(b.Form) {
 			t.Errorf("session form %q is not handled by the editor", b.Form)
 		}
+	}
+}
+
+func TestNamesCarryAcrossPromptLines(t *testing.T) {
+	e := New(grant.Grant{}, &argvParent{})
+	e.Feed([]byte("let x = [ 40 + 2 ]\n"))
+	e.Feed([]byte("fn twice(v) { return [ $v * 2 ] }\n"))
+	e.Feed([]byte("twice $x\n"))
+	if e.Last.Status != 0 || e.Last.Stdout != "84\n" {
+		t.Fatalf("%+v", e.Last)
+	}
+	e.Feed([]byte("exit 3\n"))
+	if !e.done || e.status != 3 {
+		t.Fatalf("exit 3: done %v status %d", e.done, e.status)
 	}
 }

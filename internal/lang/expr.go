@@ -566,8 +566,14 @@ func (p *exprParser) mapLit() (Expr, error) {
 
 // evalExpr computes an expression. lookup resolves $name.
 func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
-	budget := dataMaxBytes
-	d, err := evalNode(x, lookup, &budget)
+	return evalExprStrict(x, false, lookup)
+}
+
+// evalExprStrict is evalExpr; strict (set -u) makes a missing map key an
+// error instead of null.
+func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
+	c := &evalCtx{budget: dataMaxBytes, strict: strict}
+	d, err := evalNode(x, lookup, c)
 	if err != nil {
 		return nil, err
 	}
@@ -579,16 +585,22 @@ func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
 
 // charge spends the evaluation budget before an allocation, so a value is
 // refused before it is built, not after.
-func charge(b *int, n int) error {
-	if n < 0 || n > *b {
-		*b = -1
+func charge(c *evalCtx, n int) error {
+	if n < 0 || n > c.budget {
+		c.budget = -1
 		return fmt.Errorf("type expr too large")
 	}
-	*b -= n
+	c.budget -= n
 	return nil
 }
 
-func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
+// evalCtx is one evaluation: its allocation budget, and set -u.
+type evalCtx struct {
+	budget int
+	strict bool
+}
+
+func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) {
 	switch x := x.(type) {
 	case exprLit:
 		return x.d, nil
@@ -599,12 +611,12 @@ func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 		}
 		return d, nil
 	case exprList:
-		if err := charge(b, 16*len(x.items)); err != nil {
+		if err := charge(c, 16*len(x.items)); err != nil {
 			return nil, err
 		}
 		out := make([]any, 0, len(x.items))
 		for _, it := range x.items {
-			d, err := evalNode(it, lookup, b)
+			d, err := evalNode(it, lookup, c)
 			if err != nil {
 				return nil, err
 			}
@@ -612,12 +624,12 @@ func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 		}
 		return out, nil
 	case exprMap:
-		if err := charge(b, 32*len(x.keys)); err != nil {
+		if err := charge(c, 32*len(x.keys)); err != nil {
 			return nil, err
 		}
 		o := newOmap()
 		for i, k := range x.keys {
-			d, err := evalNode(x.vals[i], lookup, b)
+			d, err := evalNode(x.vals[i], lookup, c)
 			if err != nil {
 				return nil, err
 			}
@@ -625,7 +637,7 @@ func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 		}
 		return o, nil
 	case exprUnary:
-		d, err := evalNode(x.x, lookup, b)
+		d, err := evalNode(x.x, lookup, c)
 		if err != nil {
 			return nil, err
 		}
@@ -644,19 +656,26 @@ func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 		}
 		return -n.(float64), nil
 	case exprIndex:
-		base, err := evalNode(x.x, lookup, b)
+		base, err := evalNode(x.x, lookup, c)
 		if err != nil {
 			return nil, err
 		}
-		key, err := evalNode(x.key, lookup, b)
+		key, err := evalNode(x.key, lookup, c)
 		if err != nil {
 			return nil, err
+		}
+		if o, ok := base.(*omap); ok && c.strict {
+			if k, isStr := key.(string); isStr {
+				if _, has := o.get(k); !has {
+					return nil, fmt.Errorf("unset key %s", k)
+				}
+			}
 		}
 		return indexData(base, key)
 	case exprRange:
-		return evalRange(x, lookup, b)
+		return evalRange(x, lookup, c)
 	case exprBinary:
-		l, err := evalNode(x.l, lookup, b)
+		l, err := evalNode(x.l, lookup, c)
 		if err != nil {
 			return nil, err
 		}
@@ -665,7 +684,7 @@ func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 			if !truthy(l) {
 				return false, nil
 			}
-			r, err := evalNode(x.r, lookup, b)
+			r, err := evalNode(x.r, lookup, c)
 			if err != nil {
 				return nil, err
 			}
@@ -674,17 +693,17 @@ func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 			if truthy(l) {
 				return true, nil
 			}
-			r, err := evalNode(x.r, lookup, b)
+			r, err := evalNode(x.r, lookup, c)
 			if err != nil {
 				return nil, err
 			}
 			return truthy(r), nil
 		}
-		r, err := evalNode(x.r, lookup, b)
+		r, err := evalNode(x.r, lookup, c)
 		if err != nil {
 			return nil, err
 		}
-		return binary(x.op, l, r, b)
+		return binary(x.op, l, r, c)
 	}
 	return nil, fmt.Errorf("type expr")
 }
@@ -725,10 +744,10 @@ func intIndex(key any, n int) (int, error) {
 	return int(i), nil
 }
 
-func evalRange(x exprRange, lookup func(string) (any, bool), b *int) (any, error) {
+func evalRange(x exprRange, lookup func(string) (any, bool), c *evalCtx) (any, error) {
 	var ends [2]int64
 	for i, e := range []Expr{x.lo, x.hi} {
-		d, err := evalNode(e, lookup, b)
+		d, err := evalNode(e, lookup, c)
 		if err != nil {
 			return nil, err
 		}
@@ -748,7 +767,7 @@ func evalRange(x exprRange, lookup func(string) (any, bool), b *int) (any, error
 		return nil, fmt.Errorf("type expr range too large")
 	}
 	size := (hi-lo)*step + 1
-	if err := charge(b, int(size)*25); err != nil {
+	if err := charge(c, int(size)*25); err != nil {
 		return nil, err
 	}
 	out := make([]any, 0, size)
@@ -761,7 +780,7 @@ func evalRange(x exprRange, lookup func(string) (any, bool), b *int) (any, error
 	return out, nil
 }
 
-func binary(op string, l, r any, b *int) (any, error) {
+func binary(op string, l, r any, c *evalCtx) (any, error) {
 	switch op {
 	case "==":
 		return dataEqual(l, r), nil
@@ -798,26 +817,26 @@ func binary(op string, l, r any, b *int) (any, error) {
 		if !isInt || n < 0 || (len(a) > 0 && n > int64(dataMaxBytes/len(a))) {
 			return nil, fmt.Errorf("type expr repeat")
 		}
-		if err := charge(b, len(a)*int(n)); err != nil {
+		if err := charge(c, len(a)*int(n)); err != nil {
 			return nil, err
 		}
 		return strings.Repeat(a, int(n)), nil
 	}
 	if op == "+" {
 		if a, ok := l.(string); ok {
-			if c, ok := r.(string); ok {
-				if err := charge(b, len(a)+len(c)); err != nil {
+			if z, ok := r.(string); ok {
+				if err := charge(c, len(a)+len(z)); err != nil {
 					return nil, err
 				}
-				return a + c, nil
+				return a + z, nil
 			}
 		}
 		if a, ok := l.([]any); ok {
-			if c, ok := r.([]any); ok {
-				if err := charge(b, 16*(len(a)+len(c))); err != nil {
+			if z, ok := r.([]any); ok {
+				if err := charge(c, 16*(len(a)+len(z))); err != nil {
 					return nil, err
 				}
-				return append(append(make([]any, 0, len(a)+len(c)), a...), c...), nil
+				return append(append(make([]any, 0, len(a)+len(z)), a...), z...), nil
 			}
 		}
 	}

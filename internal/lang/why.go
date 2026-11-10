@@ -41,7 +41,9 @@ func Why(src string, g grant.Grant, opt Options) Outcome {
 	}
 	var pipes []Pipeline
 	collectPipes(prog, &pipes)
-	m := &machine{g: g, p: denyParent{}, vars: map[string]value{}, fns: map[string]*Fn{}}
+	// A copy: whyFns registers the line's functions, and why must not
+	// change the session.
+	m := newMachine(g, denyParent{}, opt.State.clone())
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}

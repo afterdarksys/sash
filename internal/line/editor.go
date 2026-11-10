@@ -114,6 +114,9 @@ func New(g grant.Grant, p parent.Parent) *Editor {
 		Syntax:   true,
 		browseAt: -1,
 	}
+	// One State for the session: names, functions, and set options carry
+	// from line to line.
+	e.opt.State = lang.NewState()
 	e.run = func(src string) lang.Outcome {
 		opt := e.opt
 		opt.History = append([]string(nil), e.history...)
@@ -828,6 +831,7 @@ func (e *Editor) submit() {
 		return
 	}
 	expanded, ep := lang.Expand(e.line, e.g, e.parent, lang.Options{
+		State:   e.opt.State,
 		Prefix:  e.opt.Prefix,
 		History: append([]string(nil), e.history...),
 	})
@@ -891,6 +895,7 @@ func (e *Editor) explain() {
 		return
 	}
 	e.Last = lang.Why(target, e.g, lang.Options{
+		State:   e.opt.State,
 		Prefix:  e.opt.Prefix,
 		History: append([]string(nil), e.history...),
 	})
@@ -915,9 +920,9 @@ func (e *Editor) applySession(cmd string) {
 	case "syntax on":
 		e.Syntax = true
 	case "trace off":
-		e.opt.Trace = false
+		e.opt.State.SetXtrace(false)
 	case "trace on":
-		e.opt.Trace = true
+		e.opt.State.SetXtrace(true)
 	case "prompt line":
 		e.closeNovice()
 	case "prompt menu":

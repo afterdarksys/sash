@@ -51,6 +51,10 @@ Operators: `+ - * / %`, `== != < <= > >=`, `&& || !`, `in`, string `+` and `*`. 
 
 Decision: there is no separate `foreach` keyword. `for x in` is the foreach, and a second spelling would be a second way to say one thing. A C-style `for (;;)` is out: `while` and ranges cover it.
 
+Loops are capped. A cap (`loop max`, `verb max`) ends the line and `try` does not catch it, so a caught cap cannot multiply. A word that expands past 8 MiB is exit 2 `type value too large`.
+
+The prompt keeps one session state: names, functions, `set` options, and `declare` flags carry from line to line. A script and `sash -c` get a fresh one. `why` reads a copy and never changes it.
+
 Loops are capped. One loop runs at most `loopmax` iterations, default 100000, settable up to 10000000 with `set loopmax`. Past the cap it is exit 2 `loop max`. A runaway loop of agent verbs is the case that matters. The cap is per loop, and nested loops multiply, so verbs also count against `verbmax` per line, default 10000, also settable within the same ceiling.
 
 Functions: `fn name(a, b) { }` as today, plus `return` values and default parameters `fn f(a, b = 1) { }`. The depth cap stays eight.

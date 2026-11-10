@@ -59,9 +59,11 @@ func Expand(src string, g grant.Grant, p parent.Parent, opt Options) (string, *E
 	if len(out) > expandMax {
 		return "", braceProb()
 	}
-	out, prob = expandGlobs(out, g, p, opt)
-	if prob != nil {
-		return "", prob
+	if opt.State == nil || !opt.State.noglob {
+		out, prob = expandGlobs(out, g, p, opt)
+		if prob != nil {
+			return "", prob
+		}
 	}
 	if len(out) > expandMax {
 		return "", braceProb()
@@ -916,7 +918,7 @@ func safePlain(s string) bool {
 	if s == "" {
 		return false
 	}
-	if strings.Contains(s, "*") || strings.Contains(s, "\\") || strings.Contains(s, "$") {
+	if strings.ContainsAny(s, "*\\$[]") {
 		return false
 	}
 	for i := 0; i < len(s); i++ {

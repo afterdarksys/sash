@@ -77,12 +77,9 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	for _, pipe := range pipes {
 		paintPipe(toks, pipe, g, &out.Spans)
 	}
-	m := &machine{
-		g:    g,
-		p:    denyParent{},
-		vars: map[string]value{},
-		fns:  map[string]*Fn{},
-	}
+	// prepare reads names and never writes them, so the session's own
+	// state is safe to show from.
+	m := newMachine(g, denyParent{}, opt.State)
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}

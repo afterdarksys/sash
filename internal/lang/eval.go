@@ -69,6 +69,9 @@ const (
 	ctlContinue
 	ctlReturn
 	ctlExit
+	// ctlHalt is a cap (loop max, verb max). It ends the line, and try
+	// does not catch it: a cap caught in a loop would multiply.
+	ctlHalt
 )
 
 // Options carries the session prefix and the history newest-last.
@@ -77,6 +80,9 @@ type Options struct {
 	Prefix  string
 	History []string
 	Trace   bool
+	// State carries names, functions, and set options from line to line.
+	// nil is a fresh State: a script, or sash -c.
+	State *State
 }
 
 // Run expands src, then parses and executes it. Toolkit names call p.
@@ -90,12 +96,15 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if err != nil {
 		return Outcome{Status: exitType, Stderr: err.Error() + "\n", Prefix: opt.Prefix}
 	}
-	m := newMachine(g, p)
+	m := newMachine(g, p, opt.State)
 	m.trace = opt.Trace
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
 	status, _ := m.runProg(prog)
+	if m.ctl == ctlHalt {
+		status = exitType
+	}
 	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: m.err.String(), Prefix: m.prefix()}
 	if m.ctl == ctlExit {
 		out.Status = m.exitCode
@@ -129,31 +138,26 @@ type machine struct {
 	retVal    *value
 	exitCode  int
 	loopDepth int
-	loopMax   int
-	verbMax   int
 	verbs     int
+	st        *State
 }
 
 var errVerbMax = fmt.Errorf("verb max")
 
 // do is the one door to the parent. It counts verbs against verbMax.
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
-	if m.verbs >= m.verbMax {
+	if m.verbs >= m.st.verbMax {
 		return parent.Result{}, errVerbMax
 	}
 	m.verbs++
 	return m.p.Do(v)
 }
 
-func newMachine(g grant.Grant, p parent.Parent) *machine {
-	return &machine{
-		g:       g,
-		p:       p,
-		vars:    map[string]value{},
-		fns:     map[string]*Fn{},
-		loopMax: loopMaxDefault,
-		verbMax: verbMaxDefault,
+func newMachine(g grant.Grant, p parent.Parent, st *State) *machine {
+	if st == nil {
+		st = NewState()
 	}
+	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st}
 }
 
 func (m *machine) prefix() string {
@@ -170,6 +174,14 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		status = st
 		if stop {
 			return status, true
+		}
+		// set -e: a failed command or let ends the script. A condition is
+		// not a command: if, while, and the left of && or || are spared.
+		if st != 0 && m.st.errexit {
+			switch s.(type) {
+			case *Chain, *Let:
+				return status, true
+			}
 		}
 	}
 	return status, false
@@ -189,6 +201,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runJump(s)
 	case *Try:
 		return m.runTry(s)
+	case *Declare:
+		return m.runDeclare(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -216,23 +230,114 @@ func (m *machine) runLet(s *Let) (int, bool) {
 				m.err.WriteString(err.Error() + "\n")
 				return exitType, true
 			}
-			m.vars[s.Name] = fromDatum(d)
-			return 0, false
+			return m.bindLet(s.Name, fromDatum(d))
 		}
 		text, err := m.expand(*s.Word)
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return exitType, true
 		}
-		m.vars[s.Name] = value{kind: valStr, s: text}
-		return 0, false
+		return m.bindLet(s.Name, value{kind: valStr, s: text})
 	}
 	st, stop, v := m.runPipe(*s.Pipe)
 	if stop {
 		return st, true
 	}
-	m.vars[s.Name] = v
+	if code, stop := m.bindLet(s.Name, v); stop {
+		return code, true
+	}
+	return st, false
+}
+
+func (m *machine) runDeclare(d *Declare) (int, bool) {
+	fail := func(err error) (int, bool) {
+		m.err.WriteString(err.Error() + "\n")
+		return exitType, true
+	}
+	if d.Name == "" {
+		v, err := m.st.declareRows("")
+		if err != nil {
+			return fail(err)
+		}
+		m.out.WriteString(render(v))
+		return 0, false
+	}
+	if strings.Contains(d.Flags, "p") {
+		v, err := m.st.declareRows(d.Name)
+		if err != nil {
+			return fail(err)
+		}
+		m.out.WriteString(render(v))
+		return 0, false
+	}
+	if err := m.st.checkBind(d.Name); err != nil {
+		return fail(err)
+	}
+	typ := ""
+	for _, f := range d.Flags {
+		t := map[rune]string{'i': "number", 'a': "list", 'A': "map"}[f]
+		if t == "" {
+			continue
+		}
+		if typ != "" && typ != t {
+			return fail(fmt.Errorf("usage declare: one of -i -a -A"))
+		}
+		typ = t
+	}
+	prevType, hadType := m.st.types[d.Name]
+	if typ != "" {
+		m.st.types[d.Name] = typ
+	}
+	restore := func() {
+		if hadType {
+			m.st.types[d.Name] = prevType
+		} else {
+			delete(m.st.types, d.Name)
+		}
+	}
+	if d.Value != nil {
+		if st, stop := m.runLet(d.Value); stop {
+			restore()
+			return st, true
+		}
+	} else if v, ok := m.vars[d.Name]; ok && typ != "" {
+		conv, err := m.st.typed(d.Name, v)
+		if err != nil {
+			restore()
+			return fail(err)
+		}
+		m.vars[d.Name] = conv
+	}
+	if strings.Contains(d.Flags, "r") {
+		if _, ok := m.vars[d.Name]; !ok {
+			restore()
+			return fail(fmt.Errorf("usage declare -r: needs a value"))
+		}
+		m.st.readonly[d.Name] = true
+	}
 	return 0, false
+}
+
+func (m *machine) bindLet(name string, v value) (int, bool) {
+	if err := m.st.assign(name, v); err != nil {
+		m.err.WriteString(err.Error() + "\n")
+		return exitType, true
+	}
+	return 0, false
+}
+
+// bindable refuses a loop, catch, or parameter name that is read-only.
+func (m *machine) bindable(names ...string) bool {
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		if err := m.st.checkBind(n); err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return false
+		}
+	}
+	return true
 }
 
 func (m *machine) runIf(s *If) (int, bool) {
@@ -314,6 +419,9 @@ func (m *machine) runFor(s *For) (int, bool) {
 	if s.Name2 != "" {
 		names = append(names, s.Name2)
 	}
+	if !m.bindable(names...) {
+		return exitType, true
+	}
 	saved := m.saveVars(names)
 	defer m.restoreVars(saved)
 	status, iter := 0, 0
@@ -370,8 +478,9 @@ func (m *machine) restoreVars(saved []savedVar) {
 // loopBody runs one iteration under loopMax. brk is a taken break.
 func (m *machine) loopBody(body *Program, iter *int) (status int, stop, brk bool) {
 	*iter++
-	if *iter > m.loopMax {
+	if *iter > m.st.loopMax {
 		m.err.WriteString("loop max\n")
+		m.ctl = ctlHalt
 		return exitType, true, false
 	}
 	m.loopDepth++
@@ -526,6 +635,9 @@ func (m *machine) runTry(t *Try) (int, bool) {
 		return st, false
 	}
 	var saved []savedVar
+	if !m.bindable(t.Name) {
+		return exitType, true
+	}
 	if t.Name != "" {
 		saved = m.saveVars([]string{t.Name})
 		e := newOmap()
@@ -760,7 +872,7 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage json"}
 		}
 		return classified{in: inAny, out: inBytes}, nil
-	case "builtin":
+	case "builtin", "set", "shopt":
 		return classified{in: inNone, out: inRows}, nil
 	case "select":
 		if len(argv) < 2 {
@@ -901,7 +1013,7 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inBytes
 	case "head", "wc":
 		return inFlex, inFlex
-	case "ps", "journal", "ls", "builtin":
+	case "ps", "journal", "ls", "builtin", "set", "shopt":
 		return inNone, inRows
 	case "unit":
 		if len(st.argv) > 1 && st.argv[1] == "restart" {
@@ -959,7 +1071,7 @@ func (m *machine) needRead(st *expStage, p string) *problem {
 }
 
 func (m *machine) traceStage(st expStage) error {
-	if !m.trace {
+	if !m.trace && !m.st.xtrace {
 		return nil
 	}
 	label := st.key
@@ -1008,8 +1120,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if err := m.traceStage(st); err != nil {
 			return 1, cur
 		}
-		if (st.key != "" || st.outPath != "") && m.verbs >= m.verbMax {
+		if (st.key != "" || st.outPath != "") && m.verbs >= m.st.verbMax {
 			m.err.WriteString("verb max\n")
+			m.ctl = ctlHalt
 			return exitType, cur
 		}
 		v, code := m.execStage(st, cur)
@@ -1049,6 +1162,9 @@ func (m *machine) callFn(st expStage) (int, bool) {
 	m.depth++
 	defer func() { m.depth-- }()
 	fn := st.call
+	if !m.bindable(fn.Params...) {
+		return exitType, true
+	}
 	saved := map[string]value{}
 	had := map[string]bool{}
 	for i, name := range fn.Params {
@@ -1105,6 +1221,13 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return runRows(asBytes(in), st.argv[1:]), 0
 	case "builtin":
 		return runBuiltin(st.argv)
+	case "set", "shopt":
+		v, err := m.st.runSet(st.argv)
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return value{}, exitType
+		}
+		return v, 0
 	case "json":
 		b, err := encodeJSON(in)
 		if err != nil {
@@ -1219,6 +1342,9 @@ func (m *machine) expand(w Word) (string, error) {
 				return "", err
 			}
 			b.WriteString(textOf(d))
+			if b.Len() > dataMaxBytes {
+				return "", fmt.Errorf("type value too large")
+			}
 			continue
 		}
 		if !part.Exp {
@@ -1234,6 +1360,9 @@ func (m *machine) expand(w Word) (string, error) {
 			return "", fmt.Errorf("type value")
 		}
 		b.WriteString(textOf(d))
+		if b.Len() > dataMaxBytes {
+			return "", fmt.Errorf("type value too large")
+		}
 	}
 	return b.String(), nil
 }
@@ -1248,6 +1377,11 @@ func (m *machine) ref(lit string) (any, error) {
 	}
 	d := toDatum(v)
 	for _, s := range steps {
+		if o, ok := d.(*omap); ok && m.st.nounset {
+			if _, has := o.get(fmt.Sprint(s)); !has {
+				return nil, fmt.Errorf("unset %s", lit)
+			}
+		}
 		var err error
 		if d, err = indexData(d, s); err != nil {
 			return nil, err
@@ -1258,7 +1392,7 @@ func (m *machine) ref(lit string) (any, error) {
 
 // evalX computes a [ ] expression against the current names.
 func (m *machine) evalX(x Expr) (any, error) {
-	return evalExpr(x, func(name string) (any, bool) {
+	return evalExprStrict(x, m.st.nounset, func(name string) (any, bool) {
 		v, ok := m.vars[name]
 		if !ok {
 			return nil, false
@@ -1546,7 +1680,8 @@ func init() {
 	for _, n := range []string{"echo", "egrep", "head", "cut", "wc", "where", "select", "rows", "json",
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
-		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin"} {
+		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
+		"set", "shopt", "declare"} {
 		reservedNames[n] = true
 	}
 }
