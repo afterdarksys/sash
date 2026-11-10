@@ -959,6 +959,9 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		if info.call != nil && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
 			return nil, &problem{exitType, "type fn"}
 		}
+		if argv[0] == "template_file" && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
+			return nil, &problem{exitType, "type template_file"}
+		}
 		if info.mover && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
 			return nil, &problem{exitType, "type " + argv[0]}
 		}
@@ -1059,6 +1062,13 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage lines"}
 		}
 		return classified{in: inBytes, out: inRows}, nil
+	case "template_file":
+		return classifyTemplateFile(argv)
+	case "template":
+		if len(argv) != 2 {
+			return classified{}, &problem{exitType, "usage template tpl"}
+		}
+		return classified{key: "file.read", in: inAny, out: inBytes}, nil
 	case "parse":
 		if prob := classifyParse(argv); prob != nil {
 			return classified{}, prob
@@ -1224,6 +1234,10 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inRows
 	case "lines", "parse":
 		return inBytes, inRows
+	case "template_file":
+		return inNone, inBytes
+	case "template":
+		return inAny, inBytes
 	case "sub":
 		return inRows, inRows
 	case "head", "wc":
@@ -1269,6 +1283,32 @@ func (m *machine) bindPaths(st *expStage) *problem {
 		return m.needRead(st, st.argv[2])
 	case "cd", "pushd":
 		return m.needRead(st, st.argv[1])
+	case "template":
+		return m.needRead(st, st.argv[1])
+	case "template_file":
+		for _, a := range st.argv[1:3] {
+			if prob := m.needRead(st, a); prob != nil {
+				return prob
+			}
+			st.paths = append(st.paths, st.path)
+		}
+		full, err := resolvePath(m.prefix(), st.argv[3])
+		if err != nil {
+			return &problem{exitType, "prefix_unset"}
+		}
+		if len(st.argv) == 5 {
+			if !m.g.AllowsRead(full) {
+				return &problem{exitDenied, "denied file.read"}
+			}
+			st.paths = append(st.paths, full)
+			return nil
+		}
+		// out is written by the > door in execPrepared.
+		if !m.g.AllowsWrite(full) {
+			return &problem{exitDenied, "denied file.write"}
+		}
+		st.paths = append(st.paths, full)
+		st.outPath = full
 	}
 	return nil
 }
@@ -1440,6 +1480,10 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return runRows(asBytes(in), nil), 0
 	case "parse":
 		return m.runParse(st.argv, in)
+	case "template_file":
+		return m.runTemplateFile(st)
+	case "template":
+		return m.runTemplate(st, in)
 	case "sub":
 		if in.kind != valRows {
 			m.err.WriteString("type sub\n")
@@ -1919,7 +1963,7 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with"} {
+		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file"} {
 		reservedNames[n] = true
 	}
 }
