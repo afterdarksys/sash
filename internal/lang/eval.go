@@ -1012,10 +1012,16 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		var rowX Expr
 		var argv []string
 		var err error
-		if name := plainFirst(st); (name == "filter" || name == "each") && len(st.Argv) == 2 && exprOf(st.Argv[1]) != nil {
-			// The [ ] runs per row with $it, not now.
-			rowX = exprOf(st.Argv[1])
-			argv = []string{name, exprMark}
+		name := plainFirst(st)
+		last := len(st.Argv) - 1
+		if (name == "filter" || name == "each" || name == "check" || name == "log") && last >= 1 && exprOf(st.Argv[last]) != nil {
+			// The [ ] keeps its value: per row for filter and each, a
+			// datum for check and log.
+			rowX = exprOf(st.Argv[last])
+			if argv, err = m.expandArgv(st.Argv[:last]); err != nil {
+				return nil, &problem{exitType, err.Error()}
+			}
+			argv = append(argv, exprMark)
 		} else if argv, err = m.expandArgv(st.Argv); err != nil {
 			return nil, &problem{exitType, err.Error()}
 		}
@@ -1181,6 +1187,25 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage lines"}
 		}
 		return classified{in: inBytes, out: inRows}, nil
+	case "check":
+		if len(argv) != 3 || argv[2] != exprMark || len(argv[1]) > 256 {
+			return classified{}, &problem{exitType, "usage check \"name\" [ expr ]"}
+		}
+		return classified{in: inNone, out: inBytes}, nil
+	case "checks":
+		if len(argv) != 1 {
+			return classified{}, &problem{exitType, "usage checks"}
+		}
+		return classified{in: inNone, out: inRows}, nil
+	case "log":
+		n := len(argv)
+		if argv[n-1] == exprMark {
+			n--
+		}
+		if n != 3 || !logLevels[argv[1]] {
+			return classified{}, &problem{exitType, "usage log debug|info|warn|error msg [ {map} ]"}
+		}
+		return classified{in: inNone, out: inBytes}, nil
 	case "template_file":
 		return classifyTemplateFile(argv)
 	case "template":
@@ -1353,8 +1378,10 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inRows
 	case "lines", "parse":
 		return inBytes, inRows
-	case "template_file":
+	case "template_file", "check", "log":
 		return inNone, inBytes
+	case "checks":
+		return inNone, inRows
 	case "template":
 		return inAny, inBytes
 	case "sub":
@@ -1605,6 +1632,12 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return m.runParse(st.argv, in)
 	case "template_file":
 		return m.runTemplateFile(st)
+	case "check":
+		return m.runCheck(st)
+	case "checks":
+		return value{kind: valRows, rows: append([]parent.Row(nil), m.st.checks...), cols: []string{"check", "result"}}, 0
+	case "log":
+		return m.runLog(st)
 	case "template":
 		return m.runTemplate(st, in)
 	case "sub":
@@ -2087,7 +2120,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout"} {
+		"retry", "timeout", "check", "checks", "log"} {
 		reservedNames[n] = true
 	}
 }

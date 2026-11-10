@@ -1,6 +1,10 @@
 package lang
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"regexp"
@@ -71,7 +75,48 @@ func init() {
 		"has":     {2, 2, fnHas},
 		"get":     {3, 3, fnGet},
 		"merge":   {2, 2, fnMerge},
+		"sha256":  {1, 1, encFn(func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) })},
+		"base64":  {1, 1, encFn(func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) })},
+		"hex":     {1, 1, encFn(func(s string) string { return hex.EncodeToString([]byte(s)) })},
+		"unbase64": {1, 1, func(a []any, c *evalCtx) (any, error) {
+			s, ok := a[0].(string)
+			if !ok {
+				return nil, fnErr("unbase64", a[0])
+			}
+			b, err := base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				return nil, fmt.Errorf("type unbase64")
+			}
+			return charged(c, string(b))
+		}},
+		"uuid": {0, 0, fnUUID},
 	}
+}
+
+// encFn wraps a string encoder, charging its output.
+func encFn(f func(string) string) func([]any, *evalCtx) (any, error) {
+	return func(a []any, c *evalCtx) (any, error) {
+		s, ok := a[0].(string)
+		if !ok {
+			return nil, fnErr("text", a[0])
+		}
+		if err := charge(c, 2*len(s)+64); err != nil {
+			return nil, err
+		}
+		return f(s), nil
+	}
+}
+
+// fnUUID is a version 4 UUID from crypto/rand.
+func fnUUID(_ []any, _ *evalCtx) (any, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, fmt.Errorf("uuid")
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	h := hex.EncodeToString(b[:])
+	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
 }
 
 func evalCall(x exprCall, lookup func(string) (any, bool), c *evalCtx) (any, error) {

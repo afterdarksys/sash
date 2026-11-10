@@ -70,7 +70,7 @@ Durations are Go durations: `500ms`, `2s`, `5m`, `1h`.
 
 Expression functions: `sha256(s)` (hex), `base64(s)`, `unbase64(s)`, `hex(s)`, `uuid()` (crypto/rand, v4). Pure apart from `uuid`'s randomness.
 
-`log level msg [key=value]...`: one line on stderr, `level` one of `debug`, `info`, `warn`, `error`, with an RFC 3339 time. A secret value logs as `***`.
+`log level msg [ {fields} ]`: one line on stderr, `level` one of `debug`, `info`, `warn`, `error`, with an RFC 3339 time and the fields of an optional map in key order. (Amended: `key=value` cannot be a word, since `=` is a token.) Control bytes become spaces. A secret value logs as `***`.
 
 ## 7. Jobs and other agent work (contract, not built)
 

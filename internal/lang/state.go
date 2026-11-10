@@ -29,6 +29,8 @@ type State struct {
 	// --plan) keeps a script from turning it off.
 	plan       bool
 	planLocked bool
+	// checks are the check rows of this session, for checks.
+	checks []parent.Row
 }
 
 // LockPlan turns plan mode on for good: sash --plan.
