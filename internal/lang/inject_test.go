@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,5 +127,78 @@ func TestExpressionAfterMultilineString(t *testing.T) {
 	}
 	if out := Run("echo \"x\n[ 1 +\" ]", injectGrant(), &listParent{}, Options{}); strings.Contains(out.Stdout, "x") && out.Status == 0 && !strings.Contains(out.Stdout, "[ 1 +") {
 		t.Fatalf("a [ inside a string became an expression: %+v", out)
+	}
+}
+
+// Review: # is a comment only at a word boundary in the parser and the
+// expanders alike, so a mid-word # cannot change quote parity.
+func TestCommentRuleAgrees(t *testing.T) {
+	p := hostileDir(";ps;")
+	out := Run("echo x# it's\necho '*'", injectGrant(), p, Options{Prefix: "/var/log"})
+	if n := psCalls(p); n != 0 {
+		t.Fatalf("ran ps %d times: %+v", n, out)
+	}
+	for src, want := range map[string]string{
+		"echo x#y":      "x#y",
+		"echo a # note": "a",
+		"echo a;# note": "a",
+		"echo \"a\"#b":  "a #b",
+	} {
+		got := Run(src, injectGrant(), &listParent{}, Options{})
+		if got.Status != 0 || strings.TrimSuffix(got.Stdout, "\n") != want {
+			t.Errorf("%q: %+v want %q", src, got, want)
+		}
+	}
+	if q, ok := quoteArg("/var/log/a#b"); !ok || q != "'/var/log/a#b'" {
+		t.Fatalf("# names are quoted: %q", q)
+	}
+}
+
+func TestAmplificationsAreCharged(t *testing.T) {
+	st := NewState()
+	cols := make([]string, 2000)
+	for i := range cols {
+		cols[i] = "c" + strconv.Itoa(i)
+	}
+	st.vars["wide"] = value{kind: valStr, s: strings.Join(cols, ",") + strings.Repeat("\n1", 20000) + "\n"}
+	for src, msg := range map[string]string{
+		`echo [ sub(repeat("x", 1000000), ".+", "` + strings.Repeat("$0", 100) + `") ]`: "too large",
+		`echo [ sub(repeat("x", 1000000), "x*?", "yyyyyyyyyy") ]`:                       "too large",
+		`echo [ join([` + strings.Repeat(`repeat("x", 100000), `, 200) + `"x"], "") ]`:  "too large",
+		`echo [ split(repeat("x", 4000000), "") ]`:                                      "too large",
+		`echo [ str([` + strings.Repeat(`repeat("x", 100000), `, 200) + `1]) ]`:         "too large",
+	} {
+		out := Run(src, exprGrant(), &rowsParent{}, Options{})
+		if out.Status != exitType || !strings.Contains(out.Stderr, msg) {
+			t.Errorf("%.60s: %+v", src, out.Stderr)
+		}
+	}
+	if out := Run(`echo $wide | from csv`, exprGrant(), &rowsParent{}, Options{State: st}); out.Status != exitType || !strings.Contains(out.Stderr, "csv too large") {
+		t.Errorf("wide header: %+v", out.Stderr)
+	}
+	st.vars["j"] = value{kind: valStr, s: "[" + strings.Repeat(`{"a":1},`, 299) + `{"a":1}]`}
+	out := Run(`echo $j | from json |> each [ {"p": repeat("x", 4000000)} ]`, exprGrant(), &rowsParent{}, Options{State: st})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "too large") {
+		t.Errorf("each total: %+v", out.Stderr)
+	}
+	st.vars["r"] = value{kind: valStr, s: "[" + strings.Repeat(`{"a":"`+strings.Repeat("x", 100000)+`"},`, 49) + `{"a":"x"}]`}
+	out = Run(`echo $r | from json |> sub a 'x' with '$0$0$0$0'`, exprGrant(), &rowsParent{}, Options{State: st})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "too large") {
+		t.Errorf("row sub total: %+v", out.Stderr)
+	}
+}
+
+func TestCSVSafeLookalikes(t *testing.T) {
+	for in, want := range map[string]string{
+		" =1+1": "' =1+1",
+		" =1":   "' =1",
+		"＝1+1":  "'＝1+1",
+		"-5":    "-5",
+		" 7":    " 7",
+		"plain": "plain",
+	} {
+		if got := csvSafe(in); got != want {
+			t.Errorf("csvSafe(%q) = %q want %q", in, got, want)
+		}
 	}
 }

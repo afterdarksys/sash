@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Expression functions (language v3 contract). Pure and in process: no
@@ -47,7 +48,12 @@ func init() {
 		"sub":     {3, 3, fnSub},
 		"int":     {1, 1, fnInt},
 		"float":   {1, 1, fnFloat},
-		"str":     {1, 1, func(a []any, c *evalCtx) (any, error) { return charged(c, textOf(a[0])) }},
+		"str": {1, 1, func(a []any, c *evalCtx) (any, error) {
+			if err := charge(c, dataSize(a[0], 0)); err != nil {
+				return nil, err
+			}
+			return textOf(a[0]), nil
+		}},
 		"bool":    {1, 1, func(a []any, _ *evalCtx) (any, error) { return truthy(a[0]), nil }},
 		"type":    {1, 1, func(a []any, _ *evalCtx) (any, error) { return typeName(a[0]), nil }},
 		"sum":     {1, 1, fnSum},
@@ -132,10 +138,14 @@ func fnSplit(a []any, c *evalCtx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	parts := strings.Split(s, sep)
-	if err := charge(c, len(s)+16*len(parts)); err != nil {
+	n := strings.Count(s, sep) + 1
+	if sep == "" {
+		n = utf8.RuneCountInString(s)
+	}
+	if err := charge(c, len(s)+16*n); err != nil {
 		return nil, err
 	}
+	parts := strings.Split(s, sep)
 	out := make([]any, len(parts))
 	for i, p := range parts {
 		out[i] = p
@@ -149,14 +159,13 @@ func fnJoin(a []any, c *evalCtx) (any, error) {
 	if !ok1 || !ok2 {
 		return nil, fnErr("join", a...)
 	}
+	// Charge the rendered size before rendering anything.
+	if err := charge(c, dataSize(l, 0)+len(sep)*len(l)); err != nil {
+		return nil, err
+	}
 	parts := make([]string, len(l))
-	n := 0
 	for i, e := range l {
 		parts[i] = textOf(e)
-		n += len(parts[i]) + len(sep)
-	}
-	if err := charge(c, n); err != nil {
-		return nil, err
 	}
 	return strings.Join(parts, sep), nil
 }
@@ -323,11 +332,30 @@ func fnSub(a []any, c *evalCtx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := len(re.FindAllStringIndex(s, -1))
-	if err := charge(c, len(s)+n*(len(repl)+64)); err != nil {
+	if err := charge(c, subBound(re, s, repl)); err != nil {
 		return nil, err
 	}
 	return re.ReplaceAllString(s, repl), nil
+}
+
+// subMatchCount is how many matches subBound counts before it assumes the
+// worst, so counting itself stays bounded.
+const subMatchCount = 100000
+
+// subBound is an upper bound on ReplaceAllString's result, computed before
+// it runs: the input, plus repl per match, plus each $ reference expanding
+// to at most every byte of the input (matches do not overlap).
+func subBound(re *regexp.Regexp, s, repl string) int {
+	n := len(re.FindAllStringIndex(s, subMatchCount))
+	if n == subMatchCount {
+		n = len(s) + 1
+	}
+	refs := strings.Count(repl, "$")
+	bound := len(s) + n*len(repl) + refs*len(s)
+	if bound < 0 {
+		return dataMaxBytes + 1
+	}
+	return bound
 }
 
 func fnInt(a []any, _ *evalCtx) (any, error) {

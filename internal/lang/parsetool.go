@@ -162,18 +162,17 @@ func (m *machine) runSub(argv []string, in value) (value, int) {
 	}
 	col, repl := argv[1], argv[4]
 	out := make([]parent.Row, len(in.rows))
-	total := 0
+	c := &evalCtx{budget: dataMaxBytes}
 	for i, r := range in.rows {
+		if err := charge(c, subBound(re, r[col], repl)); err != nil {
+			m.err.WriteString("type sub too large\n")
+			return value{}, exitType
+		}
 		nr := parent.Row{}
 		for k, v := range r {
 			nr[k] = v
 		}
 		nr[col] = re.ReplaceAllString(r[col], repl)
-		total += len(nr[col])
-		if total > dataMaxBytes {
-			m.err.WriteString("type sub too large\n")
-			return value{}, exitType
-		}
 		out[i] = nr
 	}
 	return value{kind: valRows, rows: out, cols: in.cols}, 0

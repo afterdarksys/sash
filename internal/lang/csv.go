@@ -8,6 +8,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/afterdarksys/sash/internal/parent"
 )
@@ -33,9 +35,14 @@ func decodeCSV(text string, sep rune, header bool) (value, error) {
 		if err != nil {
 			return value{}, fmt.Errorf("csv syntax")
 		}
-		size := 64
+		// A short row is padded to the header, so charge the header width.
+		width := len(rec)
+		if len(cols) > width {
+			width = len(cols)
+		}
+		size := 64 + 32*width
 		for _, f := range rec {
-			size += 32 + len(f)
+			size += len(f)
 		}
 		if err := charge(c, size); err != nil {
 			return value{}, fmt.Errorf("csv too large")
@@ -76,8 +83,15 @@ func decodeCSV(text string, sep rune, header bool) (value, error) {
 
 // csvSafe keeps a spreadsheet from running a cell (CSV injection). A cell
 // that is a plain number is left alone: it cannot be a formula.
+// Leading spaces are skipped first, since some importers trim them, and
+// the fullwidth forms count too, since some normalize them.
 func csvSafe(s string) string {
-	if s == "" || strings.IndexAny(s[:1], "=+-@\t\r") < 0 {
+	t := strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) && r != '\t' && r != '\r' })
+	if t == "" {
+		return s
+	}
+	r, _ := utf8.DecodeRuneInString(t)
+	if !strings.ContainsRune("=+-@\t\r\uFF1D\uFF0B\uFF0D\uFF20", r) {
 		return s
 	}
 	if _, ok := number(s); ok {

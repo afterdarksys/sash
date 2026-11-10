@@ -85,6 +85,17 @@ func lex(src string) ([]token, error) {
 			i++
 			continue
 		case '#':
+			// Same rule as the expanders (commentAt): # starts a comment
+			// only at a word boundary. x#y is one word.
+			if i > 0 && !histBound(src[i-1]) {
+				w, n, err := lexBare(src[i:])
+				if err != nil {
+					return nil, err
+				}
+				emit(&out, kWord, w, i, n)
+				i += n
+				continue
+			}
 			for i < len(src) && src[i] != '\n' {
 				i++
 			}
@@ -278,7 +289,7 @@ func lexBare(src string) (Word, int, error) {
 
 func bareStop(c byte) bool {
 	switch c {
-	case ' ', '\t', '\r', '\n', '#', ';', '{', '}', '(', ')', '|', '&', '>', '<', '=', '!', '\'', '"', ',':
+	case ' ', '\t', '\r', '\n', ';', '{', '}', '(', ')', '|', '&', '>', '<', '=', '!', '\'', '"', ',':
 		return true
 	default:
 		return false

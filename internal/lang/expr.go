@@ -69,6 +69,17 @@ func newExprSpans(src string) exprSpans {
 		switch src[j] {
 		case '\n':
 			stack = stack[:0]
+		case '#':
+			// A comment, by the parser's and the expanders' rule, ends the
+			// line for every bracket open before it.
+			if j == 0 || histBound(src[j-1]) {
+				stack = stack[:0]
+				nl := strings.IndexByte(src[j:], '\n')
+				if nl < 0 {
+					return ix
+				}
+				j += nl - 1
+			}
 		case '[':
 			stack = append(stack, j)
 		case ']':
@@ -608,6 +619,19 @@ func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
 
 // evalExprStrict is evalExpr; strict (set -u) makes a missing map key an
 // error instead of null.
+// evalExprCtx evaluates against a budget shared by the caller, so a stage
+// that evaluates per row spends one budget across all its rows.
+func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, error) {
+	d, err := evalNode(x, lookup, c)
+	if err != nil {
+		return nil, err
+	}
+	if err := charge(c, dataSize(d, 0)); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
 func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
 	c := &evalCtx{budget: dataMaxBytes, strict: strict}
 	d, err := evalNode(x, lookup, c)

@@ -918,7 +918,7 @@ func safePlain(s string) bool {
 	if s == "" {
 		return false
 	}
-	if strings.ContainsAny(s, "*\\$[]") {
+	if strings.ContainsAny(s, "*\\$[]#") {
 		return false
 	}
 	for i := 0; i < len(s); i++ {

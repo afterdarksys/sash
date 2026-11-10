@@ -254,9 +254,11 @@ func (m *machine) perRow(st expStage, rows []parent.Row, cols []string) (value, 
 	}
 	var out []parent.Row
 	scalar, mapped := false, false
+	// One budget for the whole stage: each row's result is charged to it.
+	c := &evalCtx{budget: dataMaxBytes, strict: m.st.nounset}
 	for _, r := range rows {
 		it := rowDatum(r, cols)
-		d, err := evalExprStrict(st.x, m.st.nounset, func(name string) (any, bool) {
+		d, err := evalExprCtx(st.x, c, func(name string) (any, bool) {
 			if name == "it" {
 				return it, true
 			}
