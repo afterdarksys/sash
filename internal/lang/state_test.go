@@ -153,3 +153,46 @@ func TestCapsHoldAgainstLoopsAndTry(t *testing.T) {
 		t.Fatalf("name text reached the expression parser: %+v", out)
 	}
 }
+
+// Review fixes: a scope cannot make its name read-only or typed, typed
+// names cannot be scope-bound, and the TOML pre-check counts every bracket.
+func TestScopesAndReadonly(t *testing.T) {
+	for src, msg := range map[string]string{
+		"let x = a; for x in [ [1] ] { declare -r x = 5 }": "loop, catch, or parameter",
+		"try { nosuch } catch e { declare -r e = 1 }":      "loop, catch, or parameter",
+		"fn f(p) { declare -i p }\nf 1":                    "loop, catch, or parameter",
+		"declare -i n = 1; for n in [ [\"x\"] ] { echo }":  "typed n",
+		"declare -A m = [ {} ]\nfn f(m) { echo }\nf 1":     "typed m",
+	} {
+		out := runIn(NewState(), src)
+		if out.Status != exitType || !strings.Contains(out.Stderr, msg) {
+			t.Errorf("%q: %+v want %q", src, out, msg)
+		}
+	}
+	st := NewState()
+	runIn(st, "let x = a; for y in [ [1] ] { declare -r x = 5 }")
+	if out := runIn(st, "echo $x; let x = b"); out.Stdout != "5\n" || out.Status != exitType {
+		t.Fatalf("declare -r of an outer name inside a loop holds: %+v", out)
+	}
+}
+
+func TestFormatReviewFixes(t *testing.T) {
+	crafted := "a = \"\"\"\n" + strings.Repeat("]", 20000) + "\n\"\"\"\nb = " + strings.Repeat("[", 20000) + "1" + strings.Repeat("]", 20000) + "\n"
+	if out := yamlRun(t, crafted, "from toml"); out.Status != exitType || !strings.Contains(out.Stderr, "toml too deep") {
+		t.Fatalf("toml brackets in a string: %+v", out)
+	}
+	big := strings.Repeat("a", (1<<20)+1)
+	for _, f := range []string{"yaml", "toml"} {
+		if out := yamlRun(t, big, "from "+f); out.Status != exitType || !strings.Contains(out.Stderr, f+" too large") {
+			t.Errorf("%s input cap: %+v", f, out.Stderr)
+		}
+	}
+	for doc, msg := range map[string]string{"a: !evil [1]\n": "yaml tag !evil", "a: !evil {b: 1}\n": "yaml tag !evil"} {
+		if out := yamlRun(t, doc, "from yaml"); out.Status != exitType || !strings.Contains(out.Stderr, msg) {
+			t.Errorf("%q: %+v", doc, out)
+		}
+	}
+	if _, err := decodeJSON([]byte("[" + strings.Repeat(`"xxxxxxxxxxxxxxxx",`, 300000) + "1]")); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("json streaming budget: %v", err)
+	}
+}

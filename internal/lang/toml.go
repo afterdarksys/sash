@@ -31,36 +31,19 @@ func decodeTOML(b []byte) (any, error) {
 	return tomlValue(raw, "", order, 0)
 }
 
-// tomlTooDeep counts [ and { outside strings.
+// tomlBracketMax bounds every [ and { in the input, in strings or not.
+// Nesting cannot pass the total, so the parser's recursion stays shallow
+// whatever the strings hold. A file with more is refused: fail closed.
+const tomlBracketMax = 10000
+
 func tomlTooDeep(b []byte) bool {
-	depth := 0
-	var q byte
-	for i := 0; i < len(b); i++ {
-		c := b[i]
-		if q != 0 {
-			if q == '"' && c == '\\' {
-				i++
-				continue
-			}
-			if c == q || c == '\n' {
-				q = 0
-			}
-			continue
-		}
-		switch c {
-		case '"', '\'':
-			q = c
-		case '#':
-			for i < len(b) && b[i] != '\n' {
-				i++
-			}
-		case '[', '{':
-			depth++
-			if depth > exprDepthMax {
+	n := 0
+	for _, c := range b {
+		if c == '[' || c == '{' {
+			n++
+			if n > tomlBracketMax {
 				return true
 			}
-		case ']', '}':
-			depth--
 		}
 	}
 	return false

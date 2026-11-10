@@ -140,6 +140,10 @@ type machine struct {
 	loopDepth int
 	verbs     int
 	st        *State
+	// scoped counts the loop, catch, and parameter bindings in force. A
+	// scope restores its name on the way out, so declare -r there would be
+	// undone; it is refused.
+	scoped map[string]int
 }
 
 var errVerbMax = fmt.Errorf("verb max")
@@ -157,7 +161,7 @@ func newMachine(g grant.Grant, p parent.Parent, st *State) *machine {
 	if st == nil {
 		st = NewState()
 	}
-	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st}
+	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}}
 }
 
 func (m *machine) prefix() string {
@@ -274,6 +278,9 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 	}
 	if err := m.st.checkBind(d.Name); err != nil {
 		return fail(err)
+	}
+	if m.scoped[d.Name] > 0 && strings.ContainsAny(d.Flags, "riaA") {
+		return fail(fmt.Errorf("usage declare: %s is a loop, catch, or parameter name here", d.Name))
 	}
 	typ := ""
 	for _, f := range d.Flags {
@@ -392,6 +399,12 @@ func (m *machine) bindable(names ...string) bool {
 		}
 		if err := m.st.checkBind(n); err != nil {
 			m.err.WriteString(err.Error() + "\n")
+			return false
+		}
+		// A scope binds without the type check, so a typed name is not
+		// one a scope may take.
+		if _, typed := m.st.types[n]; typed {
+			m.err.WriteString("typed " + n + "\n")
 			return false
 		}
 	}
@@ -535,6 +548,7 @@ type savedVar struct {
 func (m *machine) saveVars(names []string) []savedVar {
 	out := make([]savedVar, len(names))
 	for i, n := range names {
+		m.scoped[n]++
 		v, had := m.vars[n]
 		out[i] = savedVar{n, v, had}
 	}
@@ -543,6 +557,9 @@ func (m *machine) saveVars(names []string) []savedVar {
 
 func (m *machine) restoreVars(saved []savedVar) {
 	for _, s := range saved {
+		if m.scoped[s.name]--; m.scoped[s.name] <= 0 {
+			delete(m.scoped, s.name)
+		}
 		if s.had {
 			m.vars[s.name] = s.v
 		} else {
@@ -1261,13 +1278,8 @@ func (m *machine) callFn(st expStage) (int, bool) {
 	if !m.bindable(fn.Params...) {
 		return exitType, true
 	}
-	saved := map[string]value{}
-	had := map[string]bool{}
+	saved := m.saveVars(fn.Params)
 	for i, name := range fn.Params {
-		if old, ok := m.vars[name]; ok {
-			saved[name] = old
-			had[name] = true
-		}
 		m.vars[name] = value{kind: valStr, s: st.argv[i+1]}
 	}
 	// A loop outside the call is not the call's: break there is usage.
@@ -1281,13 +1293,7 @@ func (m *machine) callFn(st expStage) (int, bool) {
 		stop = false
 		status = 0
 	}
-	for _, name := range fn.Params {
-		if had[name] {
-			m.vars[name] = saved[name]
-		} else {
-			delete(m.vars, name)
-		}
-	}
+	m.restoreVars(saved)
 	return status, stop
 }
 

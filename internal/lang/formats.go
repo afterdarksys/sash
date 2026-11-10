@@ -16,11 +16,21 @@ import (
 // Input is capped at the 8 MiB value bound and nesting at depth 64. A
 // decoded string is data: nothing here parses it as sash source.
 
+// formatInputMax caps YAML and TOML input.
+const formatInputMax = 1 << 20
+
 var formatNames = map[string]bool{"json": true, "yaml": true, "toml": true}
 
 func runFrom(format string, in value) (value, error) {
 	text := asBytes(in)
-	if len(text) > dataMaxBytes {
+	// YAML and TOML parsers build their whole tree first, at many times
+	// the input, so their input is capped lower than JSON's, which is
+	// charged as it streams.
+	limit := dataMaxBytes
+	if format != "json" {
+		limit = formatInputMax
+	}
+	if len(text) > limit {
 		return value{}, fmt.Errorf("%s too large", format)
 	}
 	var d any
@@ -68,7 +78,7 @@ func runTo(format string, in value) (value, error) {
 func decodeJSON(b []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
-	d, err := jsonValue(dec, 0)
+	d, err := jsonValue(dec, 0, &evalCtx{budget: dataMaxBytes})
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +88,7 @@ func decodeJSON(b []byte) (any, error) {
 	return d, nil
 }
 
-func jsonValue(dec *json.Decoder, depth int) (any, error) {
+func jsonValue(dec *json.Decoder, depth int, c *evalCtx) (any, error) {
 	if depth > exprDepthMax {
 		return nil, fmt.Errorf("json too deep")
 	}
@@ -86,13 +96,20 @@ func jsonValue(dec *json.Decoder, depth int) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("json %s", jsonErr(err))
 	}
+	size := 24
+	if s, ok := tok.(string); ok {
+		size += len(s)
+	}
+	if err := charge(c, size); err != nil {
+		return nil, fmt.Errorf("json too large")
+	}
 	switch t := tok.(type) {
 	case json.Delim:
 		switch t {
 		case '[':
 			list := []any{}
 			for dec.More() {
-				v, err := jsonValue(dec, depth+1)
+				v, err := jsonValue(dec, depth+1, c)
 				if err != nil {
 					return nil, err
 				}
@@ -113,7 +130,7 @@ func jsonValue(dec *json.Decoder, depth int) (any, error) {
 				if !ok {
 					return nil, fmt.Errorf("json key")
 				}
-				v, err := jsonValue(dec, depth+1)
+				v, err := jsonValue(dec, depth+1, c)
 				if err != nil {
 					return nil, err
 				}

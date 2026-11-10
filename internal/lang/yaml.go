@@ -64,6 +64,9 @@ func yamlNode(n *yaml.Node, depth int, c *evalCtx) (any, error) {
 		}
 		return yamlNode(n.Alias, depth+1, c)
 	case yaml.SequenceNode:
+		if n.ShortTag() != "!!seq" {
+			return nil, fmt.Errorf("yaml tag %s", safeTag(n.ShortTag()))
+		}
 		out := make([]any, 0, len(n.Content))
 		for _, e := range n.Content {
 			d, err := yamlNode(e, depth+1, c)
@@ -74,6 +77,9 @@ func yamlNode(n *yaml.Node, depth int, c *evalCtx) (any, error) {
 		}
 		return out, nil
 	case yaml.MappingNode:
+		if n.ShortTag() != "!!map" {
+			return nil, fmt.Errorf("yaml tag %s", safeTag(n.ShortTag()))
+		}
 		o := newOmap()
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k := n.Content[i]
