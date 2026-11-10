@@ -152,12 +152,25 @@ type machine struct {
 
 var errVerbMax = fmt.Errorf("verb max")
 
-// do is the one door to the parent. It counts verbs against verbMax.
+// mutating names the verbs plan mode stops.
+var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true}
+
+// do is the one door to the parent. It counts verbs against verbMax, and in
+// plan mode a mutating verb stops here: it prints what it would do and
+// succeeds without a call.
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	if m.verbs >= m.st.verbMax {
 		return parent.Result{}, errVerbMax
 	}
 	m.verbs++
+	if m.st.plan && mutating[v.Key] {
+		what := strings.Join(v.Argv, " ")
+		if v.Key == "file.write" {
+			what = fmt.Sprintf("write %s (%d bytes)", v.Path, len(v.Body))
+		}
+		m.err.WriteString("plan: would " + what + "\n")
+		return parent.Result{Kind: parent.KindBytes}, nil
+	}
 	return m.p.Do(v)
 }
 

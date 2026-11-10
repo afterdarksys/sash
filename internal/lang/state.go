@@ -25,7 +25,14 @@ type State struct {
 	noglob  bool
 	loopMax int
 	verbMax int
+	// plan stops mutating verbs at the parent door; planLocked (sash
+	// --plan) keeps a script from turning it off.
+	plan       bool
+	planLocked bool
 }
+
+// LockPlan turns plan mode on for good: sash --plan.
+func (s *State) LockPlan() { s.plan, s.planLocked = true, true }
 
 // NewState returns the defaults: errexit, nounset, xtrace, and noglob off,
 // pipefail on, loopmax 100000, verbmax 10000.
@@ -82,6 +89,7 @@ var setOptions = []setOption{
 	{"nounset", 'u', "an unset name or missing key is an error"},
 	{"xtrace", 'x', "print each stage key before it runs (trace)"},
 	{"noglob", 'f', "* stays a literal word"},
+	{"plan", 0, "mutating verbs print would and do not run"},
 	{"pipefail", 0, "a pipeline fails when a stage fails (always on)"},
 	{"loopmax", 0, "iterations one loop may run"},
 	{"verbmax", 0, "agent verbs one line may call"},
@@ -97,6 +105,8 @@ func (s *State) flag(name string) *bool {
 		return &s.xtrace
 	case "noglob":
 		return &s.noglob
+	case "plan":
+		return &s.plan
 	}
 	return nil
 }
@@ -211,6 +221,9 @@ func (s *State) setLong(name string, on bool) error {
 	f := s.flag(name)
 	if f == nil {
 		return fmt.Errorf("usage set: no option %s", name)
+	}
+	if name == "plan" && !on && s.planLocked {
+		return fmt.Errorf("usage set: plan is locked on for this run")
 	}
 	*f = on
 	return nil

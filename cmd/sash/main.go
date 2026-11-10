@@ -36,7 +36,18 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	// --plan runs a script with mutating verbs stopped, locked on.
+	st := lang.NewState()
+	plan := len(args) > 0 && args[0] == "--plan"
+	if plan {
+		args = args[1:]
+		st.LockPlan()
+	}
 	if len(args) == 0 && line.IsTerm(os.Stdin) {
+		if plan {
+			fmt.Fprintln(os.Stderr, "usage: sash --plan needs a script")
+			os.Exit(2)
+		}
 		os.Exit(line.Loop(os.Stdin, os.Stdout, os.Stderr, g, p))
 	}
 	src, err := readSource(args)
@@ -44,7 +55,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(langExit(2))
 	}
-	got := lang.Run(src, g, p, lang.Options{})
+	got := lang.Run(src, g, p, lang.Options{State: st})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	os.Exit(langExit(got.Status))
@@ -68,7 +79,7 @@ func readSource(args []string) (string, error) {
 		}
 		return string(b), nil
 	}
-	return "", fmt.Errorf("usage: sash [-c script | file]")
+	return "", fmt.Errorf("usage: sash [--session] [--plan] [-c script | file]")
 }
 
 func langExit(code int) int {

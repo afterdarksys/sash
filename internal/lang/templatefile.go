@@ -193,17 +193,21 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 	if err != nil {
 		return fail(err.Error())
 	}
-	if len(st.argv) == 5 {
-		// --check: diff the current file against the render.
+	if len(st.argv) == 5 || m.st.plan {
+		// --check, or plan mode: diff the current file against the render.
+		// In plan mode the write still goes to the door, which prints it.
 		cur, rerr := m.readFile(st.paths[2])
 		if rerr != nil {
 			cur = ""
 		}
 		d, same := lineDiff(cur, out)
-		if same {
-			return value{kind: valBytes}, 0
+		if len(st.argv) == 5 {
+			if same {
+				return value{kind: valBytes}, 0
+			}
+			return value{kind: valBytes, b: []byte(d)}, 1
 		}
-		return value{kind: valBytes, b: []byte(d)}, 1
+		m.err.WriteString(d)
 	}
 	return value{kind: valBytes, b: []byte(out)}, 0
 }
