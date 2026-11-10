@@ -159,7 +159,7 @@ Commit 7 expands `!!`, `!$`, braces, and unquoted `*` / `**`. The lexer still tr
 
 ## Where work runs
 
-In sash, ungated, because they only transform values already in the process: `echo`, `egrep`, `head`, `cut`, `wc`, `where`, `select`, `rows`, `json`, `let`, `if`, `for`, `fn`, `dirs`, `popd`.
+In sash, ungated, because they only transform values already in the process: `echo`, `egrep`, `head`, `cut`, `wc`, `where`, `select`, `rows`, `json`, `from` and `to` (json, yaml, toml), `builtin`, `set`, `shopt`, `let`, `declare`, `if`, `for`, `while`, `do`, `try`, `fn`, `return`, `exit`, `dirs`, `popd`, and `[ ]` expressions. `use` reads its file through `file.read`. The language v2 contract is `2026-11-10-sash-language-v2.md`; `builtin` lists the whole closed table.
 
 The local agent fulfills these, each behind its key. The verb shape matches the systemapi sys and file channels. Fulfillment is local. There is no control-plane HTTP call per command.
 

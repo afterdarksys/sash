@@ -1,6 +1,6 @@
 # sash language v2
 
-Status: decisions confirmed by Ryan 2026-11-10: expressions inside `[ ]`, `for x in` only, pinned YAML and TOML modules, loop and verb caps kept.
+Status: steps 1–6 landed on sash `main` (cb50df4 through 296b93b). Step 7, `journal` as rows, is its own contract. Decisions confirmed by Ryan 2026-11-10: expressions inside `[ ]`, `for x in` only, pinned YAML and TOML modules, loop and verb caps kept.
 
 Ryan chose on 2026-11-10 to grow the sash language rather than embed Starlark. Goal: scripting past fish and bash, with the rules that already hold. Every verb still goes through the grant check, the agent re-check, and the audit row. Values stay values. Nothing here runs a host binary, opens a path, or changes the grant.
 
@@ -138,3 +138,10 @@ This list and the Tab table come from one Go table, so they cannot disagree. A t
 7. `journal` as rows (the agent reader) slots in after 3; it is its own contract.
 
 Each commit builds and tests alone, with negative tests for every exit 2 above.
+
+## Follow-ups found while landing
+
+- `where x > 5`: a bare `>` has always been a redirect in sash, so `where` takes `>=`, `<=`, `==`, `!=`, or a quoted `">"`. Making `>` an operator after `where` is a lexer change of its own.
+- Glob listings run before the line and are bounded by the glob caps, not by `verbmax`.
+- `$a$b` is two words, as in v1; `"$a$b"` joins them.
+
