@@ -990,6 +990,16 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage lines"}
 		}
 		return classified{in: inBytes, out: inRows}, nil
+	case "parse":
+		if prob := classifyParse(argv); prob != nil {
+			return classified{}, prob
+		}
+		return classified{in: inBytes, out: inRows}, nil
+	case "sub":
+		if prob := classifySub(argv); prob != nil {
+			return classified{}, prob
+		}
+		return classified{in: inRows, out: inRows}, nil
 	case "from", "to":
 		if len(argv) != 2 || !formatNames[argv[1]] {
 			return classified{}, &problem{exitType, "usage " + name}
@@ -1142,8 +1152,10 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inBytes
 	case "from":
 		return inAny, inRows
-	case "lines":
+	case "lines", "parse":
 		return inBytes, inRows
+	case "sub":
+		return inRows, inRows
 	case "head", "wc":
 		return inFlex, inFlex
 	case "ps", "journal", "ls", "builtin", "set", "shopt":
@@ -1356,6 +1368,14 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return runBuiltin(st.argv)
 	case "lines":
 		return runRows(asBytes(in), nil), 0
+	case "parse":
+		return m.runParse(st.argv, in)
+	case "sub":
+		if in.kind != valRows {
+			m.err.WriteString("type sub\n")
+			return value{}, exitType
+		}
+		return m.runSub(st.argv, in)
 	case "from", "to":
 		run := runFrom
 		if st.argv[0] == "to" {
@@ -1827,7 +1847,7 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare", "from", "to", "use", "lines"} {
+		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub"} {
 		reservedNames[n] = true
 	}
 }

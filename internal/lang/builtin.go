@@ -54,6 +54,8 @@ var builtins = []Builtin{
 	{"filter", "filter", "", "keep rows where [ expr ] holds; $it is the row", true},
 	{"each", "filter", "", "compute [ expr ] per row; a map adds columns", true},
 	{"lines", "filter", "", "text to rows with a line column", true},
+	{"parse", "filter", "", "text to rows: \"{a}:{_}:{b}\" or re with (?P<name>...)", true},
+	{"sub", "filter", "", "sub col re with repl: rewrite one column", true},
 	{"from json", "filter", "", "parse JSON text into a value", true},
 	{"to json", "filter", "", "print a value as JSON", true},
 	{"from yaml", "filter", "", "parse YAML text into a value", true},
