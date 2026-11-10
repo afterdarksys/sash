@@ -157,8 +157,9 @@ func TestWhyReportsShapeErrorsRunWouldRefuse(t *testing.T) {
 
 func TestWhyKnowsFunctionsDefinedOnTheLine(t *testing.T) {
 	g := whyGrant()
-	out := Why("fn greet x { echo $x }; greet hi", g, Options{})
-	if strings.Contains(out.Stdout, "unknown") {
+	out := Why("fn greet(x) { echo $x }\ngreet hi", g, Options{})
+	rows := whyLines(t, out)
+	if strings.Contains(out.Stdout, "unknown") || !hasRow(rows, "-", "-", "in_process") || len(rows) != 2 {
 		t.Fatalf("fn\n%s", out.Stdout)
 	}
 }

@@ -53,7 +53,7 @@ Decision: there is no separate `foreach` keyword. `for x in` is the foreach, and
 
 Loops are capped. One loop runs at most `loopmax` iterations, default 100000, settable up to 10000000 with `set loopmax`. Past the cap it is exit 2 `loop max`. A runaway loop of agent verbs is the case that matters. The cap is per loop, and nested loops multiply, so verbs also count against `verbmax` per line, default 10000, also settable within the same ceiling.
 
-Functions: `fn name a b { }` as today, plus `return` values and default parameters `fn f a b=1 { }`. The depth cap stays eight.
+Functions: `fn name(a, b) { }` as today, plus `return` values and default parameters `fn f(a, b = 1) { }`. The depth cap stays eight.
 
 ## Data formats
 

@@ -30,6 +30,7 @@ const (
 	valBytes
 	valRows
 	valRow
+	valData
 )
 
 const (
@@ -88,6 +89,7 @@ type value struct {
 	rows []parent.Row
 	cols []string
 	row  parent.Row
+	d    any
 }
 
 type machine struct {
@@ -150,6 +152,15 @@ func (m *machine) defFn(fn *Fn) (int, bool) {
 
 func (m *machine) runLet(s *Let) (int, bool) {
 	if s.Word != nil {
+		if x := exprOf(*s.Word); x != nil {
+			d, err := m.evalX(x)
+			if err != nil {
+				m.err.WriteString(err.Error() + "\n")
+				return exitType, true
+			}
+			m.vars[s.Name] = fromDatum(d)
+			return 0, false
+		}
 		text, err := m.expand(*s.Word)
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
@@ -167,13 +178,23 @@ func (m *machine) runLet(s *Let) (int, bool) {
 }
 
 func (m *machine) runIf(s *If) (int, bool) {
-	st, stop, v := m.runPipe(s.Cond)
-	if stop {
-		return st, true
-	}
-	take := st == 0
-	if v.kind == valRows {
-		take = len(v.rows) > 0
+	var take bool
+	if s.CondX != nil {
+		d, err := m.evalX(s.CondX)
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return exitType, true
+		}
+		take = truthy(d)
+	} else {
+		st, stop, v := m.runPipe(s.Cond)
+		if stop {
+			return st, true
+		}
+		take = st == 0
+		if v.kind == valRows {
+			take = len(v.rows) > 0
+		}
 	}
 	var branch *Program
 	if take {
@@ -853,36 +874,66 @@ func (m *machine) expandArgv(words []Word) ([]string, error) {
 func (m *machine) expand(w Word) (string, error) {
 	var b strings.Builder
 	for _, part := range w.Parts {
+		if part.X != nil {
+			d, err := m.evalX(part.X)
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(textOf(d))
+			continue
+		}
 		if !part.Exp {
 			b.WriteString(part.Lit)
 			continue
 		}
-		name, field, hasField := strings.Cut(part.Lit, ".")
-		v, ok := m.vars[name]
-		if !ok {
+		// A whole row or row set is not one word, as in v1.
+		if v, ok := m.vars[part.Lit]; ok && (v.kind == valRow || v.kind == valRows) {
 			return "", fmt.Errorf("type value")
 		}
-		switch v.kind {
-		case valStr:
-			if hasField {
-				return "", fmt.Errorf("type value")
-			}
-			b.WriteString(v.s)
-		case valBytes:
-			if hasField {
-				return "", fmt.Errorf("type value")
-			}
-			b.WriteString(string(v.b))
-		case valRow:
-			if !hasField {
-				return "", fmt.Errorf("type value")
-			}
-			b.WriteString(v.row[field])
-		default:
+		d, err := m.ref(part.Lit)
+		if err != nil {
 			return "", fmt.Errorf("type value")
 		}
+		b.WriteString(textOf(d))
 	}
 	return b.String(), nil
+}
+
+// ref resolves a $ reference with its access path. A row is a map of its
+// fields. A missing key is null.
+func (m *machine) ref(lit string) (any, error) {
+	name, steps := pathSteps(lit)
+	v, ok := m.vars[name]
+	if !ok {
+		return nil, fmt.Errorf("type value")
+	}
+	d := toDatum(v)
+	for _, s := range steps {
+		var err error
+		if d, err = indexData(d, s); err != nil {
+			return nil, err
+		}
+	}
+	return d, nil
+}
+
+// evalX computes a [ ] expression against the current names.
+func (m *machine) evalX(x Expr) (any, error) {
+	return evalExpr(x, func(name string) (any, bool) {
+		v, ok := m.vars[name]
+		if !ok {
+			return nil, false
+		}
+		return toDatum(v), true
+	})
+}
+
+// exprOf is the expression when w is exactly one [ ] expression.
+func exprOf(w Word) Expr {
+	if len(w.Parts) == 1 {
+		return w.Parts[0].X
+	}
+	return nil
 }
 
 func fromResult(res parent.Result) value {
@@ -915,13 +966,15 @@ func render(v value) string {
 		return b.String()
 	case valStr:
 		return v.s
+	case valData:
+		return textOf(v.d) + "\n"
 	default:
 		return string(v.b)
 	}
 }
 
 func asBytes(v value) string {
-	if v.kind == valRows || v.kind == valRow || v.kind == valStr {
+	if v.kind == valRows || v.kind == valRow || v.kind == valStr || v.kind == valData {
 		return render(v)
 	}
 	return string(v.b)

@@ -2,6 +2,7 @@ package lang
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -42,10 +43,12 @@ type Word struct {
 	End   int
 }
 
-// Part is a literal or a $name / $name.field reference.
+// Part is a literal, a $name reference with an access path ($cfg.server.port,
+// $list[0], $m["key"]), or a [ ] expression parsed at lex time (X).
 type Part struct {
 	Lit string
 	Exp bool
+	X   Expr
 }
 
 func (w Word) empty() bool { return len(w.Parts) == 0 }
@@ -63,6 +66,15 @@ func lex(src string) ([]token, error) {
 	i := 0
 	for i < len(src) {
 		c := src[i]
+		if n := exprSpan(src, i); n > 0 {
+			x, err := parseExpr(src[i+1 : i+n-1])
+			if err != nil {
+				return nil, err
+			}
+			emit(&out, kWord, Word{Parts: []Part{{X: x}}}, i, n)
+			i += n
+			continue
+		}
 		switch c {
 		case ' ', '\t', '\r':
 			i++
@@ -258,18 +270,88 @@ func lexExpand(src string) (string, int, error) {
 	for i < len(src) && isName(rune(src[i])) {
 		i++
 	}
-	if i < len(src) && src[i] == '.' {
-		j := i + 1
-		if j >= len(src) || !isNameStart(rune(src[j])) {
-			return "", 0, fmt.Errorf("lex: bad field")
-		}
-		j++
-		for j < len(src) && isName(rune(src[j])) {
+	for i < len(src) {
+		switch src[i] {
+		case '.':
+			j := i + 1
+			if j >= len(src) || !isNameStart(rune(src[j])) {
+				return "", 0, fmt.Errorf("lex: bad field")
+			}
 			j++
+			for j < len(src) && isName(rune(src[j])) {
+				j++
+			}
+			i = j
+			continue
+		case '[':
+			n := pathIndexLen(src[i:])
+			if n == 0 {
+				return src[1:i], i, nil
+			}
+			i += n
+			continue
 		}
-		i = j
+		break
 	}
 	return src[1:i], i, nil
+}
+
+// pathIndexLen is the length of [123] or ["key"] at s[0], or 0.
+func pathIndexLen(s string) int {
+	if len(s) < 3 || s[0] != '[' {
+		return 0
+	}
+	if s[1] == '"' {
+		end := strings.IndexByte(s[2:], '"')
+		if end < 0 || 2+end+1 >= len(s) || s[2+end+1] != ']' || strings.ContainsAny(s[2:2+end], "\\\n") {
+			return 0
+		}
+		return 2 + end + 2
+	}
+	j := 1
+	if s[j] == '-' {
+		j++
+	}
+	start := j
+	for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	if j == start || j >= len(s) || s[j] != ']' {
+		return 0
+	}
+	return j + 1
+}
+
+// pathSteps splits a $ reference into its name and access steps. The text
+// comes from source, never from a value.
+func pathSteps(ref string) (string, []any) {
+	i := 0
+	for i < len(ref) && ref[i] != '.' && ref[i] != '[' {
+		i++
+	}
+	name := ref[:i]
+	var steps []any
+	for i < len(ref) {
+		if ref[i] == '.' {
+			j := i + 1
+			for j < len(ref) && ref[j] != '.' && ref[j] != '[' {
+				j++
+			}
+			steps = append(steps, ref[i+1:j])
+			i = j
+			continue
+		}
+		n := pathIndexLen(ref[i:])
+		inner := ref[i+1 : i+n-1]
+		if strings.HasPrefix(inner, `"`) {
+			steps = append(steps, strings.Trim(inner, `"`))
+		} else {
+			k, _ := strconv.ParseInt(inner, 10, 64)
+			steps = append(steps, k)
+		}
+		i += n
+	}
+	return name, steps
 }
 
 func isNameStart(r rune) bool {

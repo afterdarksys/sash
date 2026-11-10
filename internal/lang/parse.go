@@ -29,7 +29,8 @@ func (*Let) stmt() {}
 
 // If runs Cond. A row pipeline is true when it yields a row. A byte pipeline is true when its exit is 0.
 type If struct {
-	Cond Pipeline
+	CondX Expr
+	Cond  Pipeline
 	Then Program
 	Else *Program
 }
@@ -174,9 +175,16 @@ func (p *parser) let() (Stmt, error) {
 
 func (p *parser) iff() (Stmt, error) {
 	p.i++
-	cond, err := p.pipeline()
-	if err != nil {
-		return nil, err
+	var condX Expr
+	var cond Pipeline
+	if t := p.peek(); t.kind == kWord && exprOf(t.word) != nil && p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kLBrace {
+		condX = exprOf(t.word)
+		p.i++
+	} else {
+		var err error
+		if cond, err = p.pipeline(); err != nil {
+			return nil, err
+		}
 	}
 	then, err := p.block()
 	if err != nil {
@@ -192,7 +200,7 @@ func (p *parser) iff() (Stmt, error) {
 		}
 		elseP = body
 	}
-	return &If{Cond: cond, Then: *then, Else: elseP}, nil
+	return &If{CondX: condX, Cond: cond, Then: *then, Else: elseP}, nil
 }
 
 func (p *parser) forr() (Stmt, error) {

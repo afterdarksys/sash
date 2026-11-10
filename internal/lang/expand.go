@@ -154,6 +154,12 @@ func logicalLines(src string) ([]string, bool) {
 func expandLine(s string, hist []string) (string, *ExpandProblem) {
 	var b strings.Builder
 	for i := 0; i < len(s); {
+		// A [ ] expression is not history text: "!" there is not.
+		if n := exprSpan(s, i); n > 0 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
 		if commentAt(s, i) {
 			b.WriteString(s[i:])
 			break
@@ -366,6 +372,13 @@ func mapWords(src string, fn func(string) (string, *ExpandProblem)) (string, *Ex
 			}
 			b.WriteString(src[i:j])
 			i = j
+			continue
+		}
+		// A [ ] expression has no braces to expand and no globs to list:
+		// its "*" is multiplication and its "{" a map.
+		if n := exprSpan(src, i); n > 0 {
+			b.WriteString(src[i : i+n])
+			i += n
 			continue
 		}
 		if c == '\'' || c == '"' {
