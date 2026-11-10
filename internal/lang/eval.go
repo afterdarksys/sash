@@ -1001,7 +1001,8 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		}
 		return classified{in: inRows, out: inRows}, nil
 	case "from", "to":
-		if len(argv) != 2 || !formatNames[argv[1]] {
+		noheader := name == "from" && len(argv) == 3 && argv[2] == "--noheader" && (argv[1] == "csv" || argv[1] == "tsv")
+		if (len(argv) != 2 && !noheader) || !formatNames[argv[1]] {
 			return classified{}, &problem{exitType, "usage " + name}
 		}
 		// from declares rows so |> may follow; it keeps the whole value,
@@ -1380,6 +1381,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		run := runFrom
 		if st.argv[0] == "to" {
 			run = runTo
+		} else if len(st.argv) == 3 {
+			run = func(f string, v value) (value, error) { return runFromOpt(f, v, false) }
 		}
 		v, err := run(st.argv[1], in)
 		if err != nil {

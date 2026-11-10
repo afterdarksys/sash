@@ -19,15 +19,19 @@ import (
 // formatInputMax caps YAML and TOML input.
 const formatInputMax = 1 << 20
 
-var formatNames = map[string]bool{"json": true, "yaml": true, "toml": true}
+var formatNames = map[string]bool{"json": true, "yaml": true, "toml": true, "csv": true, "tsv": true}
 
 func runFrom(format string, in value) (value, error) {
+	return runFromOpt(format, in, true)
+}
+
+func runFromOpt(format string, in value, header bool) (value, error) {
 	text := asBytes(in)
 	// YAML and TOML parsers build their whole tree first, at many times
 	// the input, so their input is capped lower than JSON's, which is
 	// charged as it streams.
 	limit := dataMaxBytes
-	if format != "json" {
+	if format == "yaml" || format == "toml" {
 		limit = formatInputMax
 	}
 	if len(text) > limit {
@@ -42,6 +46,12 @@ func runFrom(format string, in value) (value, error) {
 		d, err = decodeYAML([]byte(text))
 	case "toml":
 		d, err = decodeTOML([]byte(text))
+	case "csv", "tsv":
+		sep := ','
+		if format == "tsv" {
+			sep = '\t'
+		}
+		return decodeCSV(text, sep, header)
 	default:
 		return value{}, fmt.Errorf("usage from")
 	}
@@ -55,6 +65,17 @@ func runFrom(format string, in value) (value, error) {
 }
 
 func runTo(format string, in value) (value, error) {
+	if format == "csv" || format == "tsv" {
+		sep := ','
+		if format == "tsv" {
+			sep = '\t'
+		}
+		out, err := encodeCSV(in, sep)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: valBytes, b: out}, nil
+	}
 	d := toDatum(in)
 	var out []byte
 	var err error
