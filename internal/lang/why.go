@@ -49,6 +49,18 @@ func Why(src string, g grant.Grant, opt Options) Outcome {
 	}
 	whyFns(prog, m.fns)
 	var rows []parent.Row
+	var uses []*Use
+	collectUses(prog, &uses)
+	for _, u := range uses {
+		cmd := "use " + text[u.Path.Pos:u.Path.End]
+		if d := m.whyKey(cmd, "file.read"); d != nil {
+			rows = append(rows, *d)
+		} else if m.useDenied(u) != "" {
+			rows = append(rows, whyRow(cmd, "file.read", "no", "outside_roots", "roots: "+strings.Join(m.g.FileRead, " ")))
+		} else {
+			rows = append(rows, whyRow(cmd, "file.read", "yes", "granted", "loads fn and declare -r only"))
+		}
+	}
 	for _, pipe := range pipes {
 		for _, st := range pipe.Stages {
 			rows = append(rows, m.whyStage(text, st)...)

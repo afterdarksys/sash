@@ -64,6 +64,7 @@ var builtins = []Builtin{
 	{"set", "builtin", "", "session options: -e -u -x -f, loopmax, verbmax", true},
 	{"shopt", "builtin", "", "set by long name: -s on, -u off", true},
 	{"declare", "keyword", "", "read-only or typed names: -r -i -a -A, -p", true},
+	{"use", "keyword", "file.read", "load fn and declare -r from a file", true},
 	{"else", "keyword", "", "the other branch of if", false},
 	{"in", "keyword", "", "the source of for", false},
 	{"catch", "keyword", "", "the handler of try", false},

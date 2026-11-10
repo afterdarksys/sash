@@ -111,6 +111,13 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 			other = prob.msg
 		}
 	}
+	var uses []*Use
+	collectUses(prog, &uses)
+	for _, u := range uses {
+		if d := m.useDenied(u); d != "" && denial == "" {
+			denial = d
+		}
+	}
 	known := ""
 	for _, sp := range out.Spans {
 		if sp.Face == FaceDenied && sp.Key != "" {
@@ -139,6 +146,46 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	}
 	out.Smile = other
 	return out
+}
+
+// collectUses finds use statements at any depth.
+func collectUses(prog *Program, out *[]*Use) {
+	if prog == nil {
+		return
+	}
+	for _, s := range prog.Stmts {
+		switch s := s.(type) {
+		case *Use:
+			*out = append(*out, s)
+		case *If:
+			collectUses(&s.Then, out)
+			collectUses(s.Else, out)
+		case *For:
+			collectUses(&s.Body, out)
+		case *While:
+			collectUses(&s.Body, out)
+		case *Try:
+			collectUses(&s.Body, out)
+			collectUses(s.Catch, out)
+		case *Fn:
+			collectUses(&s.Body, out)
+		}
+	}
+}
+
+// useDenied is the preflight of a use: file.read and, for a literal path,
+// the read roots. A path from a value is checked when it runs.
+func (m *machine) useDenied(u *Use) string {
+	if !m.g.Has("file.read") {
+		return "denied file.read"
+	}
+	if p := plain(u.Path); p != "" {
+		full, err := resolvePath(m.prefix(), p)
+		if err == nil && !m.g.AllowsRead(full) {
+			return "denied file.read"
+		}
+	}
+	return ""
 }
 
 func collectPipes(prog *Program, out *[]Pipeline) {

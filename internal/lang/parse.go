@@ -92,6 +92,12 @@ type Declare struct {
 
 func (*Declare) stmt() {}
 
+// Use loads fn and declare -r definitions from a file read through
+// file.read. It runs no other statement.
+type Use struct{ Path Word }
+
+func (*Use) stmt() {}
+
 // Fn defines a command. Each call checks entitlements again.
 type Fn struct {
 	Name   string
@@ -194,6 +200,14 @@ func (p *parser) stmt() (Stmt, error) {
 			return p.try()
 		case "declare":
 			return p.declare()
+		case "use":
+			p.i++
+			if p.peek().kind != kWord {
+				return nil, fmt.Errorf("parse: use needs a path")
+			}
+			w := p.peek().word
+			p.i++
+			return &Use{Path: w}, nil
 		}
 	}
 	return p.chain()

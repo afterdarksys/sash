@@ -203,6 +203,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runTry(s)
 	case *Declare:
 		return m.runDeclare(s)
+	case *Use:
+		return m.runUse(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -314,6 +316,62 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 			return fail(fmt.Errorf("usage declare -r: needs a value"))
 		}
 		m.st.readonly[d.Name] = true
+	}
+	return 0, false
+}
+
+// runUse reads a file through the file helper and loads its definitions.
+// Only fn and declare -r with a word or [ ] value are allowed, so loading
+// runs no verb. The whole file is checked before anything is defined. The
+// file is not expanded: no history, braces, or globs.
+func (m *machine) runUse(u *Use) (int, bool) {
+	fail := func(status int, msg string) (int, bool) {
+		m.err.WriteString(msg + "\n")
+		return status, true
+	}
+	p, err := m.expand(u.Path)
+	if err != nil {
+		return fail(exitType, err.Error())
+	}
+	if !m.g.Has("file.read") {
+		return fail(exitDenied, "denied file.read")
+	}
+	full, err := resolvePath(m.prefix(), p)
+	if err != nil {
+		return fail(exitType, "prefix_unset")
+	}
+	if !m.g.AllowsRead(full) {
+		return fail(exitDenied, "denied file.read")
+	}
+	res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"cat", full}, Path: full})
+	if err != nil || res.Exit != 0 {
+		return fail(1, "use: cannot read")
+	}
+	if len(res.Bytes) > dataMaxBytes {
+		return fail(exitType, "use: too large")
+	}
+	prog, err := parse(string(res.Bytes))
+	if err != nil {
+		return fail(exitType, "use: "+err.Error())
+	}
+	for _, s := range prog.Stmts {
+		switch s := s.(type) {
+		case *Fn:
+			if reserved(s.Name) {
+				return fail(exitType, "use: usage fn")
+			}
+		case *Declare:
+			if !strings.Contains(s.Flags, "r") || s.Value == nil || s.Value.Pipe != nil {
+				return fail(exitType, "use: only fn and declare -r name = value")
+			}
+		default:
+			return fail(exitType, "use: only fn and declare -r name = value")
+		}
+	}
+	for _, s := range prog.Stmts {
+		if st, stop := m.runStmt(s); stop {
+			return st, true
+		}
 	}
 	return 0, false
 }
@@ -1730,7 +1788,7 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare", "from", "to"} {
+		"set", "shopt", "declare", "from", "to", "use"} {
 		reservedNames[n] = true
 	}
 }
