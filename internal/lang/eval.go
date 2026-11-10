@@ -3,6 +3,7 @@ package lang
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -630,11 +631,13 @@ func (m *machine) runIf(s *If) (int, bool) {
 	var take bool
 	if s.CondX != nil {
 		d, err := m.evalX(s.CondX)
+		if err == nil {
+			take, err = decide(d)
+		}
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return exitType, true
 		}
-		take = truthy(d)
 	} else {
 		st, stop, v := m.runPipe(s.Cond)
 		if stop {
@@ -812,11 +815,15 @@ func (m *machine) loopBody(body *Program, iter *int) (status int, stop, brk bool
 func (m *machine) test(x Expr, pipe Pipeline) (bool, int, bool) {
 	if x != nil {
 		d, err := m.evalX(x)
+		var ok bool
+		if err == nil {
+			ok, err = decide(d)
+		}
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return false, exitType, true
 		}
-		return truthy(d), 0, false
+		return ok, 0, false
 	}
 	st, stop, v := m.runPipe(pipe)
 	if stop {
@@ -1461,6 +1468,9 @@ func (m *machine) bindPaths(st *expStage) *problem {
 	case "template":
 		return m.needRead(st, st.argv[1])
 	case "template_file":
+		if !m.g.Has("file.read") {
+			return &problem{exitDenied, "denied file.read"}
+		}
 		for _, a := range st.argv[1:3] {
 			if prob := m.needRead(st, a); prob != nil {
 				return prob
@@ -1865,6 +1875,14 @@ func (m *machine) ref(lit string) (any, error) {
 
 // evalX computes a [ ] expression against the current names.
 func (m *machine) evalX(x Expr) (any, error) {
+	d, err := m.evalXRaw(x)
+	if errors.Is(err, errSecretFault) {
+		m.ctl = ctlHalt
+	}
+	return d, err
+}
+
+func (m *machine) evalXRaw(x Expr) (any, error) {
 	return evalExprStrict(x, m.st.nounset, func(name string) (any, bool) {
 		v, ok := m.vars[name]
 		if !ok {

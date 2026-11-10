@@ -20,9 +20,14 @@ func (m *machine) runCheck(st expStage) (value, int) {
 		m.err.WriteString(err.Error() + "\n")
 		return value{}, exitType
 	}
-	name := st.argv[1]
+	pass, derr := decide(d)
+	if derr != nil {
+		m.err.WriteString(derr.Error() + "\n")
+		return value{}, exitType
+	}
+	name := oneLine(st.argv[1])
 	res, line, code := "pass", "ok "+name+"\n", 0
-	if !truthy(d) {
+	if !pass {
 		res, line, code = "fail", "FAIL "+name+"\n", 1
 	}
 	if len(m.st.checks) >= checkMax {
@@ -69,7 +74,7 @@ func (m *machine) runLog(st expStage) (value, int) {
 // oneLine keeps a log line one line: control bytes become spaces.
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 {
 			return ' '
 		}
 		return r

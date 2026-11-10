@@ -62,7 +62,7 @@ Durations are Go durations: `500ms`, `2s`, `5m`, `1h`.
 
 ## 5. Secrets (redaction only in v4)
 
-`declare -s name = value` marks a name secret. A secret is never printed: `echo`, `trace`, `declare -p`, `why`, output, and errors show `***`. Anything computed from a secret is secret too: an expression that reads one, a word that contains one. The prompt does not keep a line with `declare -s` in history.
+`declare -s name = value` marks a name secret. A secret is never printed: `echo`, `trace`, `declare -p`, `why`, output, and errors show `***`. Anything computed from a secret is secret too: an expression that reads one, a word that contains one. The prompt does not keep a line with `declare -s` in history. A secret decides nothing: a condition that reads one (`if`, `while`, `do`, `filter`, `check`, a template `if`) is exit 2, since a branch per guess would spell the value out. An error in an evaluation that read a secret ends the line, and `try` and `retry` cannot catch it, so errors cannot probe it.
 
 **Decision:** in v4 a secret cannot leave sash. `template_file` refuses to render one, a verb argument cannot carry one, and `>` refuses one. The agent's `file.write` has no file mode, so a rendered secret would land with the helper's default mode. Writing secrets needs the agent change in section 7: `file.write` with a mode, and a `secret get` verb.
 

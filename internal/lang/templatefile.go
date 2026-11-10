@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -193,7 +194,10 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 	if err != nil {
 		return fail(err.Error())
 	}
-	if len(st.argv) == 5 || m.st.plan {
+	// Plan mode diffs only a file this session may read; a write-only out
+	// is reported by the door as a write, never read.
+	readable := m.g.Has("file.read") && m.g.AllowsRead(st.paths[2])
+	if len(st.argv) == 5 || (m.st.plan && readable) {
 		// --check, or plan mode: diff the current file against the render.
 		// In plan mode the write still goes to the door, which prints it.
 		cur, rerr := m.readFile(st.paths[2])
@@ -220,6 +224,9 @@ func (m *machine) runTemplate(st expStage, in value) (value, int) {
 	}
 	out, err := renderTemplate(tpl, toDatum(in), m.st.loopMax)
 	if err != nil {
+		if errors.Is(err, errSecretFault) {
+			m.ctl = ctlHalt
+		}
 		m.err.WriteString(err.Error() + "\n")
 		return value{}, exitType
 	}

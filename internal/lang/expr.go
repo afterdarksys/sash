@@ -624,6 +624,9 @@ func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
 func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, error) {
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
+		if c.tainted {
+			return nil, errSecretFault
+		}
 		return nil, err
 	}
 	if err := charge(c, dataSize(d, 0)); err != nil {
@@ -636,6 +639,9 @@ func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, 
 	c := &evalCtx{budget: dataMaxBytes, strict: strict}
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
+		if c.tainted {
+			return nil, errSecretFault
+		}
 		return nil, err
 	}
 	if c.tainted {

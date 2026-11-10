@@ -169,3 +169,32 @@ func TestTemplatePipeline(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+// Review: plan mode diffs only a readable out, and template_file needs
+// file.read itself; check names lose control bytes.
+func TestTemplateFileReviewFixes(t *testing.T) {
+	g := grant.Grant{V: "sash/1", Entitlements: []string{"file.read", "file.write"}, FileRead: []string{"/srv/ops/in"}, FileWrite: []string{"/srv/out"}}
+	p := &tplParent{files: map[string]string{"/srv/ops/in/v.json": `{"a": 1}`, "/srv/ops/in/t.tpl": "{{ $a }}", "/srv/out/shadow": "SECRET-CONTENT"}}
+	st := NewState()
+	st.LockPlan()
+	out := Run("template_file /srv/ops/in/v.json /srv/ops/in/t.tpl /srv/out/shadow", g, p, Options{State: st})
+	for _, c := range p.calls {
+		if c.Path == "/srv/out/shadow" && c.Key == "file.read" {
+			t.Fatalf("read a write-only file: %+v", out)
+		}
+	}
+	if strings.Contains(out.Stdout+out.Stderr, "SECRET") || !strings.Contains(out.Stderr, "would write /srv/out/shadow") {
+		t.Fatalf("%+v", out)
+	}
+	noRead := grant.Grant{V: "sash/1", Entitlements: []string{"file.write"}, FileRead: []string{"/srv/ops/in"}, FileWrite: []string{"/srv/out"}}
+	p.calls = nil
+	if out := Run("template_file /srv/ops/in/v.json /srv/ops/in/t.tpl /srv/out/x", noRead, p, Options{}); out.Status != exitDenied || len(p.calls) != 0 {
+		t.Fatalf("needs file.read: %+v", out)
+	}
+	if out := Run("check \"a\x1b[2Jb\nok forged\" [ true ]", tplGrant(), p, Options{}); strings.ContainsAny(out.Stdout[:len(out.Stdout)-1], "\x1b\n") {
+		t.Fatalf("control bytes: %q", out.Stdout)
+	}
+	if got := oneLine("a\u009b2Jb c"); got != "a 2Jb c" {
+		t.Fatalf("C1: %q", got)
+	}
+}

@@ -15,8 +15,7 @@ let copy = $tok
 echo $copy
 declare -p tok
 log info "auth" [ {"t": $tok} ]
-check "token set" [ len($tok) > 0 ]
-if [ $tok != "" ] { echo branch }`, tplGrant(), p, Options{State: st})
+echo end`, tplGrant(), p, Options{State: st})
 	all := out.Stdout + out.Stderr
 	if strings.Contains(all, "s3cr3t") {
 		t.Fatalf("leaked: %q", all)
@@ -24,7 +23,7 @@ if [ $tok != "" ] { echo branch }`, tplGrant(), p, Options{State: st})
 	if !strings.Contains(out.Stderr, "info auth t=***") {
 		t.Fatalf("log: %q", out.Stderr)
 	}
-	if out.Status != 0 || !strings.Contains(out.Stdout, "*** *** *** *** ***\n***\n") || !strings.Contains(out.Stdout, "ok token set") || !strings.Contains(out.Stdout, "branch") {
+	if out.Status != 0 || !strings.Contains(out.Stdout, "*** *** *** *** ***\n***\n") || !strings.Contains(out.Stdout, "end") {
 		t.Fatalf("%+v", out)
 	}
 }
@@ -62,5 +61,37 @@ func mustMap(t *testing.T, st *State) any {
 	t.Helper()
 	o := newOmap()
 	o.set("tok", toDatum(st.vars["tok"]))
+	return o
+}
+
+// Review: a secret decides nothing, and an error computed from one ends
+// the line where try cannot catch it.
+func TestSecretsDecideNothing(t *testing.T) {
+	extract := `declare -s tok = s3cr
+let k = ""
+for i in [ range(0, 3) ] { for c in [ split("abcdefghijklmnopqrstuvwxyz0123456789", "") ] {
+  if [ starts($tok, $k + $c) ] { let k = [ $k + $c ]; break } } }
+echo $k`
+	for _, src := range []string{
+		extract,
+		`declare -s tok = s3cr` + "\n" + `while [ starts($tok, "s") ] { echo y; break }`,
+		`declare -s tok = s3cr` + "\n" + `check "x" [ len($tok) > 2 ]`,
+		`declare -s tok = s3cr` + "\n" + `echo '[{"a":1}]' | from json |> filter [ starts($tok, "s") ]`,
+		`declare -s tok = s3cr` + "\n" + `try { echo [ 1 / (len($tok) - 4) ] } catch e { echo len4 }`,
+		`declare -s tok = s3cr` + "\n" + `try { echo [ int($tok) ] } catch e { echo notnum }`,
+	} {
+		out := Run(src, exprGrant(), &rowsParent{}, Options{})
+		if out.Status == 0 || strings.Contains(out.Stdout, "s3") || strings.Contains(out.Stdout, "len4") || strings.Contains(out.Stdout, "notnum") || strings.Contains(out.Stdout, "y") {
+			t.Errorf("%.50q: %+v", src, out)
+		}
+	}
+	if _, err := renderTemplate("{{ if starts($t, \"s\") }}x{{ end }}", mapOf("t", secretVal{"s3"}), 10); err == nil || !strings.Contains(err.Error(), "cannot decide") {
+		t.Fatalf("template if: %v", err)
+	}
+}
+
+func mapOf(k string, v any) any {
+	o := newOmap()
+	o.set(k, v)
 	return o
 }

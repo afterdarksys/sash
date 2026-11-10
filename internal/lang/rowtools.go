@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -269,10 +270,17 @@ func (m *machine) perRow(st expStage, rows []parent.Row, cols []string) (value, 
 			return toDatum(v), true
 		})
 		if err != nil {
+			if errors.Is(err, errSecretFault) {
+				m.ctl = ctlHalt
+			}
 			return fail(err.Error())
 		}
 		if st.argv[0] == "filter" {
-			if truthy(d) {
+			keep, derr := decide(d)
+			if derr != nil {
+				return fail(derr.Error())
+			}
+			if keep {
 				out = append(out, r)
 			}
 			continue

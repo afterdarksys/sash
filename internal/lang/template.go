@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -278,6 +279,9 @@ func (r *trender) lookup(name string) (any, bool) {
 func (r *trender) eval(x Expr, line int) (any, error) {
 	d, err := evalExprCtx(x, r.c, r.lookup)
 	if err != nil {
+		if errors.Is(err, errSecretFault) {
+			return nil, err
+		}
 		return nil, tagErr(line, err.Error())
 	}
 	return d, nil
@@ -311,7 +315,11 @@ func (r *trender) render(nodes []tnode) error {
 				if err != nil {
 					return err
 				}
-				if truthy(d) {
+				take, derr := decide(d)
+				if derr != nil {
+					return tagErr(n.line, derr.Error())
+				}
+				if take {
 					if err := r.render(n.bodies[i]); err != nil {
 						return err
 					}
