@@ -466,6 +466,9 @@ func (p *exprParser) primary() (Expr, error) {
 		return exprRef{t.s}, nil
 	case "id":
 		p.i++
+		if p.isOp("(") {
+			return p.call(t.s)
+		}
 		switch t.s {
 		case "true":
 			return exprLit{true}, nil
@@ -494,6 +497,40 @@ func (p *exprParser) primary() (Expr, error) {
 		return nil, fmt.Errorf("type expr incomplete")
 	}
 	return nil, fmt.Errorf("type expr unexpected %s", t.s)
+}
+
+// call reads name(args). The name must be an expression function: a user
+// fn is a command, and a command may call a verb where an expression may not.
+func (p *exprParser) call(name string) (Expr, error) {
+	f, ok := exprFuncs[name]
+	if !ok {
+		return nil, fmt.Errorf("type expr unknown function %s", name)
+	}
+	p.i++
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer func() { p.depth-- }()
+	var args []Expr
+	for !p.isOp(")") {
+		a, err := p.or()
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, a)
+		if p.isOp(",") {
+			p.i++
+			continue
+		}
+		if !p.isOp(")") {
+			return nil, fmt.Errorf("type expr expected )")
+		}
+	}
+	p.i++
+	if len(args) < f.min || (f.max >= 0 && len(args) > f.max) {
+		return nil, fmt.Errorf("type expr usage %s", name)
+	}
+	return exprCall{name: name, args: args}, nil
 }
 
 func (p *exprParser) list() (Expr, error) {
@@ -674,6 +711,8 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 		return indexData(base, key)
 	case exprRange:
 		return evalRange(x, lookup, c)
+	case exprCall:
+		return evalCall(x, lookup, c)
 	case exprBinary:
 		l, err := evalNode(x.l, lookup, c)
 		if err != nil {

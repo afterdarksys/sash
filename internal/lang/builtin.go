@@ -94,6 +94,13 @@ func runBuiltin(argv []string) (value, int) {
 		}
 		rows = append(rows, parent.Row{"name": b.Form, "kind": b.Kind, "key": key, "desc": b.Desc})
 	}
+	// Expression functions are listed too; they live only inside [ ].
+	for _, f := range funcNames() {
+		if want != "" && f != want {
+			continue
+		}
+		rows = append(rows, parent.Row{"name": f + "()", "kind": "function", "key": "-", "desc": "inside [ ]"})
+	}
 	if len(rows) == 0 {
 		return value{kind: valRows, cols: builtinCols}, 1
 	}
