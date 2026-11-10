@@ -19,20 +19,20 @@ func runOut(t *testing.T, src string) Outcome {
 
 func TestExprValuesAndOperators(t *testing.T) {
 	for src, want := range map[string]string{
-		`echo [ 2 + 3 * 4 ]`:                         "14",
-		`echo [ (2 + 3) * 4 ]`:                       "20",
-		`echo [ 10 / 4 ] [ 10 / 5 ] [ 7 % 3 ]`:       "2.5 2 1",
-		`echo [ -3 + 1 ] [ 1.5 * 2 ]`:                "-2 3",
-		`echo [ "ab" + "cd" ] [ "ab" * 3 ]`:          "abcd ababab",
-		`echo [ [1, 2] + [3] ]`:                      "[1,2,3]",
-		`echo [ 3 in [1, 2, 3] ] [ "a" in {"a": 1} ]`: "true true",
-		`echo [ "ell" in "hello" ] [ 4 in [1] ]`:     "true false",
+		`echo [ 2 + 3 * 4 ]`:                             "14",
+		`echo [ (2 + 3) * 4 ]`:                           "20",
+		`echo [ 10 / 4 ] [ 10 / 5 ] [ 7 % 3 ]`:           "2.5 2 1",
+		`echo [ -3 + 1 ] [ 1.5 * 2 ]`:                    "-2 3",
+		`echo [ "ab" + "cd" ] [ "ab" * 3 ]`:              "abcd ababab",
+		`echo [ [1, 2] + [3] ]`:                          "[1,2,3]",
+		`echo [ 3 in [1, 2, 3] ] [ "a" in {"a": 1} ]`:    "true true",
+		`echo [ "ell" in "hello" ] [ 4 in [1] ]`:         "true false",
 		`echo [ 1 == 1.0 ] [ "10" == 10 ] [ "a" < "b" ]`: "true true true",
-		`echo [ !true || false ] [ 1 && "x" ]`:       "false true",
-		`echo [ 1..4 ] [ 3..1 ]`:                     "[1,2,3,4] [3,2,1]",
-		`echo [ null ] [ {"b": 1, "a": 2} ]`:         `null {"b":1,"a":2}`,
+		`echo [ !true || false ] [ 1 && "x" ]`:           "false true",
+		`echo [ 1..4 ] [ 3..1 ]`:                         "[1,2,3,4] [3,2,1]",
+		`echo [ null ] [ {"b": 1, "a": 2} ]`:             `null {"b":1,"a":2}`,
 		`echo [ [1, 2, 3][-1] ] [ {"a": {"b": 5}}.a.b ]`: "3 5",
-		`echo [ "say \"hi\"\n" ]`:                    "say \"hi\"\n",
+		`echo [ "say \"hi\"\n" ]`:                        "say \"hi\"\n",
 	} {
 		out := runOut(t, src)
 		if out.Status != 0 || strings.TrimSuffix(out.Stdout, "\n") != want {
@@ -74,24 +74,23 @@ func (rowsParent) Do(v parent.Verb) (parent.Result, error) {
 	}}, nil
 }
 
-
 func TestExprErrorsExitTwo(t *testing.T) {
 	for src, msg := range map[string]string{
-		`echo [ $nope ]`:                     "unset nope",
-		`echo [ 1 / 0 ]`:                     "div zero",
-		`echo [ 1 % 0 ]`:                     "div zero",
-		`echo [ 9223372036854775807 + 1 ]`:   "overflow",
-		`echo [ 9223372036854775807 * 2 ]`:   "overflow",
-		`echo [ [1][5] ]`:                    "index range",
-		`echo [ "a" - 1 ]`:                   "type expr",
-		`echo [ "a" < 1 ]`:                   "compare",
-		`echo [ 1..20000000 ]`:               "range too large",
-		`echo [ "x" * 99999999 ]`:            "repeat",
-		`echo [ foo ]`:                       "unknown name",
-		`echo [ 1 + ]`:                       "incomplete",
-		`echo [ {"a": 1, "a": 2} ]`:          "duplicate key",
-		`echo [ 1 2 ]`:                       "trailing",
-		`echo [ "\q" ]`:                      "escape",
+		`echo [ $nope ]`:                   "unset nope",
+		`echo [ 1 / 0 ]`:                   "div zero",
+		`echo [ 1 % 0 ]`:                   "div zero",
+		`echo [ 9223372036854775807 + 1 ]`: "overflow",
+		`echo [ 9223372036854775807 * 2 ]`: "overflow",
+		`echo [ [1][5] ]`:                  "index range",
+		`echo [ "a" - 1 ]`:                 "type expr",
+		`echo [ "a" < 1 ]`:                 "compare",
+		`echo [ 1..20000000 ]`:             "range too large",
+		`echo [ "x" * 99999999 ]`:          "repeat",
+		`echo [ foo ]`:                     "unknown name",
+		`echo [ 1 + ]`:                     "incomplete",
+		`echo [ {"a": 1, "a": 2} ]`:        "duplicate key",
+		`echo [ 1 2 ]`:                     "trailing",
+		`echo [ "\q" ]`:                    "escape",
 		`echo [ ` + strings.Repeat("(", 80) + "1" + strings.Repeat(")", 80) + ` ]`: "too deep",
 		`echo [ ` + strings.Repeat("[", 80) + strings.Repeat("]", 80) + ` ]`:       "too deep",
 	} {
@@ -108,11 +107,11 @@ func TestExprTextIsNotExpanded(t *testing.T) {
 	p := &listParent{rows: map[string][]parent.Row{"/var/log": {{"name": "a.log"}}}}
 	opt := Options{Prefix: "/var/log", History: []string{"rm everything"}}
 	for src, want := range map[string]string{
-		`echo [ 2 * 3 ]`:                    "6",
-		`echo [ {"a": 1, "b": 2} ]`:         `{"a":1,"b":2}`,
-		`echo [ !false ] [ 1 != 2 ]`:        "true true",
-		`echo [ "*" + "{x,y}" + "!!" ]`:     "*{x,y}!!",
-		`echo [ [1, [2, [3]]][1][1][0] ]`:   "3",
+		`echo [ 2 * 3 ]`:                  "6",
+		`echo [ {"a": 1, "b": 2} ]`:       `{"a":1,"b":2}`,
+		`echo [ !false ] [ 1 != 2 ]`:      "true true",
+		`echo [ "*" + "{x,y}" + "!!" ]`:   "*{x,y}!!",
+		`echo [ [1, [2, [3]]][1][1][0] ]`: "3",
 	} {
 		got, prob := Expand(src, exprGrant(), p, opt)
 		if prob != nil || got != src {

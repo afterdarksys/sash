@@ -31,8 +31,8 @@ func (*Let) stmt() {}
 type If struct {
 	CondX Expr
 	Cond  Pipeline
-	Then Program
-	Else *Program
+	Then  Program
+	Else  *Program
 }
 
 func (*If) stmt() {}
