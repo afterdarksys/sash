@@ -169,6 +169,10 @@ func collectUses(prog *Program, out *[]*Use) {
 			collectUses(s.Catch, out)
 		case *With:
 			collectUses(&s.Body, out)
+		case *Retry:
+			collectUses(&s.Body, out)
+		case *Timeout:
+			collectUses(&s.Body, out)
 		case *Fn:
 			collectUses(&s.Body, out)
 		}
@@ -221,6 +225,10 @@ func collectPipes(prog *Program, out *[]Pipeline) {
 		case *Try:
 			collectPipes(&s.Body, out)
 			collectPipes(s.Catch, out)
+		case *Retry:
+			collectPipes(&s.Body, out)
+		case *Timeout:
+			collectPipes(&s.Body, out)
 		case *With:
 			for _, l := range s.Lets {
 				if l.Pipe != nil {

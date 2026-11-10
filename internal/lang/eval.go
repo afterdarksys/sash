@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -144,13 +145,107 @@ type machine struct {
 	loopDepth int
 	verbs     int
 	st        *State
+	// deadline is the innermost timeout; zero is none.
+	deadline time.Time
 	// scoped counts the loop, catch, and parameter bindings in force. A
 	// scope restores its name on the way out, so declare -r there would be
 	// undone; it is refused.
 	scoped map[string]int
 }
 
-var errVerbMax = fmt.Errorf("verb max")
+var (
+	errVerbMax = fmt.Errorf("verb max")
+	errTimeout = fmt.Errorf("timeout")
+	// nowFn and sleepFn are the clock; tests replace them.
+	nowFn   = time.Now
+	sleepFn = time.Sleep
+)
+
+func (m *machine) pastDeadline() bool {
+	return !m.deadline.IsZero() && nowFn().After(m.deadline)
+}
+
+// duration reads a retry delay or a timeout: a Go duration in (0, max].
+func (m *machine) duration(w Word, max time.Duration, zeroOK bool) (time.Duration, error) {
+	text, err := m.expand(w)
+	if err != nil {
+		return 0, err
+	}
+	d, err := time.ParseDuration(text)
+	if err != nil || d < 0 || (d == 0 && !zeroOK) || d > max {
+		return 0, fmt.Errorf("usage duration: up to %s", max)
+	}
+	return d, nil
+}
+
+func (m *machine) runTimeout(t *Timeout) (int, bool) {
+	d, err := m.duration(t.D, 24*time.Hour, false)
+	if err != nil {
+		m.err.WriteString(err.Error() + "\n")
+		return exitType, true
+	}
+	prev := m.deadline
+	end := nowFn().Add(d)
+	if prev.IsZero() || end.Before(prev) {
+		m.deadline = end
+	}
+	defer func() { m.deadline = prev }()
+	return m.runProg(&t.Body)
+}
+
+// runRetry runs the body until it succeeds, up to N times. A failure is
+// what try catches, or a non-zero status. Only the last attempt's stderr is
+// kept. A jump or a cap passes through at once.
+func (m *machine) runRetry(r *Retry) (int, bool) {
+	fail := func(msg string) (int, bool) {
+		m.err.WriteString(msg + "\n")
+		return exitType, true
+	}
+	text, err := m.expand(r.N)
+	if err != nil {
+		return fail(err.Error())
+	}
+	n, err := strconv.Atoi(text)
+	if err != nil || n < 1 || n > 100 {
+		return fail("usage retry: 1-100")
+	}
+	var delay time.Duration
+	if r.Delay != nil {
+		if delay, err = m.duration(*r.Delay, time.Hour, true); err != nil {
+			return fail(err.Error())
+		}
+	}
+	mark := m.err.Len()
+	var st int
+	var stop bool
+	for attempt := 1; attempt <= n; attempt++ {
+		if attempt > 1 {
+			all := m.err.String()
+			m.err.Reset()
+			m.err.WriteString(all[:mark])
+			wait := delay
+			if !m.deadline.IsZero() {
+				if left := m.deadline.Sub(nowFn()); left < wait {
+					wait = left
+				}
+			}
+			if wait > 0 {
+				sleepFn(wait)
+			}
+		}
+		st, stop = m.runProg(&r.Body)
+		if stop && m.ctl != ctlNone {
+			return st, true
+		}
+		if !stop && st == 0 {
+			return 0, false
+		}
+		if m.pastDeadline() {
+			break
+		}
+	}
+	return st, stop
+}
 
 // mutating names the verbs plan mode stops.
 var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true}
@@ -161,6 +256,9 @@ var mutating = map[string]bool{"unit.restart": true, "package.install": true, "s
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	if m.verbs >= m.st.verbMax {
 		return parent.Result{}, errVerbMax
+	}
+	if m.pastDeadline() {
+		return parent.Result{}, errTimeout
 	}
 	m.verbs++
 	if m.st.plan && mutating[v.Key] {
@@ -191,6 +289,10 @@ func (m *machine) prefix() string {
 func (m *machine) runProg(prog *Program) (int, bool) {
 	status := 0
 	for _, s := range prog.Stmts {
+		if m.pastDeadline() {
+			m.err.WriteString("timeout\n")
+			return exitType, true
+		}
 		st, stop := m.runStmt(s)
 		status = st
 		if stop {
@@ -228,6 +330,10 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runUse(s)
 	case *With:
 		return m.runWith(s)
+	case *Retry:
+		return m.runRetry(s)
+	case *Timeout:
+		return m.runTimeout(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -1396,6 +1502,10 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if err := m.traceStage(st); err != nil {
 			return 1, cur
 		}
+		if (st.key != "" || st.outPath != "") && m.pastDeadline() {
+			m.err.WriteString("timeout\n")
+			return exitType, value{}
+		}
 		if (st.key != "" || st.outPath != "") && m.verbs >= m.st.verbMax {
 			m.err.WriteString("verb max\n")
 			m.ctl = ctlHalt
@@ -1976,7 +2086,8 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file"} {
+		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
+		"retry", "timeout"} {
 		reservedNames[n] = true
 	}
 }

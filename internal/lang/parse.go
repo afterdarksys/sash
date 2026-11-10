@@ -104,6 +104,23 @@ type With struct {
 
 func (*With) stmt() {}
 
+// Retry runs Body again on failure, up to N times, waiting Delay between.
+type Retry struct {
+	N     Word
+	Delay *Word
+	Body  Program
+}
+
+func (*Retry) stmt() {}
+
+// Timeout ends Body past D: checked before each statement and verb.
+type Timeout struct {
+	D    Word
+	Body Program
+}
+
+func (*Timeout) stmt() {}
+
 // Use loads fn and declare -r definitions from a file read through
 // file.read. It runs no other statement.
 type Use struct{ Path Word }
@@ -214,6 +231,41 @@ func (p *parser) stmt() (Stmt, error) {
 			return p.declare()
 		case "with":
 			return p.with()
+		case "retry":
+			p.i++
+			if p.peek().kind != kWord {
+				return nil, fmt.Errorf("parse: retry needs a count")
+			}
+			r := &Retry{N: p.peek().word}
+			p.i++
+			if p.peek().kind == kWord && plain(p.peek().word) == "delay" {
+				p.i++
+				if p.peek().kind != kWord {
+					return nil, fmt.Errorf("parse: retry delay needs a duration")
+				}
+				d := p.peek().word
+				r.Delay = &d
+				p.i++
+			}
+			body, err := p.block()
+			if err != nil {
+				return nil, err
+			}
+			r.Body = *body
+			return r, nil
+		case "timeout":
+			p.i++
+			if p.peek().kind != kWord {
+				return nil, fmt.Errorf("parse: timeout needs a duration")
+			}
+			t := &Timeout{D: p.peek().word}
+			p.i++
+			body, err := p.block()
+			if err != nil {
+				return nil, err
+			}
+			t.Body = *body
+			return t, nil
 		case "use":
 			p.i++
 			if p.peek().kind != kWord {

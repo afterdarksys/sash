@@ -116,6 +116,10 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 			whyFns(s.Catch, fns)
 		case *With:
 			whyFns(&s.Body, fns)
+		case *Retry:
+			whyFns(&s.Body, fns)
+		case *Timeout:
+			whyFns(&s.Body, fns)
 		}
 	}
 }
