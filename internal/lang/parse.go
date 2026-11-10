@@ -627,6 +627,18 @@ func (p *parser) stage() (Stage, error) {
 			st.Argv = append(st.Argv, p.peek().word)
 			p.i++
 		case kGT, kLT, kHere:
+			// where col > 5: right after where and a column, a bare > or
+			// < is the comparison. Anywhere else it is a redirect.
+			if k := p.peek().kind; k != kHere && len(st.Argv) == 2 && plain(st.Argv[0]) == "where" {
+				op := ">"
+				if k == kLT {
+					op = "<"
+				}
+				t := p.peek()
+				st.Argv = append(st.Argv, Word{Parts: []Part{{Lit: op}}, Pos: t.pos, End: t.end})
+				p.i++
+				continue
+			}
 			kind := ">"
 			if p.peek().kind == kLT {
 				kind = "<"

@@ -1,6 +1,6 @@
 # sash language v3: text and data without awk
 
-Status: draft contract. Order confirmed by Ryan 2026-11-10 (functions, row tools, csv, scoped overrides, legacy fixes; overrides: both). Nothing lands until Ryan signs off on the decisions marked **Decision**.
+Status: approved by Ryan 2026-11-10; steps 1–6 landed on sash `main` (eef201f through the legacy-fix commit). `with env` waits on the agent contract.
 
 v2 gave sash values, control flow, and json, yaml, and toml. Text processing still needs awk, grep, cut, `perl -lne`, sort, and uniq in other shells. sash runs no host binaries, so the language does it itself. Every rule from v2 holds: verbs only as pipeline stages behind the grant check, values never parsed as source, everything in process bounded by the 8 MiB value cap and depth 64.
 
@@ -20,7 +20,7 @@ Calls inside `[ ]` only: `name(args)`. Pure, in process, no verb, no file, no cl
 | list | `len`, `sum`, `min`, `max`, `avg`, `sort`, `uniq`, `reverse`, `first(l, n)`, `last(l, n)`, `range(a, b)` |
 | map | `keys`, `values`, `has(m, k)`, `get(m, k, default)`, `merge(a, b)` |
 
-Regex is Go RE2: linear time, no backreferences, so no catastrophic backtracking. A pattern over 1 KiB is exit 2. Every result is charged against the v2 budget before it is built.
+Regex is Go RE2: linear time, no backreferences, so no catastrophic backtracking. A pattern over 1 KiB is exit 2. Write a pattern in single quotes: in double quotes `$` starts a name. Every result is charged against the v2 budget before it is built.
 
 ## 2. Row tools
 
@@ -90,7 +90,7 @@ Options, names, and the prefix take the given values inside the block and are re
 2. Row tools: `sort`, `uniq`, `group` and the aggregates, `first`, `last`, `skip`, `filter`, `each`, `lines`.
 3. `parse` and `sub`.
 4. `from` and `to` csv and tsv.
-5. `with` (no `env`).
+5. `with` (no `env`). `noglob` is refused in `with`: globs expand for the whole line before it runs.
 6. Legacy fixes.
 
 Each step lands with negative tests and a security review before the next.

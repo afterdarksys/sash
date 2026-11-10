@@ -248,22 +248,32 @@ func lexDouble(src string) (Word, int, error) {
 	return Word{}, 0, fmt.Errorf("lex: unclosed quote")
 }
 
+// lexBare reads one bare word. $ references and literal text join until a
+// stop byte, so $a$b and $a-$b are one word, as "$a$b" is.
 func lexBare(src string) (Word, int, error) {
-	if src[0] == '$' {
-		name, n, err := lexExpand(src)
-		if err != nil {
-			return Word{}, 0, err
-		}
-		return Word{Parts: []Part{{Lit: name, Exp: true}}}, n, nil
-	}
+	var parts []Part
 	i := 0
 	for i < len(src) && !bareStop(src[i]) {
-		i++
+		if src[i] == '$' {
+			name, n, err := lexExpand(src[i:])
+			if err != nil {
+				return Word{}, 0, err
+			}
+			parts = append(parts, Part{Lit: name, Exp: true})
+			i += n
+			continue
+		}
+		j := i
+		for j < len(src) && !bareStop(src[j]) && src[j] != '$' {
+			j++
+		}
+		parts = append(parts, Part{Lit: src[i:j]})
+		i = j
 	}
 	if i == 0 {
 		return Word{}, 0, fmt.Errorf("lex: empty word")
 	}
-	return Word{Parts: []Part{{Lit: src[:i]}}}, i, nil
+	return Word{Parts: parts}, i, nil
 }
 
 func bareStop(c byte) bool {

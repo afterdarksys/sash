@@ -141,7 +141,7 @@ Each commit builds and tests alone, with negative tests for every exit 2 above.
 
 ## Follow-ups found while landing
 
-- `where x > 5`: a bare `>` has always been a redirect in sash, so `where` takes `>=`, `<=`, `==`, `!=`, or a quoted `">"`. Making `>` an operator after `where` is a lexer change of its own.
+- `where x > 5`: fixed in v3; right after `where col`, a bare `>` or `<` compares.
 - Glob listings run before the line and are bounded by the glob caps, not by `verbmax`.
-- `$a$b` is two words, as in v1; `"$a$b"` joins them.
+- `$a$b`: one word since v3.
 
