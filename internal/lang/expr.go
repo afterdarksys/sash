@@ -622,21 +622,27 @@ func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
 // evalExprCtx evaluates against a budget shared by the caller, so a stage
 // that evaluates per row spends one budget across all its rows.
 func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, error) {
-	d, err := evalNode(x, lookup, c)
+	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
 		return nil, err
 	}
 	if err := charge(c, dataSize(d, 0)); err != nil {
 		return nil, err
 	}
-	return d, nil
+	return sealed(d, c), nil
 }
 
 func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
 	c := &evalCtx{budget: dataMaxBytes, strict: strict}
-	d, err := evalNode(x, lookup, c)
+	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
 		return nil, err
+	}
+	if c.tainted {
+		if dataSize(d, 0) > dataMaxBytes {
+			return nil, fmt.Errorf("type expr too large")
+		}
+		return secretVal{d}, nil
 	}
 	if dataSize(d, 0) > dataMaxBytes {
 		return nil, fmt.Errorf("type expr too large")
@@ -655,10 +661,34 @@ func charge(c *evalCtx, n int) error {
 	return nil
 }
 
-// evalCtx is one evaluation: its allocation budget, and set -u.
+// evalCtx is one evaluation: its allocation budget, set -u, and whether it
+// read a secret, which makes its result a secret.
 type evalCtx struct {
-	budget int
-	strict bool
+	budget  int
+	strict  bool
+	tainted bool
+}
+
+// taintLookup unwraps a secret for computing and marks the evaluation.
+func taintLookup(lookup func(string) (any, bool), c *evalCtx) func(string) (any, bool) {
+	return func(name string) (any, bool) {
+		d, ok := lookup(name)
+		if !ok {
+			return nil, false
+		}
+		if inner, was := unsecret(d); was {
+			c.tainted = true
+			return inner, true
+		}
+		return d, true
+	}
+}
+
+func sealed(d any, c *evalCtx) any {
+	if c.tainted {
+		return secretVal{d}
+	}
+	return d
 }
 
 func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) {

@@ -47,13 +47,19 @@ func (m *machine) runLog(st expStage) (value, int) {
 			m.err.WriteString(err.Error() + "\n")
 			return value{}, exitType
 		}
-		o, ok := d.(*omap)
+		// Fields computed from a secret log their keys and *** values.
+		inner, secret := unsecret(d)
+		o, ok := inner.(*omap)
 		if !ok {
 			m.err.WriteString("usage log: fields must be a map\n")
 			return value{}, exitType
 		}
 		for _, k := range o.keys {
-			fmt.Fprintf(&b, " %s=%s", oneLine(k), oneLine(textOf(o.m[k])))
+			v := textOf(o.m[k])
+			if secret {
+				v = redacted
+			}
+			fmt.Fprintf(&b, " %s=%s", oneLine(k), oneLine(v))
 		}
 	}
 	m.err.WriteString(b.String() + "\n")

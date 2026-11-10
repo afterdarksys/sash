@@ -145,6 +145,9 @@ type machine struct {
 	loopDepth int
 	verbs     int
 	st        *State
+	// sawSecret is set when a word expanded a secret, so prepare can keep
+	// it from reaching a verb or a file.
+	sawSecret bool
 	// deadline is the innermost timeout; zero is none.
 	deadline time.Time
 	// scoped counts the loop, catch, and parameter bindings in force. A
@@ -363,7 +366,17 @@ func (m *machine) runLet(s *Let) (int, bool) {
 			}
 			return m.bindLet(s.Name, fromDatum(d))
 		}
+		// A lone $name keeps its value, so a secret stays a secret.
+		if w := *s.Word; len(w.Parts) == 1 && w.Parts[0].Exp {
+			if d, err := m.ref(w.Parts[0].Lit); err == nil && isSecret(d) {
+				return m.bindLet(s.Name, value{kind: valData, d: d})
+			}
+		}
+		m.sawSecret = false
 		text, err := m.expand(*s.Word)
+		if err == nil && m.sawSecret {
+			err = fmt.Errorf("a secret in a word: build it inside [ ]")
+		}
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return exitType, true
@@ -441,6 +454,16 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 			return fail(err)
 		}
 		m.vars[d.Name] = conv
+	}
+	if strings.Contains(d.Flags, "s") {
+		v, ok := m.vars[d.Name]
+		if !ok {
+			restore()
+			return fail(fmt.Errorf("usage declare -s: needs a value"))
+		}
+		if dv := toDatum(v); !isSecret(dv) {
+			m.vars[d.Name] = value{kind: valData, d: secretVal{dv}}
+		}
 	}
 	if strings.Contains(d.Flags, "r") {
 		if _, ok := m.vars[d.Name]; !ok {
@@ -1009,6 +1032,7 @@ type problem struct {
 func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 	exp := make([]expStage, len(pipe.Stages))
 	for i, st := range pipe.Stages {
+		m.sawSecret = false
 		var rowX Expr
 		var argv []string
 		var err error
@@ -1080,6 +1104,11 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		info, prob := classify(argv, m.fns)
 		if prob != nil {
 			return nil, prob
+		}
+		// A secret prints as ***, but it does not leave sash: not as a verb
+		// argument, a path, or a function argument.
+		if m.sawSecret && (info.key != "" || info.call != nil || inPath != "" || outPath != "" || len(st.Redirs) > 0) {
+			return nil, &problem{exitType, "a secret cannot leave sash"}
 		}
 		if info.call != nil && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
 			return nil, &problem{exitType, "type fn"}
@@ -1779,6 +1808,9 @@ func (m *machine) expand(w Word) (string, error) {
 			if err != nil {
 				return "", err
 			}
+			if isSecret(d) {
+				m.sawSecret = true
+			}
 			b.WriteString(textOf(d))
 			if b.Len() > dataMaxBytes {
 				return "", fmt.Errorf("type value too large")
@@ -1796,6 +1828,9 @@ func (m *machine) expand(w Word) (string, error) {
 		d, err := m.ref(part.Lit)
 		if err != nil {
 			return "", fmt.Errorf("type value")
+		}
+		if isSecret(d) {
+			m.sawSecret = true
 		}
 		b.WriteString(textOf(d))
 		if b.Len() > dataMaxBytes {

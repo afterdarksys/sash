@@ -296,6 +296,9 @@ func (r *trender) render(nodes []tnode) error {
 			if err != nil {
 				return err
 			}
+			if isSecret(d) {
+				return tagErr(n.line, "a secret cannot leave sash")
+			}
 			s := textOf(d)
 			if err := charge(r.c, len(s)); err != nil {
 				return fmt.Errorf("template output too large")

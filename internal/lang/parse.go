@@ -462,8 +462,8 @@ func (p *parser) declare() (Stmt, error) {
 	d := &Declare{}
 	for p.peek().kind == kWord && strings.HasPrefix(plain(p.peek().word), "-") {
 		f := plain(p.peek().word)[1:]
-		if f == "" || strings.Trim(f, "riaAp") != "" {
-			return nil, fmt.Errorf("usage declare: -r -i -a -A -p; there is no export")
+		if f == "" || strings.Trim(f, "riaAps") != "" {
+			return nil, fmt.Errorf("usage declare: -r -i -a -A -s -p; there is no export")
 		}
 		d.Flags += f
 		p.i++

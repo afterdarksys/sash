@@ -931,7 +931,8 @@ func (e *Editor) applySession(cmd string) {
 }
 
 func (e *Editor) pushHist(s string) {
-	if strings.TrimSpace(s) == "" {
+	// A declare -s line may hold the secret itself: it is not kept.
+	if strings.TrimSpace(s) == "" || strings.Contains(s, "declare -s") {
 		return
 	}
 	e.history = append(e.history, s)

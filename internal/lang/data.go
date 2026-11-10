@@ -99,6 +99,8 @@ func typeName(d any) string {
 		return "list"
 	case *omap:
 		return "map"
+	case secretVal:
+		return "secret"
 	}
 	return "unknown"
 }
@@ -116,6 +118,8 @@ func textOf(d any) string {
 		return formatFloat(x)
 	case string:
 		return x
+	case secretVal:
+		return redacted
 	}
 	var b strings.Builder
 	writeJSON(&b, d)
@@ -138,6 +142,8 @@ func writeJSON(b *strings.Builder, d any) {
 		b.WriteString(textOf(x))
 	case string:
 		b.WriteString(jsonString(x))
+	case secretVal:
+		b.WriteString(jsonString(redacted))
 	case []any:
 		b.WriteByte('[')
 		for i, e := range x {
@@ -173,6 +179,8 @@ func jsonString(s string) string {
 
 func truthy(d any) bool {
 	switch x := d.(type) {
+	case secretVal:
+		return truthy(x.d)
 	case nil:
 		return false
 	case bool:
