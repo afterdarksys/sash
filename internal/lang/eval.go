@@ -407,12 +407,30 @@ func (m *machine) runFor(s *For) (int, bool) {
 		if stop {
 			return st, true
 		}
-		if v.kind != valRows {
+		switch {
+		case v.kind == valRows:
+			for i, row := range v.rows {
+				items = append(items, item{fromDatum(int64(i)), value{kind: valRow, row: row}})
+			}
+		case v.kind == valData:
+			// from json and the like: walk the value as a [ ] would.
+			switch x := v.d.(type) {
+			case []any:
+				for i, e := range x {
+					items = append(items, item{fromDatum(int64(i)), fromDatum(e)})
+				}
+			case *omap:
+				isMap = true
+				for _, k := range x.keys {
+					items = append(items, item{fromDatum(k), fromDatum(x.m[k])})
+				}
+			default:
+				m.err.WriteString("type for " + typeName(v.d) + "\n")
+				return exitType, true
+			}
+		default:
 			m.err.WriteString("type for\n")
 			return exitType, true
-		}
-		for i, row := range v.rows {
-			items = append(items, item{fromDatum(int64(i)), value{kind: valRow, row: row}})
 		}
 	}
 	names := []string{s.Name}
@@ -874,6 +892,16 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{in: inAny, out: inBytes}, nil
 	case "builtin", "set", "shopt":
 		return classified{in: inNone, out: inRows}, nil
+	case "from", "to":
+		if len(argv) != 2 || !formatNames[argv[1]] {
+			return classified{}, &problem{exitType, "usage " + name}
+		}
+		// from declares rows so |> may follow; it keeps the whole value,
+		// and a list of maps becomes rows only where |> needs them.
+		if name == "from" {
+			return classified{in: inAny, out: inRows}, nil
+		}
+		return classified{in: inAny, out: inBytes}, nil
 	case "select":
 		if len(argv) < 2 {
 			return classified{}, &problem{exitType, "usage select"}
@@ -1009,8 +1037,10 @@ func stageShape(st expStage) (int, int) {
 		return inRows, inRows
 	case "rows":
 		return inBytes, inRows
-	case "json":
+	case "json", "to":
 		return inAny, inBytes
+	case "from":
+		return inAny, inRows
 	case "head", "wc":
 		return inFlex, inFlex
 	case "ps", "journal", "ls", "builtin", "set", "shopt":
@@ -1117,13 +1147,21 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if st.op == "|" && cur.kind == valRows {
 			cur = value{kind: valBytes, b: []byte(render(cur))}
 		}
+		if st.op == "|>" && cur.kind == valData {
+			rows, ok := datumRows(cur.d)
+			if !ok {
+				m.err.WriteString("type |> " + typeName(cur.d) + "\n")
+				return exitType, value{}
+			}
+			cur = rows
+		}
 		if err := m.traceStage(st); err != nil {
 			return 1, cur
 		}
 		if (st.key != "" || st.outPath != "") && m.verbs >= m.st.verbMax {
 			m.err.WriteString("verb max\n")
 			m.ctl = ctlHalt
-			return exitType, cur
+			return exitType, value{}
 		}
 		v, code := m.execStage(st, cur)
 		exits[i] = code
@@ -1221,6 +1259,17 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return runRows(asBytes(in), st.argv[1:]), 0
 	case "builtin":
 		return runBuiltin(st.argv)
+	case "from", "to":
+		run := runFrom
+		if st.argv[0] == "to" {
+			run = runTo
+		}
+		v, err := run(st.argv[1], in)
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return value{}, exitType
+		}
+		return v, 0
 	case "set", "shopt":
 		v, err := m.st.runSet(st.argv)
 		if err != nil {
@@ -1681,7 +1730,7 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare"} {
+		"set", "shopt", "declare", "from", "to"} {
 		reservedNames[n] = true
 	}
 }

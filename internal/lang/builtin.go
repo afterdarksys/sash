@@ -40,6 +40,8 @@ var builtins = []Builtin{
 	{"select", "filter", "", "pick columns", true},
 	{"rows", "filter", "", "lift text into rows", true},
 	{"json", "filter", "", "print JSON", true},
+	{"from json", "filter", "", "parse JSON text into a value", true},
+	{"to json", "filter", "", "print a value as JSON", true},
 	{"let", "keyword", "", "bind a name", true},
 	{"if", "keyword", "", "conditional", true},
 	{"for", "keyword", "", "walk rows, a list, a map, or a range", true},
