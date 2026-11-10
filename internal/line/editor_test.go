@@ -603,3 +603,16 @@ func TestWhitespaceSubmitDoesNotPanic(t *testing.T) {
 		t.Fatalf("calls %d", len(p.calls))
 	}
 }
+
+// Every session form in the builtin table is one the editor handles.
+func TestSessionBuiltinsAreHandled(t *testing.T) {
+	for _, b := range lang.Builtins() {
+		if b.Kind != "session" {
+			continue
+		}
+		paint, _ := sessionKind(b.Form)
+		if !paint && !leaves(b.Form) {
+			t.Errorf("session form %q is not handled by the editor", b.Form)
+		}
+	}
+}

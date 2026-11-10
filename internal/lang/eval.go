@@ -760,6 +760,8 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage json"}
 		}
 		return classified{in: inAny, out: inBytes}, nil
+	case "builtin":
+		return classified{in: inNone, out: inRows}, nil
 	case "select":
 		if len(argv) < 2 {
 			return classified{}, &problem{exitType, "usage select"}
@@ -899,7 +901,7 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inBytes
 	case "head", "wc":
 		return inFlex, inFlex
-	case "ps", "journal", "ls":
+	case "ps", "journal", "ls", "builtin":
 		return inNone, inRows
 	case "unit":
 		if len(st.argv) > 1 && st.argv[1] == "restart" {
@@ -1101,6 +1103,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return value{kind: valRows, rows: rows, cols: in.cols}, 0
 	case "rows":
 		return runRows(asBytes(in), st.argv[1:]), 0
+	case "builtin":
+		return runBuiltin(st.argv)
 	case "json":
 		b, err := encodeJSON(in)
 		if err != nil {
@@ -1535,17 +1539,19 @@ func resolvePath(prefix, p string) (string, error) {
 	return path.Clean(path.Join(prefix, p)), nil
 }
 
-func reserved(name string) bool {
-	switch name {
-	case "echo", "egrep", "head", "cut", "wc", "where", "select", "rows", "json",
+// reservedNames cannot name a function. Every one is in the builtin table.
+var reservedNames = map[string]bool{}
+
+func init() {
+	for _, n := range []string{"echo", "egrep", "head", "cut", "wc", "where", "select", "rows", "json",
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
-		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why":
-		return true
-	default:
-		return false
+		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin"} {
+		reservedNames[n] = true
 	}
 }
+
+func reserved(name string) bool { return reservedNames[name] }
 
 // runRows is the only lift from text to rows. No names keeps each line,
 // spaces included, in the column line. Names split on whitespace. The last

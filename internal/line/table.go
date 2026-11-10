@@ -1,6 +1,10 @@
 package line
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/afterdarksys/sash/internal/lang"
+)
 
 // completion is one closed-table row. Insert includes a trailing space.
 type completion struct {
@@ -10,37 +14,19 @@ type completion struct {
 	key    string
 }
 
-// table is the Tab menu. Filters have an empty key and are never denied.
-var table = []completion{
-	{"ps ", "ps", "process table", "ps"},
-	{"unit status ", "unit status", "service status", "unit.status"},
-	{"unit restart ", "unit restart", "restart a service", "unit.restart"},
-	{"journal ", "journal", "journal read", "journal"},
-	{"package query ", "package query", "query a package", "package.query"},
-	{"package install ", "package install", "install a package", "package.install"},
-	{"sysctl get ", "sysctl get", "read a sysctl", "sysctl.get"},
-	{"sysctl set ", "sysctl set", "set a sysctl", "sysctl.set"},
-	{"config read ", "config read", "read a config", "config.read"},
-	{"cat ", "cat", "read a file", "file.read"},
-	{"ls ", "ls", "list a directory", "file.read"},
-	{"cd ", "cd", "change the prefix", "file.read"},
-	{"pushd ", "pushd", "push the prefix", "file.read"},
-	{"echo ", "echo", "print arguments", ""},
-	{"egrep ", "egrep", "filter lines", ""},
-	{"head ", "head", "first lines", ""},
-	{"cut ", "cut", "cut fields", ""},
-	{"wc ", "wc", "count", ""},
-	{"where ", "where", "keep rows", ""},
-	{"select ", "select", "pick columns", ""},
-	{"rows ", "rows", "lift text into rows", ""},
-	{"json ", "json", "print JSON", ""},
-	{"let ", "let", "bind a name", ""},
-	{"if ", "if", "conditional", ""},
-	{"for ", "for", "walk rows", ""},
-	{"fn ", "fn", "define a command", ""},
-	{"dirs ", "dirs", "show the prefix stack", ""},
-	{"popd ", "popd", "pop the prefix", ""},
-	{"why ", "why", "explain the grant check", ""},
+// table is the Tab menu, built from lang.Builtins so Tab, prompt menu, and
+// the builtin command list the same forms. Filters have an empty key and
+// are never denied.
+var table = buildTable()
+
+func buildTable() []completion {
+	var out []completion
+	for _, b := range lang.Builtins() {
+		if b.Tab {
+			out = append(out, completion{insert: b.Form + " ", form: b.Form, desc: b.Desc, key: b.Key})
+		}
+	}
+	return out
 }
 
 func matches(prefix string) []completion {
