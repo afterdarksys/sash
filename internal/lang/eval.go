@@ -213,6 +213,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runDeclare(s)
 	case *Use:
 		return m.runUse(s)
+	case *With:
+		return m.runWith(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -329,6 +331,73 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 		m.st.readonly[d.Name] = true
 	}
 	return 0, false
+}
+
+// runWith applies the overrides, runs the body, and restores every one of
+// them on any way out: normal end, a failure, a jump, exit, or a cap.
+// Nothing here touches the grant. noglob is refused: globs expand for the
+// whole line before it runs, so a block cannot scope them.
+func (m *machine) runWith(w *With) (int, bool) {
+	fail := func(status int, msg string) (int, bool) {
+		m.err.WriteString(msg + "\n")
+		return status, true
+	}
+	saved := *m.st
+	stack := append([]string(nil), m.stack...)
+	var names []string
+	for _, l := range w.Lets {
+		names = append(names, l.Name)
+	}
+	if !m.bindable(names...) {
+		return exitType, true
+	}
+	vars := m.saveVars(names)
+	defer func() {
+		m.st.errexit, m.st.nounset, m.st.xtrace, m.st.noglob = saved.errexit, saved.nounset, saved.xtrace, saved.noglob
+		m.st.loopMax, m.st.verbMax = saved.loopMax, saved.verbMax
+		m.stack = stack
+		m.restoreVars(vars)
+	}()
+	if len(w.Set) > 0 {
+		for _, a := range w.Set {
+			short := (a[0] == '-' || a[0] == '+') && a[1:] != "o" && strings.ContainsRune(a[1:], 'f')
+			if a == "noglob" || short {
+				return fail(exitType, "usage with: noglob is per line; use set -f")
+			}
+		}
+		if _, err := m.st.runSet(append([]string{"set"}, w.Set...)); err != nil {
+			return fail(exitType, err.Error())
+		}
+	}
+	for _, k := range []string{"loopmax", "verbmax"} {
+		if n, ok := w.Caps[k]; ok {
+			if _, err := m.st.runSet([]string{"set", k, n}); err != nil {
+				return fail(exitType, err.Error())
+			}
+		}
+	}
+	if w.Prefix != nil {
+		p, err := m.expand(*w.Prefix)
+		if err != nil {
+			return fail(exitType, err.Error())
+		}
+		st := expStage{argv: []string{"pushd", p}, key: "file.read"}
+		if !m.g.Has("file.read") {
+			return fail(exitDenied, "denied file.read")
+		}
+		if prob := m.needRead(&st, p); prob != nil {
+			return fail(prob.status, prob.msg)
+		}
+		if _, code := m.move(st); code != 0 {
+			return fail(code, "with prefix: cannot stat")
+		}
+	}
+	for _, l := range w.Lets {
+		if st, stop := m.runLet(l); stop {
+			return st, true
+		}
+	}
+	return m.runProg(&w.Body)
 }
 
 // runUse reads a file through the file helper and loads its definitions.
@@ -1850,7 +1919,7 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub"} {
+		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with"} {
 		reservedNames[n] = true
 	}
 }

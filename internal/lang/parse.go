@@ -92,6 +92,18 @@ type Declare struct {
 
 func (*Declare) stmt() {}
 
+// With runs Body with options, the prefix, or names overridden, and
+// restores them on every way out.
+type With struct {
+	Set    []string // set arguments: -e, +u, -o name
+	Caps   map[string]string
+	Prefix *Word
+	Lets   []*Let
+	Body   Program
+}
+
+func (*With) stmt() {}
+
 // Use loads fn and declare -r definitions from a file read through
 // file.read. It runs no other statement.
 type Use struct{ Path Word }
@@ -200,6 +212,8 @@ func (p *parser) stmt() (Stmt, error) {
 			return p.try()
 		case "declare":
 			return p.declare()
+		case "with":
+			return p.with()
 		case "use":
 			p.i++
 			if p.peek().kind != kWord {
@@ -419,6 +433,72 @@ func (p *parser) declare() (Stmt, error) {
 		}
 	}
 	return d, nil
+}
+
+// with reads items up to the block. The lexer drops commas, so each item
+// starts with a keyword (set, loopmax, verbmax, prefix, env) or is
+// name = value.
+func (p *parser) with() (Stmt, error) {
+	p.i++
+	w := &With{Caps: map[string]string{}}
+	for p.peek().kind != kLBrace {
+		t := p.peek()
+		if t.kind != kWord || plain(t.word) == "" {
+			return nil, fmt.Errorf("parse: with needs items and {")
+		}
+		switch word := plain(t.word); word {
+		case "set":
+			p.i++
+			n := 0
+			for p.peek().kind == kWord && (strings.HasPrefix(plain(p.peek().word), "-") || strings.HasPrefix(plain(p.peek().word), "+")) {
+				f := plain(p.peek().word)
+				w.Set = append(w.Set, f)
+				p.i++
+				n++
+				if f == "-o" || f == "+o" {
+					name, err := p.plainName("with set -o")
+					if err != nil {
+						return nil, err
+					}
+					w.Set = append(w.Set, name)
+				}
+			}
+			if n == 0 {
+				return nil, fmt.Errorf("parse: with set needs a flag")
+			}
+		case "loopmax", "verbmax":
+			p.i++
+			n, err := p.plainName("with " + word)
+			if err != nil {
+				return nil, err
+			}
+			w.Caps[word] = n
+		case "prefix":
+			p.i++
+			if p.peek().kind != kWord {
+				return nil, fmt.Errorf("parse: with prefix needs a path")
+			}
+			pw := p.peek().word
+			w.Prefix = &pw
+			p.i++
+		case "env":
+			return nil, fmt.Errorf("parse: env not in this series")
+		default:
+			p.i++
+			l, err := p.letValue(word)
+			if err != nil {
+				return nil, fmt.Errorf("parse: with item %s", word)
+			}
+			l.Name = word
+			w.Lets = append(w.Lets, l)
+		}
+	}
+	body, err := p.block()
+	if err != nil {
+		return nil, err
+	}
+	w.Body = *body
+	return w, nil
 }
 
 func (p *parser) try() (Stmt, error) {

@@ -114,6 +114,8 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 		case *Try:
 			whyFns(&s.Body, fns)
 			whyFns(s.Catch, fns)
+		case *With:
+			whyFns(&s.Body, fns)
 		}
 	}
 }
