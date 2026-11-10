@@ -121,6 +121,10 @@ type value struct {
 	cols []string
 	row  parent.Row
 	d    any
+	// groups is set by group by: the rows of each group, in the order of
+	// rows, so count and the other aggregates can follow.
+	groups [][]parent.Row
+	gcol   string
 }
 
 type machine struct {
@@ -805,6 +809,8 @@ type expStage struct {
 	op      string
 	call    *Fn
 	mover   bool
+	// x is the [ ] of filter or each, kept unevaluated for each row.
+	x Expr
 }
 
 type problem struct {
@@ -815,8 +821,14 @@ type problem struct {
 func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 	exp := make([]expStage, len(pipe.Stages))
 	for i, st := range pipe.Stages {
-		argv, err := m.expandArgv(st.Argv)
-		if err != nil {
+		var rowX Expr
+		var argv []string
+		var err error
+		if name := plainFirst(st); (name == "filter" || name == "each") && len(st.Argv) == 2 && exprOf(st.Argv[1]) != nil {
+			// The [ ] runs per row with $it, not now.
+			rowX = exprOf(st.Argv[1])
+			argv = []string{name, exprMark}
+		} else if argv, err = m.expandArgv(st.Argv); err != nil {
 			return nil, &problem{exitType, err.Error()}
 		}
 		type redirText struct {
@@ -887,7 +899,7 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		}
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
-			key: info.key, op: op, call: info.call, mover: info.mover,
+			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -919,6 +931,12 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{}, &problem{exitType, "usage empty"}
 	}
 	name := argv[0]
+	if rowTools[name] {
+		if prob := classifyRowTool(argv); prob != nil {
+			return classified{}, prob
+		}
+		return classified{in: inRows, out: inRows}, nil
+	}
 	if fn, ok := fns[name]; ok {
 		if len(argv)-1 != len(fn.Params) {
 			return classified{}, &problem{exitType, "usage " + name}
@@ -967,6 +985,11 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{in: inAny, out: inBytes}, nil
 	case "builtin", "set", "shopt":
 		return classified{in: inNone, out: inRows}, nil
+	case "lines":
+		if len(argv) != 1 {
+			return classified{}, &problem{exitType, "usage lines"}
+		}
+		return classified{in: inBytes, out: inRows}, nil
 	case "from", "to":
 		if len(argv) != 2 || !formatNames[argv[1]] {
 			return classified{}, &problem{exitType, "usage " + name}
@@ -1103,6 +1126,9 @@ func stageShape(st expStage) (int, int) {
 	if st.call != nil {
 		return inNone, inBytes
 	}
+	if rowTools[st.argv[0]] {
+		return inRows, inRows
+	}
 	switch st.argv[0] {
 	case "echo", "dirs", "cd", "pushd", "popd":
 		return inNone, inBytes
@@ -1116,6 +1142,8 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inBytes
 	case "from":
 		return inAny, inRows
+	case "lines":
+		return inBytes, inRows
 	case "head", "wc":
 		return inFlex, inFlex
 	case "ps", "journal", "ls", "builtin", "set", "shopt":
@@ -1298,6 +1326,9 @@ func (m *machine) callFn(st expStage) (int, bool) {
 }
 
 func (m *machine) execStage(st expStage, in value) (value, int) {
+	if rowTools[st.argv[0]] {
+		return m.runRowTool(st, in)
+	}
 	switch st.argv[0] {
 	case "echo":
 		return value{kind: valBytes, b: []byte(strings.Join(st.argv[1:], " ") + "\n")}, 0
@@ -1323,6 +1354,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return runRows(asBytes(in), st.argv[1:]), 0
 	case "builtin":
 		return runBuiltin(st.argv)
+	case "lines":
+		return runRows(asBytes(in), nil), 0
 	case "from", "to":
 		run := runFrom
 		if st.argv[0] == "to" {
@@ -1794,12 +1827,20 @@ func init() {
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
-		"set", "shopt", "declare", "from", "to", "use"} {
+		"set", "shopt", "declare", "from", "to", "use", "lines"} {
 		reservedNames[n] = true
 	}
 }
 
-func reserved(name string) bool { return reservedNames[name] }
+func reserved(name string) bool { return reservedNames[name] || rowTools[name] }
+
+// plainFirst is a stage's command name when it is a literal word.
+func plainFirst(st Stage) string {
+	if len(st.Argv) == 0 {
+		return ""
+	}
+	return plain(st.Argv[0])
+}
 
 // runRows is the only lift from text to rows. No names keeps each line,
 // spaces included, in the column line. Names split on whitespace. The last

@@ -42,7 +42,7 @@ func TestFlowFunctionsReturnValues(t *testing.T) {
 	if out.Status != 0 || out.Stdout != "5\ngot 18\nside\n" {
 		t.Fatalf("status %d out %q err %q", out.Status, out.Stdout, out.Stderr)
 	}
-	out = flow(t, "fn first(l) { for x in [ [1, 2, 3] ] { return $x } }\nfirst q")
+	out = flow(t, "fn firstOf(l) { for x in [ [1, 2, 3] ] { return $x } }\nfirstOf q")
 	if out.Status != 0 || out.Stdout != "1\n" {
 		t.Fatalf("return from loop: status %d out %q err %q", out.Status, out.Stdout, out.Stderr)
 	}

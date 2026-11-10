@@ -78,15 +78,15 @@ func newExprSpans(src string) exprSpans {
 			}
 		case '"', '\'':
 			n := scanExprQuote(src[j:])
-			nl := strings.IndexByte(src[j:], '\n')
-			if n == 0 || (nl >= 0 && nl < n) {
-				// Unclosed on this line: nothing open before it closes.
+			if n == 0 {
+				// Unclosed: the rest is inside it.
+				return ix
+			}
+			if strings.IndexByte(src[j:j+n], '\n') >= 0 {
+				// A string across a newline: no expression spans it, so
+				// nothing open before it closes. Skip the whole string so
+				// the next quote is read as the parser reads it.
 				stack = stack[:0]
-				if nl < 0 {
-					return ix
-				}
-				j += nl
-				continue
 			}
 			j += n - 1
 		}

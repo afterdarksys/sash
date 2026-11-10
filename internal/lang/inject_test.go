@@ -116,3 +116,15 @@ func TestNumericStringsCoerceOnlyAgainstNumbers(t *testing.T) {
 }
 
 func timeAfter(sec int) <-chan time.Time { return time.After(time.Duration(sec) * time.Second) }
+
+// A quoted string across a newline is skipped whole, so an expression later
+// on the next line is still found.
+func TestExpressionAfterMultilineString(t *testing.T) {
+	out := Run("echo \"a b\nc d\" | lines |> each [ split($it.line, \" \")[1] ]", injectGrant(), &listParent{}, Options{})
+	if out.Status != 0 || out.Stdout != "b\nd\n" {
+		t.Fatalf("%+v", out)
+	}
+	if out := Run("echo \"x\n[ 1 +\" ]", injectGrant(), &listParent{}, Options{}); strings.Contains(out.Stdout, "x") && out.Status == 0 && !strings.Contains(out.Stdout, "[ 1 +") {
+		t.Fatalf("a [ inside a string became an expression: %+v", out)
+	}
+}
