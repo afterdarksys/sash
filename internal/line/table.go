@@ -40,6 +40,7 @@ var table = []completion{
 	{"fn ", "fn", "define a command", ""},
 	{"dirs ", "dirs", "show the prefix stack", ""},
 	{"popd ", "popd", "pop the prefix", ""},
+	{"why ", "why", "explain the grant check", ""},
 }
 
 func matches(prefix string) []completion {

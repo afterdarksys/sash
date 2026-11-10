@@ -245,6 +245,14 @@ A private session exists only when `allow_private` is true. Those lines are stor
 
 `trace` prints each stage and its entitlement key before the stage runs.
 
+### Why
+
+`why <line>` explains the grant check for that line and runs nothing. A bare `why` explains the last line tried, blocked or run. Enter on a denied line holds the smile `denied <key> · why`.
+
+It is session UI like `prompt` and `trace`, so `sash -c` does not have it. It reads the grant already in memory and calls no parent. History and braces expand as on the line. Globs are not listed: a glob word is checked as a read of the directory before its first `*`. A `$` word is a value and is not parsed again; a path from a value is `value_path`, checked when the line runs.
+
+One row per stage and redirect: `command`, `key`, `granted`, `reason`, `fix`. Reasons: `granted`, `in_process`, `no_session` (a hand start has no parent), `not_in_grant`, `outside_roots`, `prefix_unset`, `not_grantable` (`journal`), `unknown`, `usage`, `value`, `value_path`. `fix` names the channel-policy grant or profile that adds a missing key. It is display text. The agent re-checks every verb, and a granted unit, package, sysctl, or config path is still checked against the host's policy list.
+
 ### Voice, MCP, and skills
 
 Specified in `2026-11-06-sash-doors.md`.
@@ -284,7 +292,7 @@ Each commit builds and tests alone. Security-domain commits (2, 4, 5, and the ag
 | Glob qualifiers such as `*(/)` | Landed for `*(/)` and `**(/)`. Any other qualifier is a type error and does not list. |
 | `sash-mcp`, the sash skill, and voice | Specified as source doors. The skill inserts source. `sash-mcp` and voice are not processes in this tree. Audio alone does not run a mutation. |
 | darwin and windows login shells | Blocked. The identity drop and the fd path are Linux-only. `sashLogin` stays false. |
-| Embedding Starlark or a `star` bridge | Stays in `adssh`. A future change needs an explicit Ryan request. |
+| Embedding Starlark or a `star` bridge | Stays in `adssh`. Ryan chose on 2026-11-10 to grow the sash language instead (lists, maps, loops, errors, modules), so scripting goes past fish and bash without a second language. |
 
 ## Threats
 

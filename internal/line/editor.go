@@ -91,8 +91,10 @@ type Editor struct {
 	Runs   int
 	Last   lang.Outcome
 	hasOut bool
-	done   bool
-	status int
+	// whyLine is the last line tried, blocked or run. A bare why explains it.
+	whyLine string
+	done    bool
+	status  int
 }
 
 type closedParent struct{}
@@ -811,6 +813,10 @@ func (e *Editor) submit() {
 		e.status = 0
 		return
 	}
+	if f := strings.Fields(e.line); len(f) > 0 && f[0] == "why" {
+		e.explain()
+		return
+	}
 	if exact := sessionExact(e.line); exact != "" {
 		e.hold = ""
 		e.applySession(exact)
@@ -845,12 +851,43 @@ func (e *Editor) submit() {
 	e.hold = ""
 	v := e.View()
 	if v.Block {
+		e.whyLine = e.line
+		if v.Denied {
+			e.hold = v.Smile + " · why"
+		}
 		return
 	}
+	e.whyLine = e.line
 	out := e.run(e.line)
 	e.Runs++
 	e.Last = out
 	e.opt.Prefix = out.Prefix
+	e.pushHist(e.line)
+	e.line = ""
+	e.cursor = 0
+	e.browseAt = -1
+	e.browse = nil
+	e.hasOut = true
+}
+
+// explain answers why: the rest of the line, or the last line tried when
+// there is none. It runs nothing and calls no parent (lang.Why).
+func (e *Editor) explain() {
+	e.hold = ""
+	target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(e.line), "why"))
+	if target == "" {
+		target = e.whyLine
+	}
+	if target == "" {
+		e.note = "why: nothing to explain yet"
+		e.line = ""
+		e.cursor = 0
+		return
+	}
+	e.Last = lang.Why(target, e.g, lang.Options{
+		Prefix:  e.opt.Prefix,
+		History: append([]string(nil), e.history...),
+	})
 	e.pushHist(e.line)
 	e.line = ""
 	e.cursor = 0
@@ -900,6 +937,9 @@ func sessionKind(line string) (paint bool, exact string) {
 	}
 	if f[0] == "exit" || f[0] == "logout" {
 		return len(f) == 1, ""
+	}
+	if f[0] == "why" {
+		return true, ""
 	}
 	switch f[0] {
 	case "bind", "syntax", "trace", "prompt":

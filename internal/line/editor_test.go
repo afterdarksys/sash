@@ -266,7 +266,7 @@ func TestBangDeniedStays(t *testing.T) {
 	if e.line != "unit restart nginx" || e.Runs != 0 || len(p.calls) != 0 || len(e.history) != 1 {
 		t.Fatalf("line %q runs %d calls %d hist %d", e.line, e.Runs, len(p.calls), len(e.history))
 	}
-	if v.Smile != "denied unit.restart" || !v.Block || !v.Denied {
+	if v.Smile != "denied unit.restart · why" || !v.Block || !v.Denied {
 		t.Fatalf("smile %q block %v denied %v", v.Smile, v.Block, v.Denied)
 	}
 }
@@ -552,5 +552,54 @@ func TestHistoryExpandingToExitEndsTheSession(t *testing.T) {
 	e.Feed([]byte("!!\r"))
 	if !e.done || e.status != 0 || p.n != 0 {
 		t.Fatalf("done %v status %d calls %d hold %q", e.done, e.status, p.n, e.hold)
+	}
+}
+
+func TestWhyExplainsTheBlockedLineAndRunsNothing(t *testing.T) {
+	p := &argvParent{}
+	e := New(grant.Grant{}, p)
+	e.Feed([]byte("ls\n"))
+	if v := e.View(); v.Smile != "denied file.read · why" || e.Runs != 0 {
+		t.Fatalf("smile %q runs %d", v.Smile, e.Runs)
+	}
+	e.ctrlC()
+	e.Feed([]byte("why\n"))
+	if e.Runs != 0 || len(p.calls) != 0 || !strings.Contains(e.Last.Stdout, "no_session") || !strings.Contains(e.Last.Stdout, "file.read") {
+		t.Fatalf("runs %d calls %d out %q", e.Runs, len(p.calls), e.Last.Stdout)
+	}
+	if e.history[len(e.history)-1] != "why" {
+		t.Fatalf("history %v", e.history)
+	}
+}
+
+func TestWhyWithALineIsNotBlockedAndCallsNothing(t *testing.T) {
+	p := &argvParent{}
+	g := grant.Grant{V: "sash/1", Purpose: "terminal:open", Entitlements: []string{"ps"}}
+	e := New(g, p)
+	e.line = "why unit restart nginx | ps"
+	e.cursor = len(e.line)
+	if v := e.View(); v.Block || v.Denied {
+		t.Fatalf("why line blocked %+v", v)
+	}
+	e.Feed([]byte("\n"))
+	if e.Runs != 0 || len(p.calls) != 0 || !strings.Contains(e.Last.Stdout, "not_in_grant") {
+		t.Fatalf("runs %d calls %d out %q", e.Runs, len(p.calls), e.Last.Stdout)
+	}
+}
+
+func TestWhyWithNothingToExplain(t *testing.T) {
+	e := New(grant.Grant{}, &argvParent{})
+	e.Feed([]byte("why\n"))
+	if e.note != "why: nothing to explain yet" || e.hasOut {
+		t.Fatalf("note %q out %v", e.note, e.hasOut)
+	}
+}
+
+func TestWhitespaceSubmitDoesNotPanic(t *testing.T) {
+	p := &argvParent{}
+	e := New(grant.Grant{}, p)
+	e.Feed([]byte(" \n\t\n"))
+	if len(p.calls) != 0 {
+		t.Fatalf("calls %d", len(p.calls))
 	}
 }
