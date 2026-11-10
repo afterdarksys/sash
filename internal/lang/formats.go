@@ -16,7 +16,7 @@ import (
 // Input is capped at the 8 MiB value bound and nesting at depth 64. A
 // decoded string is data: nothing here parses it as sash source.
 
-var formatNames = map[string]bool{"json": true}
+var formatNames = map[string]bool{"json": true, "yaml": true}
 
 func runFrom(format string, in value) (value, error) {
 	text := asBytes(in)
@@ -28,6 +28,8 @@ func runFrom(format string, in value) (value, error) {
 	switch format {
 	case "json":
 		d, err = decodeJSON([]byte(text))
+	case "yaml":
+		d, err = decodeYAML([]byte(text))
 	default:
 		return value{}, fmt.Errorf("usage from")
 	}
@@ -47,6 +49,8 @@ func runTo(format string, in value) (value, error) {
 	switch format {
 	case "json":
 		out, err = encodeJSONIndent(d)
+	case "yaml":
+		out, err = encodeYAML(d)
 	default:
 		return value{}, fmt.Errorf("usage to")
 	}

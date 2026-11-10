@@ -42,6 +42,8 @@ var builtins = []Builtin{
 	{"json", "filter", "", "print JSON", true},
 	{"from json", "filter", "", "parse JSON text into a value", true},
 	{"to json", "filter", "", "print a value as JSON", true},
+	{"from yaml", "filter", "", "parse YAML text into a value", true},
+	{"to yaml", "filter", "", "print a value as YAML", true},
 	{"let", "keyword", "", "bind a name", true},
 	{"if", "keyword", "", "conditional", true},
 	{"for", "keyword", "", "walk rows, a list, a map, or a range", true},
