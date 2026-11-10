@@ -31,7 +31,7 @@ let hosts = [ ["a", "b"] + $extra ]
 if [ $n < 10 ] { ... }
 ```
 
-Operators: `+ - * / %`, `== != < <= > >=`, `&& || !`, `in`, string `+` and `*`. No assignment inside an expression. Calling a verb inside `[ ]` is a type error. Verbs run only as pipeline stages, where the grant check and the audit are.
+Operators: `+ - * / %`, `== != < <= > >=`, `&& || !`, `in`, string `+` and `*`. Arithmetic reads a string that is exactly a decimal number, because arguments are text: `add 2 3` is 5. Comparison does not: two strings compare as strings, so `"00" == "0"` is false, and a string compares as a number only against a number (`[ $r.pid > 100 ]`). Expressions are one line. No assignment inside an expression. Calling a verb inside `[ ]` is a type error. Verbs run only as pipeline stages, where the grant check and the audit are.
 
 `if <pipeline>` keeps its v1 meaning: a row pipeline is true when it yields a row, a byte pipeline when its exit is 0. `if [ expr ]` is the expression form.
 

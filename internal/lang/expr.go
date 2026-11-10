@@ -44,8 +44,9 @@ func (exprBinary) expr() {}
 func (exprIndex) expr()  {}
 func (exprRange) expr()  {}
 
-// rangeMax bounds a materialized range.
-const rangeMax = 10_000_000
+// rangeMax bounds a materialized range: past it the list is over the
+// 8 MiB value cap anyway.
+const rangeMax = dataMaxBytes / 25
 
 type etok struct {
 	k   string // num, str, ref, id, op, eof
@@ -54,39 +55,63 @@ type etok struct {
 	pos int
 }
 
-// exprSpan is the length of a [ ] expression at src[i], or 0. A "[" opens
-// one only at the start of the line or after whitespace, and only when the
-// next byte is whitespace, so `egrep [0-9]+` stays a word. Quotes inside are
-// skipped and brackets nest.
-func exprSpan(src string, i int) int {
+// exprSpans finds every [ ] expression of src in one pass, so a run of
+// unclosed brackets costs linear time. An expression is one line: a newline
+// closes nothing, so history, which works a line at a time, never sees half
+// of one. Quotes inside are skipped with the same rules the parser and the
+// expanders use, and brackets nest.
+type exprSpans struct{ end map[int]int }
+
+func newExprSpans(src string) exprSpans {
+	ix := exprSpans{end: map[int]int{}}
+	var stack []int
+	for j := 0; j < len(src); j++ {
+		switch src[j] {
+		case '\n':
+			stack = stack[:0]
+		case '[':
+			stack = append(stack, j)
+		case ']':
+			if len(stack) > 0 {
+				ix.end[stack[len(stack)-1]] = j
+				stack = stack[:len(stack)-1]
+			}
+		case '"', '\'':
+			n := scanExprQuote(src[j:])
+			nl := strings.IndexByte(src[j:], '\n')
+			if n == 0 || (nl >= 0 && nl < n) {
+				// Unclosed on this line: nothing open before it closes.
+				stack = stack[:0]
+				if nl < 0 {
+					return ix
+				}
+				j += nl
+				continue
+			}
+			j += n - 1
+		}
+	}
+	return ix
+}
+
+// span is the length of the [ ] expression at src[i], or 0. A "[" opens one
+// only at the start of the line or after whitespace, and only when a space
+// or tab follows, so `egrep [0-9]+` stays a word.
+func (ix exprSpans) span(src string, i int) int {
 	if i >= len(src) || src[i] != '[' {
 		return 0
 	}
 	if i > 0 && !isSpaceByte(src[i-1]) {
 		return 0
 	}
-	if i+1 >= len(src) || !isSpaceByte(src[i+1]) {
+	if i+1 >= len(src) || (src[i+1] != ' ' && src[i+1] != '\t') {
 		return 0
 	}
-	depth := 0
-	for j := i; j < len(src); j++ {
-		switch src[j] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return j - i + 1
-			}
-		case '"', '\'':
-			n := scanExprQuote(src[j:])
-			if n == 0 {
-				return 0
-			}
-			j += n - 1
-		}
+	end, ok := ix.end[i]
+	if !ok {
+		return 0
 	}
-	return 0
+	return end - i + 1
 }
 
 func isSpaceByte(c byte) bool {
@@ -541,7 +566,8 @@ func (p *exprParser) mapLit() (Expr, error) {
 
 // evalExpr computes an expression. lookup resolves $name.
 func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
-	d, err := evalNode(x, lookup)
+	budget := dataMaxBytes
+	d, err := evalNode(x, lookup, &budget)
 	if err != nil {
 		return nil, err
 	}
@@ -551,7 +577,18 @@ func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
 	return d, nil
 }
 
-func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
+// charge spends the evaluation budget before an allocation, so a value is
+// refused before it is built, not after.
+func charge(b *int, n int) error {
+	if n < 0 || n > *b {
+		*b = -1
+		return fmt.Errorf("type expr too large")
+	}
+	*b -= n
+	return nil
+}
+
+func evalNode(x Expr, lookup func(string) (any, bool), b *int) (any, error) {
 	switch x := x.(type) {
 	case exprLit:
 		return x.d, nil
@@ -562,9 +599,12 @@ func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
 		}
 		return d, nil
 	case exprList:
+		if err := charge(b, 16*len(x.items)); err != nil {
+			return nil, err
+		}
 		out := make([]any, 0, len(x.items))
 		for _, it := range x.items {
-			d, err := evalNode(it, lookup)
+			d, err := evalNode(it, lookup, b)
 			if err != nil {
 				return nil, err
 			}
@@ -572,9 +612,12 @@ func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
 		}
 		return out, nil
 	case exprMap:
+		if err := charge(b, 32*len(x.keys)); err != nil {
+			return nil, err
+		}
 		o := newOmap()
 		for i, k := range x.keys {
-			d, err := evalNode(x.vals[i], lookup)
+			d, err := evalNode(x.vals[i], lookup, b)
 			if err != nil {
 				return nil, err
 			}
@@ -582,7 +625,7 @@ func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
 		}
 		return o, nil
 	case exprUnary:
-		d, err := evalNode(x.x, lookup)
+		d, err := evalNode(x.x, lookup, b)
 		if err != nil {
 			return nil, err
 		}
@@ -601,19 +644,19 @@ func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
 		}
 		return -n.(float64), nil
 	case exprIndex:
-		base, err := evalNode(x.x, lookup)
+		base, err := evalNode(x.x, lookup, b)
 		if err != nil {
 			return nil, err
 		}
-		key, err := evalNode(x.key, lookup)
+		key, err := evalNode(x.key, lookup, b)
 		if err != nil {
 			return nil, err
 		}
 		return indexData(base, key)
 	case exprRange:
-		return evalRange(x, lookup)
+		return evalRange(x, lookup, b)
 	case exprBinary:
-		l, err := evalNode(x.l, lookup)
+		l, err := evalNode(x.l, lookup, b)
 		if err != nil {
 			return nil, err
 		}
@@ -622,7 +665,7 @@ func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
 			if !truthy(l) {
 				return false, nil
 			}
-			r, err := evalNode(x.r, lookup)
+			r, err := evalNode(x.r, lookup, b)
 			if err != nil {
 				return nil, err
 			}
@@ -631,17 +674,17 @@ func evalNode(x Expr, lookup func(string) (any, bool)) (any, error) {
 			if truthy(l) {
 				return true, nil
 			}
-			r, err := evalNode(x.r, lookup)
+			r, err := evalNode(x.r, lookup, b)
 			if err != nil {
 				return nil, err
 			}
 			return truthy(r), nil
 		}
-		r, err := evalNode(x.r, lookup)
+		r, err := evalNode(x.r, lookup, b)
 		if err != nil {
 			return nil, err
 		}
-		return binary(x.op, l, r)
+		return binary(x.op, l, r, b)
 	}
 	return nil, fmt.Errorf("type expr")
 }
@@ -682,10 +725,10 @@ func intIndex(key any, n int) (int, error) {
 	return int(i), nil
 }
 
-func evalRange(x exprRange, lookup func(string) (any, bool)) (any, error) {
+func evalRange(x exprRange, lookup func(string) (any, bool), b *int) (any, error) {
 	var ends [2]int64
 	for i, e := range []Expr{x.lo, x.hi} {
-		d, err := evalNode(e, lookup)
+		d, err := evalNode(e, lookup, b)
 		if err != nil {
 			return nil, err
 		}
@@ -705,6 +748,9 @@ func evalRange(x exprRange, lookup func(string) (any, bool)) (any, error) {
 		return nil, fmt.Errorf("type expr range too large")
 	}
 	size := (hi-lo)*step + 1
+	if err := charge(b, int(size)*25); err != nil {
+		return nil, err
+	}
 	out := make([]any, 0, size)
 	for v := lo; ; v += step {
 		out = append(out, v)
@@ -715,7 +761,7 @@ func evalRange(x exprRange, lookup func(string) (any, bool)) (any, error) {
 	return out, nil
 }
 
-func binary(op string, l, r any) (any, error) {
+func binary(op string, l, r any, b *int) (any, error) {
 	switch op {
 	case "==":
 		return dataEqual(l, r), nil
@@ -738,33 +784,41 @@ func binary(op string, l, r any) (any, error) {
 	case "in":
 		return contains(r, l)
 	}
-	nl, lok := number(l)
-	nr, rok := number(r)
-	if lok && rok {
-		return arith(op, nl, nr)
+	// Arithmetic reads numeric strings: arguments are text, and add 2 3
+	// is 5. Comparison does not (dataEqual, dataCompare): two strings
+	// compare as strings.
+	if nl, ok := number(l); ok {
+		if nr, ok := number(r); ok {
+			return arith(op, nl, nr)
+		}
 	}
-	switch op {
-	case "+":
+	// string * number repeats.
+	if a, ok := l.(string); ok && op == "*" && isNum(r) {
+		n, isInt := r.(int64)
+		if !isInt || n < 0 || (len(a) > 0 && n > int64(dataMaxBytes/len(a))) {
+			return nil, fmt.Errorf("type expr repeat")
+		}
+		if err := charge(b, len(a)*int(n)); err != nil {
+			return nil, err
+		}
+		return strings.Repeat(a, int(n)), nil
+	}
+	if op == "+" {
 		if a, ok := l.(string); ok {
-			if b, ok := r.(string); ok {
-				if len(a)+len(b) > dataMaxBytes {
-					return nil, fmt.Errorf("type expr too large")
+			if c, ok := r.(string); ok {
+				if err := charge(b, len(a)+len(c)); err != nil {
+					return nil, err
 				}
-				return a + b, nil
+				return a + c, nil
 			}
 		}
 		if a, ok := l.([]any); ok {
-			if b, ok := r.([]any); ok {
-				return append(append(make([]any, 0, len(a)+len(b)), a...), b...), nil
+			if c, ok := r.([]any); ok {
+				if err := charge(b, 16*(len(a)+len(c))); err != nil {
+					return nil, err
+				}
+				return append(append(make([]any, 0, len(a)+len(c)), a...), c...), nil
 			}
-		}
-	case "*":
-		if a, ok := l.(string); ok && rok {
-			n, isInt := nr.(int64)
-			if !isInt || n < 0 || (len(a) > 0 && n > int64(dataMaxBytes/len(a))) {
-				return nil, fmt.Errorf("type expr repeat")
-			}
-			return strings.Repeat(a, int(n)), nil
 		}
 	}
 	return nil, fmt.Errorf("type expr %s %s %s", typeName(l), op, typeName(r))

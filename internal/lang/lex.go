@@ -63,10 +63,11 @@ func emit(out *[]token, k kind, w Word, at, n int) {
 
 func lex(src string) ([]token, error) {
 	var out []token
+	ix := newExprSpans(src)
 	i := 0
 	for i < len(src) {
 		c := src[i]
-		if n := exprSpan(src, i); n > 0 {
+		if n := ix.span(src, i); n > 0 {
 			x, err := parseExpr(src[i+1 : i+n-1])
 			if err != nil {
 				return nil, err
@@ -215,9 +216,25 @@ func lexDouble(src string) (Word, int, error) {
 		case '"':
 			flush()
 			return Word{Parts: parts}, i + 1, nil
+		case '\\':
+			// Same rule as scanQuote: a backslash hides the next byte, so
+			// the parser and the expanders end the string at one place.
+			if i+1 >= len(src) {
+				return Word{}, 0, fmt.Errorf("lex: unclosed quote")
+			}
+			switch c := src[i+1]; c {
+			case '"', '\\', '$':
+				lit.WriteByte(c)
+			default:
+				lit.WriteByte('\\')
+				lit.WriteByte(c)
+			}
+			i += 2
 		case '$':
 			flush()
-			name, n, err := lexExpand(src[i:])
+			// Inside quotes a path takes [digits] only: a ["key"] there would
+			// read past the closing quote the expanders see.
+			name, n, err := lexExpandIn(src[i:], true)
 			if err != nil {
 				return Word{}, 0, err
 			}
@@ -258,7 +275,9 @@ func bareStop(c byte) bool {
 	}
 }
 
-func lexExpand(src string) (string, int, error) {
+func lexExpand(src string) (string, int, error) { return lexExpandIn(src, false) }
+
+func lexExpandIn(src string, quoted bool) (string, int, error) {
 	if len(src) < 2 || src[0] != '$' {
 		return "", 0, fmt.Errorf("lex: $")
 	}
@@ -285,6 +304,9 @@ func lexExpand(src string) (string, int, error) {
 			continue
 		case '[':
 			n := pathIndexLen(src[i:])
+			if quoted && n > 0 && src[i+1] == '"' {
+				n = 0
+			}
 			if n == 0 {
 				return src[1:i], i, nil
 			}

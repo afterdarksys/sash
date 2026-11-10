@@ -191,8 +191,34 @@ func truthy(d any) bool {
 	return false
 }
 
-// number reads a number, or a string that is exactly a decimal number. Row
-// fields are strings, so `[ $r.pid > 100 ]` compares numbers.
+func isNum(d any) bool {
+	switch d.(type) {
+	case int64, float64:
+		return true
+	}
+	return false
+}
+
+// numPair is two numbers, or a number and a string that is exactly a
+// decimal number. Two strings are never numbers: "01" == "1" is false. Row
+// fields are strings, so `[ $r.pid > 100 ]` still compares numbers.
+func numPair(a, b any) (any, any, bool) {
+	switch {
+	case isNum(a) && isNum(b):
+		return a, b, true
+	case isNum(a):
+		if nb, ok := number(b); ok {
+			return a, nb, true
+		}
+	case isNum(b):
+		if na, ok := number(a); ok {
+			return na, b, true
+		}
+	}
+	return nil, nil, false
+}
+
+// number reads a number, or a string that is exactly a decimal number.
 func number(d any) (any, bool) {
 	switch x := d.(type) {
 	case int64, float64:
@@ -223,8 +249,8 @@ func asFloat(n any) float64 {
 }
 
 func dataEqual(a, b any) bool {
-	if na, ok := number(a); ok {
-		if nb, ok := number(b); ok {
+	if na, nb, ok := numPair(a, b); ok {
+		{
 			ia, aInt := na.(int64)
 			ib, bInt := nb.(int64)
 			if aInt && bInt {
@@ -271,8 +297,8 @@ func dataEqual(a, b any) bool {
 
 // dataCompare orders two numbers or two strings.
 func dataCompare(a, b any) (int, error) {
-	if na, ok := number(a); ok {
-		if nb, ok := number(b); ok {
+	if na, nb, ok := numPair(a, b); ok {
+		{
 			ia, aInt := na.(int64)
 			ib, bInt := nb.(int64)
 			if aInt && bInt {
