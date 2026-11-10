@@ -47,7 +47,29 @@ type Outcome struct {
 	Stdout string
 	Stderr string
 	Prefix string
+	// Exit is true when the line ran exit: the prompt ends the session.
+	Exit bool
 }
+
+// Loop and verb caps (language v2 contract). set raises them up to capCeil.
+const (
+	loopMaxDefault = 100000
+	verbMaxDefault = 10000
+	capCeil        = 10000000
+)
+
+// ctl is a jump in flight. It travels on the stop path: a loop takes
+// break and continue, a call takes return, Run takes exit. try never
+// catches one.
+type ctl int
+
+const (
+	ctlNone ctl = iota
+	ctlBreak
+	ctlContinue
+	ctlReturn
+	ctlExit
+)
 
 // Options carries the session prefix and the history newest-last.
 // The process cwd is not this prefix. Trace prints each stage key.
@@ -68,18 +90,18 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if err != nil {
 		return Outcome{Status: exitType, Stderr: err.Error() + "\n", Prefix: opt.Prefix}
 	}
-	m := &machine{
-		g:     g,
-		p:     p,
-		vars:  map[string]value{},
-		fns:   map[string]*Fn{},
-		trace: opt.Trace,
-	}
+	m := newMachine(g, p)
+	m.trace = opt.Trace
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
 	status, _ := m.runProg(prog)
-	return Outcome{Status: status, Stdout: m.out.String(), Stderr: m.err.String(), Prefix: m.prefix()}
+	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: m.err.String(), Prefix: m.prefix()}
+	if m.ctl == ctlExit {
+		out.Status = m.exitCode
+		out.Exit = true
+	}
+	return out
 }
 
 type value struct {
@@ -102,6 +124,36 @@ type machine struct {
 	err   strings.Builder
 	trace bool
 	depth int
+
+	ctl       ctl
+	retVal    *value
+	exitCode  int
+	loopDepth int
+	loopMax   int
+	verbMax   int
+	verbs     int
+}
+
+var errVerbMax = fmt.Errorf("verb max")
+
+// do is the one door to the parent. It counts verbs against verbMax.
+func (m *machine) do(v parent.Verb) (parent.Result, error) {
+	if m.verbs >= m.verbMax {
+		return parent.Result{}, errVerbMax
+	}
+	m.verbs++
+	return m.p.Do(v)
+}
+
+func newMachine(g grant.Grant, p parent.Parent) *machine {
+	return &machine{
+		g:       g,
+		p:       p,
+		vars:    map[string]value{},
+		fns:     map[string]*Fn{},
+		loopMax: loopMaxDefault,
+		verbMax: verbMaxDefault,
+	}
 }
 
 func (m *machine) prefix() string {
@@ -131,6 +183,12 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runIf(s)
 	case *For:
 		return m.runFor(s)
+	case *While:
+		return m.runWhile(s)
+	case *Jump:
+		return m.runJump(s)
+	case *Try:
+		return m.runTry(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -209,30 +267,282 @@ func (m *machine) runIf(s *If) (int, bool) {
 }
 
 func (m *machine) runFor(s *For) (int, bool) {
-	st, stop, v := m.runPipe(s.Src)
-	if stop {
-		return st, true
-	}
-	if v.kind != valRows {
-		m.err.WriteString("type for\n")
-		return exitType, true
-	}
-	status := 0
-	for _, row := range v.rows {
-		prev, had := m.vars[s.Name]
-		m.vars[s.Name] = value{kind: valRow, row: row}
-		st, stop = m.runProg(&s.Body)
-		if had {
-			m.vars[s.Name] = prev
+	type item struct{ a, b value }
+	var items []item
+	isMap := false
+	switch {
+	case s.SrcX != nil || s.SrcRef != "":
+		var d any
+		var err error
+		if s.SrcX != nil {
+			d, err = m.evalX(s.SrcX)
 		} else {
-			delete(m.vars, s.Name)
+			d, err = m.ref(s.SrcRef)
 		}
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return exitType, true
+		}
+		switch x := d.(type) {
+		case []any:
+			for i, e := range x {
+				items = append(items, item{fromDatum(int64(i)), fromDatum(e)})
+			}
+		case *omap:
+			isMap = true
+			for _, k := range x.keys {
+				items = append(items, item{fromDatum(k), fromDatum(x.m[k])})
+			}
+		default:
+			m.err.WriteString("type for " + typeName(d) + "\n")
+			return exitType, true
+		}
+	default:
+		st, stop, v := m.runPipe(s.Src)
+		if stop {
+			return st, true
+		}
+		if v.kind != valRows {
+			m.err.WriteString("type for\n")
+			return exitType, true
+		}
+		for i, row := range v.rows {
+			items = append(items, item{fromDatum(int64(i)), value{kind: valRow, row: row}})
+		}
+	}
+	names := []string{s.Name}
+	if s.Name2 != "" {
+		names = append(names, s.Name2)
+	}
+	saved := m.saveVars(names)
+	defer m.restoreVars(saved)
+	status, iter := 0, 0
+	for _, it := range items {
+		// One name takes the item: a list element, a map key, or a row.
+		// Two names take index and element, or key and value.
+		if s.Name2 == "" {
+			if isMap {
+				m.vars[s.Name] = it.a
+			} else {
+				m.vars[s.Name] = it.b
+			}
+		} else {
+			m.vars[s.Name] = it.a
+			m.vars[s.Name2] = it.b
+		}
+		st, stop, brk := m.loopBody(&s.Body, &iter)
 		status = st
 		if stop {
 			return status, true
 		}
+		if brk {
+			break
+		}
 	}
 	return status, false
+}
+
+type savedVar struct {
+	name string
+	v    value
+	had  bool
+}
+
+func (m *machine) saveVars(names []string) []savedVar {
+	out := make([]savedVar, len(names))
+	for i, n := range names {
+		v, had := m.vars[n]
+		out[i] = savedVar{n, v, had}
+	}
+	return out
+}
+
+func (m *machine) restoreVars(saved []savedVar) {
+	for _, s := range saved {
+		if s.had {
+			m.vars[s.name] = s.v
+		} else {
+			delete(m.vars, s.name)
+		}
+	}
+}
+
+// loopBody runs one iteration under loopMax. brk is a taken break.
+func (m *machine) loopBody(body *Program, iter *int) (status int, stop, brk bool) {
+	*iter++
+	if *iter > m.loopMax {
+		m.err.WriteString("loop max\n")
+		return exitType, true, false
+	}
+	m.loopDepth++
+	st, stop := m.runProg(body)
+	m.loopDepth--
+	if stop {
+		switch m.ctl {
+		case ctlBreak:
+			m.ctl = ctlNone
+			return st, false, true
+		case ctlContinue:
+			m.ctl = ctlNone
+			return st, false, false
+		}
+		return st, true, false
+	}
+	return st, false, false
+}
+
+// test evaluates an if or while condition.
+func (m *machine) test(x Expr, pipe Pipeline) (bool, int, bool) {
+	if x != nil {
+		d, err := m.evalX(x)
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return false, exitType, true
+		}
+		return truthy(d), 0, false
+	}
+	st, stop, v := m.runPipe(pipe)
+	if stop {
+		return false, st, true
+	}
+	if v.kind == valRows {
+		return len(v.rows) > 0, st, false
+	}
+	return st == 0, st, false
+}
+
+func (m *machine) runWhile(s *While) (int, bool) {
+	status, iter := 0, 0
+	first := s.Do
+	for {
+		if !first {
+			ok, st, stop := m.test(s.CondX, s.Cond)
+			if stop {
+				return st, true
+			}
+			if !ok {
+				return status, false
+			}
+		}
+		first = false
+		st, stop, brk := m.loopBody(&s.Body, &iter)
+		status = st
+		if stop {
+			return status, true
+		}
+		if brk {
+			return status, false
+		}
+	}
+}
+
+func (m *machine) runJump(j *Jump) (int, bool) {
+	switch j.Kind {
+	case "break", "continue":
+		if m.loopDepth == 0 {
+			m.err.WriteString("usage " + j.Kind + "\n")
+			return exitType, true
+		}
+		if j.Kind == "break" {
+			m.ctl = ctlBreak
+		} else {
+			m.ctl = ctlContinue
+		}
+		return 0, true
+	case "return":
+		if m.depth == 0 {
+			m.err.WriteString("usage return\n")
+			return exitType, true
+		}
+		m.retVal = nil
+		if j.Word != nil {
+			v, err := m.wordValue(*j.Word)
+			if err != nil {
+				m.err.WriteString(err.Error() + "\n")
+				return exitType, true
+			}
+			m.retVal = &v
+		}
+		m.ctl = ctlReturn
+		return 0, true
+	}
+	code := 0
+	if j.Word != nil {
+		v, err := m.wordValue(*j.Word)
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return exitType, true
+		}
+		n, ok := number(toDatum(v))
+		i, isInt := n.(int64)
+		if !ok || !isInt || i < 0 || i > 255 {
+			m.err.WriteString("usage exit\n")
+			return exitType, true
+		}
+		code = int(i)
+	}
+	m.ctl = ctlExit
+	m.exitCode = code
+	return code, true
+}
+
+// wordValue is a word as a value: an expression keeps its datum, any other
+// word is its expanded text.
+func (m *machine) wordValue(w Word) (value, error) {
+	if x := exprOf(w); x != nil {
+		d, err := m.evalX(x)
+		if err != nil {
+			return value{}, err
+		}
+		return fromDatum(d), nil
+	}
+	if len(w.Parts) == 1 && w.Parts[0].Exp {
+		d, err := m.ref(w.Parts[0].Lit)
+		if err != nil {
+			return value{}, fmt.Errorf("type value")
+		}
+		return fromDatum(d), nil
+	}
+	text, err := m.expand(w)
+	if err != nil {
+		return value{}, err
+	}
+	return value{kind: valStr, s: text}, nil
+}
+
+// runTry catches a failure that stops Body. Its stderr text moves into
+// the caught map and out of the session's stderr. A jump passes through.
+func (m *machine) runTry(t *Try) (int, bool) {
+	mark := m.err.Len()
+	st, stop := m.runProg(&t.Body)
+	if !stop || m.ctl != ctlNone {
+		return st, stop
+	}
+	all := m.err.String()
+	msg := strings.TrimSpace(all[mark:])
+	m.err.Reset()
+	m.err.WriteString(all[:mark])
+	if t.Catch == nil {
+		return st, false
+	}
+	var saved []savedVar
+	if t.Name != "" {
+		saved = m.saveVars([]string{t.Name})
+		e := newOmap()
+		e.set("status", int64(st))
+		e.set("message", msg)
+		key := ""
+		if first, _, _ := strings.Cut(msg, "\n"); strings.HasPrefix(first, "denied ") {
+			key = strings.TrimPrefix(first, "denied ")
+		}
+		e.set("key", key)
+		m.vars[t.Name] = value{kind: valData, d: e}
+	}
+	st, stop = m.runProg(t.Catch)
+	if saved != nil {
+		m.restoreVars(saved)
+	}
+	return st, stop
 }
 
 func (m *machine) runChain(c *Chain) (int, bool) {
@@ -255,7 +565,10 @@ func (m *machine) runChain(c *Chain) (int, bool) {
 		}
 		st, v := m.execPrepared(exp)
 		status = st
-		if exp[len(exp)-1].outPath == "" && exp[0].call == nil {
+		if m.ctl != ctlNone {
+			return st, true
+		}
+		if exp[len(exp)-1].outPath == "" && (exp[0].call == nil || v.kind != valBytes || len(v.b) > 0) {
 			m.out.WriteString(render(v))
 		}
 		if st == exitDenied || st == exitUnknown || st == exitType {
@@ -272,7 +585,7 @@ func (m *machine) runPipe(pipe Pipeline) (int, bool, value) {
 		return prob.status, true, value{}
 	}
 	st, v := m.execPrepared(exp)
-	stop := st == exitDenied || st == exitUnknown || st == exitType
+	stop := st == exitDenied || st == exitUnknown || st == exitType || m.ctl != ctlNone
 	return st, stop, v
 }
 
@@ -663,14 +976,22 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if err := m.traceStage(exp[0]); err != nil {
 			return 1, value{}
 		}
-		st, _ := m.callFn(exp[0])
+		st, stop := m.callFn(exp[0])
+		if stop && m.ctl == ctlNone && st == 0 {
+			st = exitType
+		}
+		if m.retVal != nil {
+			v := *m.retVal
+			m.retVal = nil
+			return st, v
+		}
 		return st, value{kind: valBytes}
 	}
 	cur := value{kind: valBytes}
 	if len(exp[0].here) > 0 {
 		cur = value{kind: valBytes, b: append([]byte(nil), exp[0].here...)}
 	} else if exp[0].inPath != "" {
-		res, err := m.p.Do(parent.Verb{Key: "file.read", Argv: []string{"<", exp[0].inPath}, Path: exp[0].inPath})
+		res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"<", exp[0].inPath}, Path: exp[0].inPath})
 		if err != nil {
 			m.err.WriteString("parent file.read\n")
 			return 1, value{}
@@ -684,6 +1005,10 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		}
 		if err := m.traceStage(st); err != nil {
 			return 1, cur
+		}
+		if (st.key != "" || st.outPath != "") && m.verbs >= m.verbMax {
+			m.err.WriteString("verb max\n")
+			return exitType, cur
 		}
 		v, code := m.execStage(st, cur)
 		exits[i] = code
@@ -701,7 +1026,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 	}
 	if exp[len(exp)-1].outPath != "" {
 		body := render(cur)
-		if _, err := m.p.Do(parent.Verb{
+		if _, err := m.do(parent.Verb{
 			Key:  "file.write",
 			Argv: []string{">", exp[len(exp)-1].outPath},
 			Path: exp[len(exp)-1].outPath,
@@ -731,7 +1056,17 @@ func (m *machine) callFn(st expStage) (int, bool) {
 		}
 		m.vars[name] = value{kind: valStr, s: st.argv[i+1]}
 	}
+	// A loop outside the call is not the call's: break there is usage.
+	loops := m.loopDepth
+	m.loopDepth = 0
+	m.retVal = nil
 	status, stop := m.runProg(&fn.Body)
+	m.loopDepth = loops
+	if stop && m.ctl == ctlReturn {
+		m.ctl = ctlNone
+		stop = false
+		status = 0
+	}
 	for _, name := range fn.Params {
 		if had[name] {
 			m.vars[name] = saved[name]
@@ -797,7 +1132,7 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		}
 		var b []byte
 		for _, pth := range st.paths {
-			res, err := m.p.Do(parent.Verb{Key: "file.read", Argv: []string{"cat", pth}, Path: pth})
+			res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"cat", pth}, Path: pth})
 			if err != nil {
 				m.err.WriteString("parent file.read\n")
 				return value{}, 1
@@ -814,7 +1149,7 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 }
 
 func (m *machine) move(st expStage) (value, int) {
-	res, err := m.p.Do(parent.Verb{Key: "file.read", Argv: []string{"stat", st.path}, Path: st.path})
+	res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"stat", st.path}, Path: st.path})
 	if err != nil {
 		m.err.WriteString("parent file.read\n")
 		return value{}, 1
@@ -833,7 +1168,7 @@ func (m *machine) move(st expStage) (value, int) {
 }
 
 func (m *machine) toolkit(st expStage) (value, int) {
-	res, err := m.p.Do(parent.Verb{Key: st.key, Argv: st.argv, Path: st.path})
+	res, err := m.do(parent.Verb{Key: st.key, Argv: st.argv, Path: st.path})
 	if err != nil {
 		m.err.WriteString("parent " + st.key + "\n")
 		return value{}, 1
@@ -1204,7 +1539,8 @@ func reserved(name string) bool {
 	switch name {
 	case "echo", "egrep", "head", "cut", "wc", "where", "select", "rows", "json",
 		"ps", "unit", "journal", "package", "sysctl", "config", "cat", "ls",
-		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in":
+		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
+		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why":
 		return true
 	default:
 		return false

@@ -861,6 +861,12 @@ func (e *Editor) submit() {
 	out := e.run(e.line)
 	e.Runs++
 	e.Last = out
+	if out.Exit {
+		e.pushHist(e.line)
+		e.done = true
+		e.status = out.Status
+		return
+	}
 	e.opt.Prefix = out.Prefix
 	e.pushHist(e.line)
 	e.line = ""

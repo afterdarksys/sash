@@ -38,13 +38,46 @@ type If struct {
 func (*If) stmt() {}
 
 // For walks the rows of Src.
+// For walks Src: rows from a pipeline, or a value from a [ ] expression
+// (SrcX) or a $ reference (SrcRef). Name2 takes the index or the map value.
 type For struct {
-	Name string
-	Src  Pipeline
-	Body Program
+	Name   string
+	Name2  string
+	Src    Pipeline
+	SrcX   Expr
+	SrcRef string
+	Body   Program
 }
 
 func (*For) stmt() {}
+
+// While runs Body while the condition holds. Do runs Body once first.
+type While struct {
+	CondX Expr
+	Cond  Pipeline
+	Body  Program
+	Do    bool
+}
+
+func (*While) stmt() {}
+
+// Jump is break, continue, return, or exit. Word is the optional value.
+type Jump struct {
+	Kind string
+	Word *Word
+}
+
+func (*Jump) stmt() {}
+
+// Try runs Body. A failure that stops it (a denial, an unknown name, a type
+// error) runs Catch with Name bound to {status, message, key}.
+type Try struct {
+	Body  Program
+	Name  string
+	Catch *Program
+}
+
+func (*Try) stmt() {}
 
 // Fn defines a command. Each call checks entitlements again.
 type Fn struct {
@@ -138,6 +171,14 @@ func (p *parser) stmt() (Stmt, error) {
 			return p.forr()
 		case "fn":
 			return p.fn()
+		case "while":
+			return p.while()
+		case "do":
+			return p.doWhile()
+		case "break", "continue", "return", "exit":
+			return p.jump()
+		case "try":
+			return p.try()
 		}
 	}
 	return p.chain()
@@ -175,32 +216,50 @@ func (p *parser) let() (Stmt, error) {
 
 func (p *parser) iff() (Stmt, error) {
 	p.i++
-	var condX Expr
-	var cond Pipeline
-	if t := p.peek(); t.kind == kWord && exprOf(t.word) != nil && p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kLBrace {
-		condX = exprOf(t.word)
-		p.i++
-	} else {
-		var err error
-		if cond, err = p.pipeline(); err != nil {
-			return nil, err
-		}
+	condX, cond, err := p.cond()
+	if err != nil {
+		return nil, err
 	}
 	then, err := p.block()
 	if err != nil {
 		return nil, err
 	}
+	// else may sit on the next line. Without one, the separator belongs to
+	// the program, so give it back.
+	save := p.i
 	p.skipSep()
 	var elseP *Program
+	if p.peek().kind != kWord || plain(p.peek().word) != "else" {
+		p.i = save
+	}
 	if p.peek().kind == kWord && plain(p.peek().word) == "else" {
 		p.i++
-		body, err := p.block()
-		if err != nil {
-			return nil, err
+		if p.peek().kind == kWord && plain(p.peek().word) == "if" {
+			inner, err := p.iff()
+			if err != nil {
+				return nil, err
+			}
+			elseP = &Program{Stmts: []Stmt{inner}}
+		} else {
+			body, err := p.block()
+			if err != nil {
+				return nil, err
+			}
+			elseP = body
 		}
-		elseP = body
 	}
 	return &If{CondX: condX, Cond: cond, Then: *then, Else: elseP}, nil
+}
+
+// cond reads an if or while condition: one [ ] expression followed by {,
+// or a pipeline.
+func (p *parser) cond() (Expr, Pipeline, error) {
+	if t := p.peek(); t.kind == kWord && exprOf(t.word) != nil && p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kLBrace {
+		p.i++
+		return exprOf(t.word), Pipeline{}, nil
+	}
+	pipe, err := p.pipeline()
+	return nil, pipe, err
 }
 
 func (p *parser) forr() (Stmt, error) {
@@ -209,11 +268,44 @@ func (p *parser) forr() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	f := &For{Name: name}
+	if p.peek().kind == kWord && plain(p.peek().word) != "in" && plain(p.peek().word) != "" {
+		if f.Name2, err = p.plainName("for"); err != nil {
+			return nil, err
+		}
+	}
 	if plain(p.peek().word) != "in" || p.peek().kind != kWord {
 		return nil, fmt.Errorf("parse: for needs in")
 	}
 	p.i++
-	src, err := p.pipeline()
+	t := p.peek()
+	next := kEOF
+	if p.i+1 < len(p.tok) {
+		next = p.tok[p.i+1].kind
+	}
+	switch {
+	case t.kind == kWord && exprOf(t.word) != nil && next == kLBrace:
+		f.SrcX = exprOf(t.word)
+		p.i++
+	case t.kind == kWord && next == kLBrace && len(t.word.Parts) == 1 && t.word.Parts[0].Exp:
+		f.SrcRef = t.word.Parts[0].Lit
+		p.i++
+	default:
+		if f.Src, err = p.pipeline(); err != nil {
+			return nil, err
+		}
+	}
+	body, err := p.block()
+	if err != nil {
+		return nil, err
+	}
+	f.Body = *body
+	return f, nil
+}
+
+func (p *parser) while() (Stmt, error) {
+	p.i++
+	condX, cond, err := p.cond()
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +313,73 @@ func (p *parser) forr() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &For{Name: name, Src: src, Body: *body}, nil
+	return &While{CondX: condX, Cond: cond, Body: *body}, nil
+}
+
+// doWhile reads do { } while c. The while sits on the line of the }.
+func (p *parser) doWhile() (Stmt, error) {
+	p.i++
+	body, err := p.block()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().kind != kWord || plain(p.peek().word) != "while" {
+		return nil, fmt.Errorf("parse: do needs while")
+	}
+	p.i++
+	condX, cond, err := p.condEnd()
+	if err != nil {
+		return nil, err
+	}
+	return &While{CondX: condX, Cond: cond, Body: *body, Do: true}, nil
+}
+
+// condEnd reads a condition that ends the statement: an expression or a
+// pipeline, then a separator or the end.
+func (p *parser) condEnd() (Expr, Pipeline, error) {
+	if t := p.peek(); t.kind == kWord && exprOf(t.word) != nil {
+		p.i++
+		return exprOf(t.word), Pipeline{}, nil
+	}
+	pipe, err := p.pipeline()
+	return nil, pipe, err
+}
+
+func (p *parser) jump() (Stmt, error) {
+	kind := plain(p.peek().word)
+	p.i++
+	j := &Jump{Kind: kind}
+	if (kind == "return" || kind == "exit") && p.peek().kind == kWord {
+		w := p.peek().word
+		j.Word = &w
+		p.i++
+	}
+	return j, nil
+}
+
+func (p *parser) try() (Stmt, error) {
+	p.i++
+	body, err := p.block()
+	if err != nil {
+		return nil, err
+	}
+	t := &Try{Body: *body}
+	save := p.i
+	p.skipSep()
+	if p.peek().kind != kWord || plain(p.peek().word) != "catch" {
+		p.i = save
+		return t, nil
+	}
+	p.i++
+	if p.peek().kind == kWord {
+		if t.Name, err = p.plainName("catch"); err != nil {
+			return nil, err
+		}
+	}
+	if t.Catch, err = p.block(); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 func (p *parser) fn() (Stmt, error) {

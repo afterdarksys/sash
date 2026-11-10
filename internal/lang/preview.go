@@ -157,12 +157,24 @@ func collectPipes(prog *Program, out *[]Pipeline) {
 				*out = append(*out, *s.Pipe)
 			}
 		case *If:
-			*out = append(*out, s.Cond)
+			if s.CondX == nil {
+				*out = append(*out, s.Cond)
+			}
 			collectPipes(&s.Then, out)
 			collectPipes(s.Else, out)
 		case *For:
-			*out = append(*out, s.Src)
+			if s.SrcX == nil && s.SrcRef == "" {
+				*out = append(*out, s.Src)
+			}
 			collectPipes(&s.Body, out)
+		case *While:
+			if s.CondX == nil {
+				*out = append(*out, s.Cond)
+			}
+			collectPipes(&s.Body, out)
+		case *Try:
+			collectPipes(&s.Body, out)
+			collectPipes(s.Catch, out)
 		case *Fn:
 			collectPipes(&s.Body, out)
 		}

@@ -95,6 +95,11 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 			whyFns(s.Else, fns)
 		case *For:
 			whyFns(&s.Body, fns)
+		case *While:
+			whyFns(&s.Body, fns)
+		case *Try:
+			whyFns(&s.Body, fns)
+			whyFns(s.Catch, fns)
 		}
 	}
 }
