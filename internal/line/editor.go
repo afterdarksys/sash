@@ -673,7 +673,7 @@ func (e *Editor) tab() {
 		}
 	}
 	if len(got) == 1 && entitled == 1 {
-		e.replace(from, to, one.insert)
+		e.replace(from, to, one)
 		return
 	}
 	e.menu = got
@@ -683,14 +683,25 @@ func (e *Editor) tab() {
 	e.browseAt = -1
 }
 
-// replace puts insert over line[from:to], the word Tab completed, and
-// keeps the rest of the line.
-func (e *Editor) replace(from, to int, insert string) {
+// replace puts row.insert over line[from:to], the word Tab completed, and
+// keeps the rest of the line. The new line is lexed again: unless the
+// insert reads back as exactly the row's words, nothing changes.
+func (e *Editor) replace(from, to int, row completion) {
 	if from < 0 || to > len(e.line) || from > to {
 		return
 	}
-	e.line = e.line[:from] + insert + e.line[to:]
-	e.cursor = from + len(insert)
+	line := e.line[:from] + row.insert + e.line[to:]
+	want := row.words
+	if want == nil {
+		want = strings.Fields(row.insert)
+	}
+	got, ok := lang.InsertedWords(line, from, from+len(strings.TrimRight(row.insert, " ")))
+	if !ok || strings.Join(got, "\x00") != strings.Join(want, "\x00") || len(got) != len(want) {
+		e.menuOpen = false
+		return
+	}
+	e.line = line
+	e.cursor = from + len(row.insert)
 	e.touch()
 }
 
@@ -702,7 +713,7 @@ func (e *Editor) acceptMenu() {
 	if row.key != "" && !e.g.Has(row.key) {
 		return
 	}
-	e.replace(e.menuFrom, e.menuTo, row.insert)
+	e.replace(e.menuFrom, e.menuTo, row)
 }
 
 func (e *Editor) histUp() {

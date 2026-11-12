@@ -62,8 +62,9 @@ func (denyParent) Do(parent.Verb) (parent.Result, error) {
 }
 
 // Preview paints src with the same parse and preflight as Run.
-// A denied line is Block, and so is a command name from a value, which
-// the run would refuse after running the statements before it. Usage and
+// A denied line is Block, and so are a command name from a value and an
+// unknown command, which the run would refuse after running the
+// statements before it. Usage and
 // type errors are not. A line that fails to lex or parse is Block with
 // the error and no spans.
 func Preview(src string, g grant.Grant, opt Options) LinePreview {
@@ -94,9 +95,20 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
+	// A fn defined on the line is known to the stages after it. The copy
+	// keeps the session's own map unwritten.
+	fns := map[string]*Fn{}
+	for k, v := range m.fns {
+		fns[k] = v
+	}
+	whyFns(prog, fns)
+	m.fns = fns
+	var uses []*Use
+	collectUses(prog, &uses)
 	denial := ""
 	typePipe := false
 	other := ""
+	unknown := ""
 	for _, pipe := range pipes {
 		_, prob, at := m.prepareAt(pipe)
 		if prob == nil {
@@ -123,12 +135,16 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 			typePipe = true
 			continue
 		}
+		// An unknown command is Block, as a command from a value is: the
+		// run would stop there after running the stages before it. A use
+		// can define any name, so a line with one only hints.
+		if prob.status == exitUnknown && len(uses) == 0 && unknown == "" {
+			unknown = prob.msg
+		}
 		if other == "" {
 			other = prob.msg
 		}
 	}
-	var uses []*Use
-	collectUses(prog, &uses)
 	for _, u := range uses {
 		if d := m.useDenied(u); d != "" && denial == "" {
 			denial = d
@@ -158,6 +174,11 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	}
 	if fromValue {
 		out.Smile = msgCommandFromValue
+		out.Block = true
+		return out
+	}
+	if unknown != "" {
+		out.Smile = safeText(unknown)
 		out.Block = true
 		return out
 	}

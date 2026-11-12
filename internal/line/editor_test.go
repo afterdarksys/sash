@@ -424,9 +424,10 @@ func TestPromptLineIsDefault(t *testing.T) {
 	if got.Status != 127 || !strings.Contains(got.Stderr, "unknown prompt") {
 		t.Fatalf("status %d stderr %q", got.Status, got.Stderr)
 	}
+	// An unknown command is Block: Enter runs nothing.
 	e.Feed([]byte("prompt foo\n"))
-	if e.Runs != 1 || e.Last.Status != 127 || p.n != 0 {
-		t.Fatalf("runs %d status %d calls %d stderr %q", e.Runs, e.Last.Status, p.n, e.Last.Stderr)
+	if v := e.View(); e.Runs != 0 || p.n != 0 || !v.Block || v.Smile == "" {
+		t.Fatalf("runs %d calls %d view %+v", e.Runs, p.n, v)
 	}
 }
 

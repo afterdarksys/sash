@@ -7,8 +7,17 @@ package line
 // so it adds no agent call or audit row and cannot hang on the verb pipe;
 // a path is offered only when grant.AllowsRead covers it, a denied row is
 // dim and inserts nothing, every shown cell goes through needsCell, and an
-// inserted path that is not a plain word is quoted, so a crafted name can
-// neither drive the terminal nor split into words. A value is never shown.
+// inserted path that is not a plain word is single-quoted, so a crafted
+// name can neither drive the terminal nor split into words. A value is
+// never shown.
+//
+// A host file name is hostile text. Three layers keep it one word: a path
+// is remembered only when it has no quote, backslash, $, #, ;, |, glob
+// character, or anything needsCell would escape; Tab offers nothing when
+// the line up to the cursor does not lex (inside an open quote, where the
+// right escaping depends on that quote); and after any insert the line is
+// lexed again and the insert must be exactly the expected word tokens,
+// or the line is left as it was.
 
 import (
 	"path"
@@ -53,11 +62,16 @@ func (e *Editor) remember(line, before, after string) {
 	}
 }
 
+// seenUnsafe are the characters a remembered path may not hold: quotes
+// and the backslash (they change quoting), and $ # ; | * ? (expansion,
+// comments, stages, globs), whatever quoting is used.
+const seenUnsafe = "'\"`\\$#;|*?"
+
 func (e *Editor) see(p string) {
 	if e.seenSet == nil {
 		e.seenSet = map[string]bool{}
 	}
-	if e.seenSet[p] || strings.ContainsAny(p, "\n\r\x00") {
+	if e.seenSet[p] || strings.ContainsAny(p, seenUnsafe+"\n\r") || lang.SafeText(p) != p {
 		return
 	}
 	e.seenSet[p] = true
@@ -77,6 +91,18 @@ func (e *Editor) complete() ([]completion, int, int) {
 		start--
 	}
 	word := line[start:cur]
+	// A lone $ does not lex yet; the rest of the line must. A word after
+	// $ is a name prefix or nothing is offered.
+	lexed := line[:cur]
+	if strings.HasPrefix(word, "$") {
+		lexed = line[:start]
+		if word != "$" && !nameRe.MatchString(word[1:]) {
+			return nil, 0, 0
+		}
+	}
+	if !lang.LexOK(lexed) {
+		return nil, 0, 0
+	}
 	cmdFrom := strings.LastIndexAny(line[:start], ";|{(&") + 1
 	for {
 		for cmdFrom < start && (line[cmdFrom] == ' ' || line[cmdFrom] == '\t') {
@@ -116,7 +142,7 @@ func (e *Editor) completeCommand(before, cmd string) []completion {
 	if !strings.ContainsAny(cmd, " \t") {
 		for _, f := range uniqSorted(append(e.opt.State.FnNames(), lineFns(before)...)) {
 			if strings.HasPrefix(f, cmd) && len(f) > len(cmd) {
-				out = append(out, completion{insert: f + " ", form: f, desc: "function"})
+				out = append(out, completion{insert: f + " ", form: f, desc: "function", words: []string{f}})
 			}
 		}
 	}
@@ -135,7 +161,7 @@ func completeFlags(cmd, word string) []completion {
 	var out []completion
 	for _, f := range best.Flags {
 		if strings.HasPrefix(f, word) {
-			out = append(out, completion{insert: f + " ", form: f, desc: "flag of " + best.Form})
+			out = append(out, completion{insert: f + " ", form: f, desc: "flag of " + best.Form, words: []string{f}})
 		}
 	}
 	return out
@@ -147,7 +173,7 @@ func (e *Editor) completeNames(before, prefix string) []completion {
 	var out []completion
 	for _, n := range uniqSorted(append(e.opt.State.Names(), lineNames(before)...)) {
 		if strings.HasPrefix(n, prefix) {
-			out = append(out, completion{insert: "$" + n, form: "$" + n, desc: "name"})
+			out = append(out, completion{insert: "$" + n, form: "$" + n, desc: "name", words: []string{"$" + n}})
 		}
 		if len(out) == menuMax {
 			break
@@ -159,7 +185,7 @@ func (e *Editor) completeNames(before, prefix string) []completion {
 // completePaths offers seen paths the grant lets this session read.
 // A relative word matches seen paths under the prefix.
 func (e *Editor) completePaths(word string) []completion {
-	typed := strings.TrimLeft(word, `'"`)
+	typed := word
 	base := ""
 	if !strings.HasPrefix(typed, "/") && e.opt.Prefix != "" {
 		base = strings.TrimSuffix(path.Clean(e.opt.Prefix), "/") + "/"
@@ -181,7 +207,11 @@ func (e *Editor) completePaths(word string) []completion {
 		if !strings.HasPrefix(show, typed) || show == typed {
 			continue
 		}
-		out = append(out, completion{insert: quotePath(show), form: show, desc: "seen path", key: "file.read"})
+		q, ok := quotePath(show)
+		if !ok {
+			continue
+		}
+		out = append(out, completion{insert: q, form: show, desc: "seen path", key: "file.read", words: []string{show}})
 		if len(out) == menuMax {
 			break
 		}
@@ -189,9 +219,9 @@ func (e *Editor) completePaths(word string) []completion {
 	return out
 }
 
-// quotePath keeps a plain path as it is and quotes any other: single
-// quotes, or double quotes with ", \, and $ escaped when it holds a '.
-func quotePath(p string) string {
+// quotePath keeps a plain path as it is and single-quotes any other. A
+// path with a quote character is refused; see never keeps one.
+func quotePath(p string) (string, bool) {
 	plain := p != ""
 	for i := 0; i < len(p); i++ {
 		c := p[i]
@@ -200,14 +230,13 @@ func quotePath(p string) string {
 			break
 		}
 	}
-	if plain {
-		return p
+	switch {
+	case plain:
+		return p, true
+	case p == "" || strings.ContainsAny(p, seenUnsafe):
+		return "", false
 	}
-	if !strings.Contains(p, "'") {
-		return "'" + p + "'"
-	}
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`)
-	return `"` + r.Replace(p) + `"`
+	return "'" + p + "'", true
 }
 
 var (

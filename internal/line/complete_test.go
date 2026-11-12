@@ -171,7 +171,7 @@ func TestTabCompletesSeenPathsOnly(t *testing.T) {
 		"cat sy\t":          "cat syslog",
 		"cat /var/log/b.\t": "cat /var/log/b.log",
 		"cat /etc/sh\t":     "cat /etc/sh",
-		"cat /var/log/it\t": "cat \"/var/log/it's\"",
+		"cat /var/log/it\t": "cat /var/log/it",
 	} {
 		e.Feed([]byte{0x15})
 		e.Feed([]byte(in))
@@ -187,13 +187,13 @@ func TestTabCompletesSeenPathsOnly(t *testing.T) {
 		t.Fatalf("menu %q", ins)
 	}
 	// A name from the host can hold anything; keys cannot type ESC, so
-	// see it directly.
+	// see it directly. It is never kept, so never shown.
 	e.see("/var/log/esc\x1b]0;pwn\x07\u202e")
 	e.Feed([]byte{0x15})
 	e.Feed([]byte("cat /\t"))
 	v = e.View()
 	f := Frame(v)
-	if strings.Contains(f, "/etc/shadow") || strings.Contains(f, "\x1b]0;pwn") || strings.Contains(f, "\u202e") || !strings.Contains(f, `esc\x1b]0;pwn\x07\u202e`) {
+	if strings.Contains(f, "/etc/shadow") || strings.Contains(f, "pwn") || strings.Contains(f, "it's") || !strings.Contains(f, "/var/log/syslog") {
 		t.Fatalf("frame %q", f)
 	}
 	// No file.read: the rows are dim and insert nothing.
@@ -263,22 +263,23 @@ func TestFlagsAreForms(t *testing.T) {
 	}
 }
 
-// An inserted path lexes back to the same one word.
+// An inserted path lexes back to the same one word, through Enter's
+// expansion too; a path quoting cannot keep one word is refused.
 func TestQuotePathRoundTrips(t *testing.T) {
-	for _, p := range []string{"/var/log/a", "/var/log/a b", "/var/log/it's", `/var/log/q"$x\y'`, "/var/log/a;b|c", "/var/log/{a,b}", "/var/log/!!", "/var/log/a*b"} {
-		line := "cat " + quotePath(p)
-		// Enter expands history, braces, and globs first: a quoted path
-		// comes through that unchanged.
+	for _, p := range []string{"/var/log/a", "/var/log/a b", "/var/log/a&b", "/var/log/{a,b}", "/var/log/!!", "/var/log/a<b>(c)", "/var/log/日本"} {
+		q, ok := quotePath(p)
+		line := "cat " + q
 		exp, prob := lang.Expand(line, readGrant(), failParent{t}, lang.Options{History: []string{"ps"}})
-		if prob != nil || exp != line {
-			t.Errorf("%q: expand %q %v", line, exp, prob)
+		if !ok || prob != nil || exp != line {
+			t.Errorf("%q: quoted %q ok %v expand %q %v", p, q, ok, exp, prob)
 		}
-		if strings.Contains(p, "*") {
-			continue
+		if got := lang.PathWords(line); len(got) != 1 || got[0] != p {
+			t.Errorf("%q quoted %s lexes to %q", p, q, got)
 		}
-		got := lang.PathWords(line)
-		if len(got) != 1 || got[0] != p {
-			t.Errorf("%q quoted %s lexes to %q", p, quotePath(p), got)
+	}
+	for _, p := range []string{"/var/log/it's", `/var/log/q"x`, `/var/log/a\b`, "/var/log/$x", "/var/log/a#b", "/var/log/a;b", "/var/log/a|b", "/var/log/*.log", "/var/log/a?", "/var/log/a`b`", ""} {
+		if q, ok := quotePath(p); ok {
+			t.Errorf("%q quoted as %q", p, q)
 		}
 	}
 }

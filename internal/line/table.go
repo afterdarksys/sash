@@ -12,6 +12,9 @@ type completion struct {
 	form   string
 	desc   string
 	key    string
+	// words are the word tokens insert must lex to in the new line; nil
+	// is the words of insert (a compiled-in form).
+	words []string
 }
 
 // table is the Tab menu, built from lang.Builtins so Tab, prompt menu, and

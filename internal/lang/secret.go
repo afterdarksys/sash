@@ -117,3 +117,54 @@ func PathWords(line string) []string {
 	}
 	return out
 }
+
+// LexOK reports whether src lexes: no open quote, no bad $ form. Tab
+// completes only when the line up to the cursor does, so it never works
+// inside a quote whose escaping it would have to guess.
+func LexOK(src string) bool {
+	_, err := lex(src)
+	return err == nil
+}
+
+// InsertedWords is how line reads over [from, to), the span Tab just
+// filled: the word tokens there, each as its literal or as $name. ok is
+// false unless the line lexes and the span is exactly whole word tokens,
+// each one plain literal or one bare $name, so an insert that opened a
+// quote, a comment, a pipe, a stage, a redirect, an expression, or glued
+// to a neighbour is refused.
+func InsertedWords(line string, from, to int) ([]string, bool) {
+	toks, err := lex(line)
+	if err != nil {
+		return nil, false
+	}
+	var out []string
+	first, last := -1, -1
+	for _, t := range toks {
+		if t.end <= from || t.pos >= to || t.kind == kEOF {
+			continue
+		}
+		if t.kind != kWord || len(t.word.Parts) != 1 || t.word.Parts[0].X != nil {
+			return nil, false
+		}
+		if first < 0 {
+			first = t.pos
+		}
+		last = t.end
+		part := t.word.Parts[0]
+		if part.Exp {
+			out = append(out, "$"+part.Lit)
+			continue
+		}
+		// A literal that spells $, a comment, a stage, or a glob is
+		// refused even quoted: it reads as one of those to a person, and
+		// "$x" here must only ever mean a reference.
+		if strings.ContainsAny(part.Lit, "$#;|*?`\n\r") || needsCell(part.Lit) != part.Lit {
+			return nil, false
+		}
+		out = append(out, part.Lit)
+	}
+	if first != from || last != to {
+		return nil, false
+	}
+	return out, true
+}
