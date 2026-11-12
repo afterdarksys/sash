@@ -82,13 +82,30 @@ func TestPaintEscapesFormatAndC1(t *testing.T) {
 // combining mark none.
 func TestFrameCountsDisplayWidth(t *testing.T) {
 	for line, cols := range map[string]int{
-		"echo 日本":         5 + 4,
-		"echo ｱ":          5 + 1,
-		"echo Ａ":          5 + 2,
-		"echo e\u0301":    5 + 1,
-		"echo 한국":         5 + 4,
-		"echo \U0001f600": 5 + 2,
-		"echo café":       5 + 4,
+		"echo 日本":                             5 + 4,
+		"echo ｱ":                              5 + 1,
+		"echo Ａ":                              5 + 2,
+		"echo e\u0301":                        5 + 1,
+		"echo 한국":                             5 + 4,
+		"echo \U0001f600":                     5 + 2,
+		"echo café":                           5 + 4,
+		"echo \U0001f680":                     5 + 2,
+		"echo \U0001f6eb":                     5 + 2,
+		"echo \U0001fa70":                     5 + 2,
+		"echo \U0001fa90":                     5 + 2,
+		"echo \U0001f1fa\U0001f1f8":           5 + 2,
+		"echo \U0001f1fa":                     5 + 2,
+		"echo \U0001f1fa\U0001f1f8\U0001f1eb": 5 + 4,
+		"echo \u2614":                         5 + 2,
+		"echo \u26a1":                         5 + 2,
+		"echo \u2705":                         5 + 2,
+		"echo \u27bf":                         5 + 2,
+		"echo \u2600":                         5 + 1,
+		"echo \u2600\ufe0f":                   5 + 2,
+		"echo \u2764\ufe0f":                   5 + 2,
+		"echo \u2614\ufe0f":                   5 + 2,
+		"echo a\ufe0f":                        5 + 2,
+		"echo \u65e5\ufe0f":                   5 + 2,
 	} {
 		e := New(grant.Grant{AllowPrivate: true}, nil)
 		e.Feed([]byte(line))
