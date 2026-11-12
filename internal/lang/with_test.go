@@ -23,8 +23,8 @@ func TestWithRestoresOnEveryWayOut(t *testing.T) {
 		"nosuch",
 		"for i in [ [1] ] { with set -e { break } }",
 		"fn f() { with set -e { return 1 } }\nf",
-		"try { with set -e { nosuch } }",
-		"try { with set -e, loopmax 3, x = inner { while [ true ] { let x = 1 } } }",
+		"try { with set -e { nosuch } } catch { }",
+		"try { with set -e, loopmax 3, x = inner { while [ true ] { let x = 1 } } } catch { }",
 	} {
 		st := NewState()
 		st.vars["x"] = value{kind: valStr, s: "outer"}

@@ -93,7 +93,7 @@ func TestTimeout(t *testing.T) {
 	}
 	// The inner, shorter deadline wins; the outer one comes back after.
 	p = &flakyParent{okAt: 1, clock: now, step: 20 * time.Second}
-	out = Run("timeout 10m { try { timeout 30s { unit restart a; unit restart b; unit restart c } }; unit restart d }", restartGrant(), p, Options{})
+	out = Run("timeout 10m { try { timeout 30s { unit restart a; unit restart b; unit restart c } } catch { }; unit restart d }", restartGrant(), p, Options{})
 	if out.Status != 0 || p.n != 3 {
 		t.Fatalf("nested: %+v calls %d", out, p.n)
 	}

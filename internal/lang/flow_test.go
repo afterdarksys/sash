@@ -85,14 +85,52 @@ func TestFlowJumpsOutsideTheirPlace(t *testing.T) {
 	}
 }
 
+// TestBareTryIsParseError: a try with no catch would drop a failure and
+// its stderr. Every reader of the source refuses it the same way.
+func TestBareTryIsParseError(t *testing.T) {
+	for _, src := range []string{
+		"try { nosuch }\necho after",
+		"try { echo \"{bad\" | from json }",
+		"try { unit restart nginx }; echo after",
+		"retry 2 { try { nosuch } }",
+		"fn f() { try { nosuch } }",
+		"if [ true ] { try { nosuch } } else { echo no }",
+		"try { nosuch } catch e { try { nosuch } }",
+		"try { nosuch }\n\n",
+		"try { nosuch } # catch { }",
+	} {
+		c := &countParent{}
+		out := Run(src, exprGrant(), c, Options{})
+		if out.Status != exitType || out.Stderr != "parse: try needs catch\n" || out.Stdout != "" || c.n != 0 {
+			t.Errorf("run %q: %+v calls %d", src, out, c.n)
+		}
+		pv := Preview(src, exprGrant(), Options{})
+		if !pv.Block || pv.Smile != "parse: try needs catch" || len(pv.Spans) != 0 {
+			t.Errorf("preview %q: %+v", src, pv)
+		}
+		why := Why(src, exprGrant(), Options{})
+		if why.Status != exitType || !strings.Contains(why.Stderr, "try needs catch") || why.Stdout != "" {
+			t.Errorf("why %q: %+v", src, why)
+		}
+		needs := Needs(src, NeedsOptions{})
+		if needs.Status != exitType || !strings.Contains(needs.Stderr, "try needs catch") || needs.Stdout != "" {
+			t.Errorf("needs %q: %+v", src, needs)
+		}
+	}
+	out := flow(t, "try { nosuch }\ncatch e { echo $e.status }")
+	if out.Status != 0 || out.Stdout != "127\n" {
+		t.Fatalf("catch on the next line: %+v", out)
+	}
+}
+
 func TestFlowTry(t *testing.T) {
 	out := flow(t, "try { unit restart nginx } catch e { echo $e.key $e.status $e.message }\necho after")
 	if out.Status != 0 || out.Stdout != "unit.restart 126 denied unit.restart\nafter\n" || out.Stderr != "" {
 		t.Fatalf("caught denial: %+v", out)
 	}
-	out = flow(t, "try { nosuch }\necho after")
+	out = flow(t, "try { nosuch } catch { }\necho after")
 	if out.Status != 0 || out.Stdout != "after\n" || out.Stderr != "" {
-		t.Fatalf("try without catch: %+v", out)
+		t.Fatalf("empty catch: %+v", out)
 	}
 	out = flow(t, "let e = keep\ntry { echo [ 1 / 0 ] } catch e { echo $e.status }\necho $e")
 	if out.Status != 0 || out.Stdout != "2\nkeep\n" {

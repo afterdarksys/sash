@@ -38,6 +38,7 @@ func TestBinaryNeeds(t *testing.T) {
 		{[]string{"--plan", "--needs", "-c", "ps"}, 2, ""},
 		{[]string{"--needs", "--bogus", "-c", "ps"}, 2, ""},
 		{[]string{"--needs", "-c", "cat ("}, 2, ""},
+		{[]string{"--needs", "-c", "try { ps }"}, 2, ""},
 		// Nothing after the source, and --needs or --policy out of
 		// place, is a usage error: the script never runs.
 		{[]string{"-c", "echo RAN", "--needs"}, 2, ""},

@@ -73,7 +73,8 @@ type Jump struct {
 func (*Jump) stmt() {}
 
 // Try runs Body. A failure that stops it (a denial, an unknown name, a type
-// error) runs Catch with Name bound to {status, message, key}.
+// error) runs Catch with Name bound to {status, message, key}. Catch is
+// required: a bare try is a parse error, so no failure is dropped silently.
 type Try struct {
 	Body  Program
 	Name  string
@@ -560,11 +561,9 @@ func (p *parser) try() (Stmt, error) {
 		return nil, err
 	}
 	t := &Try{Body: *body}
-	save := p.i
 	p.skipSep()
 	if p.peek().kind != kWord || plain(p.peek().word) != "catch" {
-		p.i = save
-		return t, nil
+		return nil, fmt.Errorf("parse: try needs catch")
 	}
 	p.i++
 	if p.peek().kind == kWord {
