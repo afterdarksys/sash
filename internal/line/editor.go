@@ -158,7 +158,7 @@ func (e *Editor) loadHist() {
 	}
 	for _, row := range res.Rows {
 		line := row["line"]
-		if line == "" || strings.ContainsAny(line, "\n\r\x00") || len(line) > maxLine || lang.DeclaresSecret(line) {
+		if line == "" || !histSafe(line) || len(line) > maxLine || lang.DeclaresSecret(line) {
 			continue
 		}
 		e.history = append(e.history, line)
@@ -1014,9 +1014,25 @@ func (e *Editor) applySession(cmd string) {
 	}
 }
 
+// histSafe reports a history line with no rune needsCell would escape
+// (a control, ESC, C1, a bidi or zero-width format character, U+2028,
+// anything unprintable, or a byte that is not UTF-8). A backslash is
+// fine. Every history line enters through loadHist or pushHist, so the
+// suggestion, Up and Down, Ctrl-R, and !! never draw or insert one raw.
+func histSafe(s string) bool {
+	for i := 0; i < len(s); {
+		_, size, bad := lang.EscapeRune(s[i:])
+		if bad {
+			return false
+		}
+		i += size
+	}
+	return true
+}
+
 func (e *Editor) pushHist(s string) {
 	// A declare -s line may hold the secret itself: it is not kept.
-	if strings.TrimSpace(s) == "" || lang.DeclaresSecret(s) {
+	if strings.TrimSpace(s) == "" || lang.DeclaresSecret(s) || !histSafe(s) {
 		return
 	}
 	e.history = append(e.history, s)

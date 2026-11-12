@@ -119,6 +119,8 @@ This exists: `suggestionSuffix` takes the newest history line with the typed pre
 
 v5 fix: `loadHist` drops only lines containing `\n`, `\r`, or `\x00`, so ESC, C1, and bidi bytes in agent-stored history reach the terminal raw through the suggestion and through browsing. v5 drops any history line containing a rune `needsCell` would escape, other than a backslash.
 
+**As built.** `histSafe` drops a line holding any rune `needsCell` escapes (ESC, C1, bidi and zero-width format characters, U+2028, a tab, a bad byte); a backslash is fine. Every history line enters through `loadHist` (agent-stored) or `pushHist` (submitted, and not sent to the agent either), so the suggestion, Up and Down, Ctrl-R, and `!!` never see one.
+
 - Decision: suggest from lines that no longer parse, or only parseable ones. Recommended: any line, because the preview colours it once accepted, and parsing every history line per keystroke breaks the section 1 budget.
 
 ## 8. `par N { }`
