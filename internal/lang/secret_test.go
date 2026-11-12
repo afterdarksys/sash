@@ -104,11 +104,23 @@ func TestHistoryRefusesASecretLine(t *testing.T) {
 		`declare -rs tok = hunter2`,
 		`declare -r -s tok = hunter2`,
 		`declare "-s" tok = hunter2`,
-		`de"cl"are -s tok = hunter2`,
 		`echo x; declare -s tok = hunter2`,
 		`  declare  -s  tok = hunter2`,
+		`declare -{s,r} tok = "hunter2"`,
+		`declare -{r,s} tok = hunter2`,
+		`declare -{s} tok = hunter2`,
+		`declare {-s,-r} tok = hunter2`,
+		`declare "-sr" tok = hunter2`,
+		`declare '-s' tok = hunter2`,
 	} {
-		for _, use := range []string{"unit status !$", "!!", `echo "!$"`, "echo !!"} {
+		// Each spelling is one a run binds as a secret.
+		if out := Run(decl+"\necho $tok", allow(), &listParent{}, Options{}); out.Status != 0 || !strings.HasSuffix(out.Stdout, "***\n") {
+			t.Errorf("%q is not a secret in a run: %+v", decl, out)
+		}
+		if !DeclaresSecret(decl) {
+			t.Errorf("DeclaresSecret(%q) is false", decl)
+		}
+		for _, use := range []string{"unit status !$", "cat !$", "!!", `echo "!$"`, "echo !!"} {
 			src := decl + "\n" + use
 			p := &listParent{}
 			out := Run(src, allow(), p, Options{})
@@ -130,6 +142,10 @@ func TestHistoryRefusesASecretLine(t *testing.T) {
 	out = Run("declare -s tok = hunter2\necho $tok\n!!", allow(), &listParent{}, Options{})
 	if out.Status != 0 || strings.Contains(out.Stdout, "hunter2") {
 		t.Fatalf("by name: %+v", out)
+	}
+	// A fragment a run would not parse still refuses: fail closed.
+	if !DeclaresSecret(`de"cl"are -s tok = hunter2`) || !DeclaresSecret("declare -{s,r} t = x {") {
+		t.Fatalf("fallback missed")
 	}
 	if DeclaresSecret("declare -r x = 1") || DeclaresSecret("echo -s declare") {
 		t.Fatalf("false match")

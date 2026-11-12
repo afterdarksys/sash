@@ -634,12 +634,13 @@ func TestNamesCarryAcrossPromptLines(t *testing.T) {
 // A declare -s line is not kept in any spelling, and one loaded from the
 // agent's history is dropped, so !$ and Alt-. cannot copy the secret.
 func TestHistoryDropsSecretLines(t *testing.T) {
-	p := &histParent{rows: []parent.Row{{"line": "declare -rs tok = hunter2"}, {"line": "echo ok"}}}
+	p := &histParent{rows: []parent.Row{{"line": "declare -rs tok = hunter2"}, {"line": "declare -{s,r} t = hunter2"}, {"line": "echo ok"}}}
 	e := New(grant.Grant{}, p)
 	if len(e.history) != 1 || e.history[0] != "echo ok" {
 		t.Fatalf("loaded %v", e.history)
 	}
-	for _, line := range []string{"declare  -s tok = hunter2", "declare -sr tok = hunter2", "declare \"-s\" tok = hunter2"} {
+	for _, line := range []string{"declare  -s tok = hunter2", "declare -sr tok = hunter2", "declare \"-s\" tok = hunter2",
+		"declare -{s,r} tok = hunter2", "declare -{r,s} tok2 = hunter2", "declare {-s,-r} tok3 = hunter2"} {
 		e.Feed([]byte(line + "\n"))
 	}
 	for _, h := range e.history {

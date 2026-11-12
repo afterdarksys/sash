@@ -24,12 +24,39 @@ var errSecretBranch = fmt.Errorf("a secret cannot decide a branch")
 
 // DeclaresSecret is true when line may bind a declare -s literal. History
 // never carries such a line: !! and !$ refuse it, and the editor does not
-// keep it. Quotes and backslashes are dropped first, so "-s", -rs, and
-// de"cl"are still match; a false match only refuses, it never leaks.
+// keep it. The answer comes from what a run binds: the line after brace
+// expansion, parsed, with each declare's flags as the parser reads them, so
+// -{s,r}, "-s", and -rs all count. A line that does not parse alone (a
+// fragment of a block) falls back to matching words, with and without
+// braces as separators. A false match only refuses; it never leaks.
 func DeclaresSecret(line string) bool {
+	text := line
+	if exp, prob := expandBraces(line); prob == nil && len(exp) <= expandMax {
+		text = exp
+	}
+	if prog, err := parse(text); err == nil {
+		found := false
+		needsEachStmt(prog, func(s Stmt) {
+			if d, ok := s.(*Declare); ok && strings.Contains(d.Flags, "s") {
+				found = true
+			}
+		})
+		if found {
+			return true
+		}
+	}
+	for _, t := range []string{text, line} {
+		if declaresSecretWords(t, "|&;<>()=") || declaresSecretWords(t, "|&;<>(){}=") {
+			return true
+		}
+	}
+	return false
+}
+
+func declaresSecretWords(line, seps string) bool {
 	line = strings.NewReplacer("'", "", "\"", "", "\\", "").Replace(line)
 	words := strings.FieldsFunc(line, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || strings.ContainsRune("|&;<>(){}=", r)
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || strings.ContainsRune(seps, r)
 	})
 	declare := false
 	for _, w := range words {
