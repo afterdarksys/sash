@@ -264,3 +264,31 @@ func TestTTYSourceTimeoutAndDiscard(t *testing.T) {
 		t.Fatalf("eof %v", err)
 	}
 }
+
+// Ctrl-C in the quiet window is not discarded: it is a no that stops the
+// line.
+func TestConfirmCtrlCInQuietWindow(t *testing.T) {
+	for _, keys := range [][]ev{
+		evs(50*time.Millisecond, "\x03"),
+		cat(evs(10*time.Millisecond, "abc"), evs(10*time.Millisecond, "\x03")),
+	} {
+		if yes, intr, _, _ := ask(t, keys); yes || !intr {
+			t.Fatalf("%v: yes %v interrupted %v", keys, yes, intr)
+		}
+	}
+}
+
+// The terminal guard restores once, however often it is called.
+func TestTermGuardIdempotent(t *testing.T) {
+	n := 0
+	var out bytes.Buffer
+	g := &termGuard{restore: func() error { n++; return nil }, out: &out}
+	for i := 0; i < 3; i++ {
+		if err := g.Restore(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n != 1 || out.String() != "\x1b[?2004l" {
+		t.Fatalf("restores %d out %q", n, out.String())
+	}
+}

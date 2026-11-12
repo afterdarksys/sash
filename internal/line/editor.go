@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -1281,12 +1282,36 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		}
 		return 1
 	}
+	guard := &termGuard{restore: restore, out: out}
+	stop := watchSignals(guard.Restore, reraise)
+	defer stop()
 	e.width = func() int { return termWidth(int(out.Fd())) }
 	keys := newTTYSource(in)
 	e.opt.Confirm = func(prompt string) (bool, bool) {
 		return askConfirm(keys, out, func() error { return flushInput(int(in.Fd())) }, prompt)
 	}
-	return finishRaw(restore, e.loop(keys, out, errOut))
+	return finishRaw(guard.Restore, e.loop(keys, out, errOut))
+}
+
+// termGuard puts the terminal back once: bracketed paste off (a confirm
+// prompt may have left it on) and the mode Loop changed. Normal exit and
+// SIGTERM or SIGHUP both call it; a second call is harmless.
+type termGuard struct {
+	once    sync.Once
+	restore func() error
+	out     io.Writer
+	err     error
+}
+
+func (g *termGuard) Restore() error {
+	g.once.Do(func() {
+		werr := writeAll(g.out, []byte("\x1b[?2004l"))
+		g.err = g.restore()
+		if g.err == nil {
+			g.err = werr
+		}
+	})
+	return g.err
 }
 
 // loop paints, reads, and runs until the session ends. A paste is fed in
@@ -1387,12 +1412,17 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 	}()
 	start := nowFn()
 	for {
-		_, ok, err := r.ReadByteTimeout(confirmQuiet)
+		b, ok, err := r.ReadByteTimeout(confirmQuiet)
 		if err != nil {
 			return false, false
 		}
 		if !ok {
 			break
+		}
+		// Ctrl-C is never discarded: it is a no that stops the line, as
+		// it is once the prompt is armed.
+		if b == 0x03 {
+			return false, true
 		}
 		if nowFn().Sub(start) >= confirmQuietMax {
 			return false, false
