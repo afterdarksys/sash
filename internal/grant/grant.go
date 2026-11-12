@@ -57,9 +57,7 @@ func under(roots []string, p string) bool {
 			continue
 		}
 		r = path.Clean(r)
-		// The root "/" (Verify accepts it: clean and absolute) covers
-		// every absolute path; r+"/" would be "//" and match only "/".
-		if c == r || strings.HasPrefix(c, strings.TrimSuffix(r, "/")+"/") {
+		if c == r || strings.HasPrefix(c, r+"/") {
 			return true
 		}
 	}
