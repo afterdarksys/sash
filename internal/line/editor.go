@@ -7,7 +7,6 @@ package line
 // grant, or a path. The editor holds no signing key.
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -909,6 +908,9 @@ func (e *Editor) submit() {
 		e.applySession(exact)
 		e.pushHist(exact)
 		e.note = exact
+		if exact == "confirm off" && e.opt.State.Confirm() {
+			e.note = "confirm stays on"
+		}
 		e.line = ""
 		e.cursor = 0
 		e.browseAt = -1
@@ -1009,7 +1011,19 @@ func (e *Editor) applySession(cmd string) {
 	case "trace on":
 		e.opt.State.SetXtrace(true)
 	case "confirm off":
-		e.opt.State.ConfirmOff()
+		// Clearing the latch is itself confirmed with the same prompt, so
+		// a pasted confirm off and a verb after it meet a question, not a
+		// run. No terminal is no.
+		if !e.opt.State.Confirm() {
+			return
+		}
+		yes := false
+		if e.opt.Confirm != nil {
+			yes, _ = e.opt.Confirm("confirm off? [y + Enter / N]")
+		}
+		if yes {
+			e.opt.State.ConfirmOff()
+		}
 	case "prompt line":
 		e.closeNovice()
 	case "prompt menu":
@@ -1268,11 +1282,11 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		return 1
 	}
 	e.width = func() int { return termWidth(int(out.Fd())) }
-	reader := bufio.NewReader(in)
+	keys := newTTYSource(in)
 	e.opt.Confirm = func(prompt string) (bool, bool) {
-		return askConfirm(reader, out, func() error { return flushInput(int(in.Fd())) }, prompt)
+		return askConfirm(keys, out, func() error { return flushInput(int(in.Fd())) }, prompt)
 	}
-	return finishRaw(restore, e.loop(reader, out, errOut))
+	return finishRaw(restore, e.loop(keys, out, errOut))
 }
 
 // loop paints, reads, and runs until the session ends. A paste is fed in
@@ -1281,7 +1295,7 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 // submission is shown as it was typed before its output, and a paste with
 // several submissions (and EOF) keeps every outcome, since the loop
 // never feeds past an Enter before writing what it ran.
-func (e *Editor) loop(reader *bufio.Reader, out, errOut io.Writer) int {
+func (e *Editor) loop(reader keySource, out, errOut io.Writer) int {
 	var chunk []byte
 	for {
 		view := e.View()
@@ -1299,9 +1313,9 @@ func (e *Editor) loop(reader *bufio.Reader, out, errOut io.Writer) int {
 			return 1
 		}
 		chunk = append(chunk[:0], b)
-		for !isEnter(b) && reader.Buffered() > 0 {
-			next, err := reader.Peek(1)
-			if err != nil || isEnter(next[0]) {
+		for !isEnter(b) {
+			next, ok := reader.Peek()
+			if !ok || isEnter(next) {
 				break
 			}
 			if b, err = reader.ReadByte(); err != nil {
@@ -1333,29 +1347,31 @@ func (e *Editor) termWidth() int {
 	return e.width()
 }
 
-// confirmGap is the least time between y and Enter: a person pauses, a
-// paste of y and a newline does not.
-const confirmGap = 50 * time.Millisecond
+// confirmQuiet is how long input must stay silent after the prompt is
+// drawn before a key can answer it; confirmQuietMax caps the wait.
+const (
+	confirmQuiet    = 200 * time.Millisecond
+	confirmQuietMax = 5 * time.Second
+)
 
-// askConfirm is set -o confirm's question. Threats: a paste or typeahead
-// answering for the person. Everything typed before the prompt is thrown
-// away (the terminal's input queue, flush, and what the reader buffered);
-// bracketed paste (DECSET 2004) is on while the prompt is up, so a paste
-// starts with ESC, and any input starting with ESC (a paste or an arrow
-// key) is no. Yes is y or Y, then a flush, then Enter (CR or LF) at least
-// confirmGap after the y; anything else is no. Ctrl-C at either key is no
-// that also stops the line. A failed flush, EOF, or a read error is no.
-// There is no yes to all.
-func askConfirm(r *bufio.Reader, out io.Writer, flush func() error, prompt string) (yes, interrupted bool) {
+// askConfirm is set -o confirm's question. Threats: a paste, typeahead,
+// or the tail of a paste begun before the prompt answering for the
+// person. Everything typed before the prompt is thrown away (the
+// terminal's input queue, flush, and what was read); bracketed paste
+// (DECSET 2004) is on while the prompt is up. The prompt arms only after
+// confirmQuiet with no byte arriving, discarding all input until then; if
+// input keeps coming for confirmQuietMax, the answer is no. Each key is
+// echoed (escaped), so a y is visible before Enter. Yes is exactly y or
+// Y, then a second flush, then Enter (CR or LF). Enter alone, any other
+// first key (ESC: a paste or an arrow), y then anything but Enter, EOF,
+// or a failed flush is no; Ctrl-C is no that also stops the line. There is
+// no yes to all.
+func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (yes, interrupted bool) {
 	drop := func() bool {
 		if flush == nil || flush() != nil {
 			return false
 		}
-		if n := r.Buffered(); n > 0 {
-			if _, err := r.Discard(n); err != nil {
-				return false
-			}
-		}
+		r.Discard()
 		return true
 	}
 	if !drop() {
@@ -1369,31 +1385,51 @@ func askConfirm(r *bufio.Reader, out io.Writer, flush func() error, prompt strin
 			yes = false
 		}
 	}()
-	b, err := r.ReadByte()
-	if err != nil || b == 0x1b {
-		return false, false
+	start := nowFn()
+	for {
+		_, ok, err := r.ReadByteTimeout(confirmQuiet)
+		if err != nil {
+			return false, false
+		}
+		if !ok {
+			break
+		}
+		if nowFn().Sub(start) >= confirmQuietMax {
+			return false, false
+		}
 	}
-	if b == 0x03 {
+	key := func() (byte, bool) {
+		b, err := r.ReadByte()
+		if err != nil {
+			return 0, false
+		}
+		if b != '\r' && b != '\n' {
+			if werr := writeAll(out, []byte(lang.Cell(string([]byte{b})))); werr != nil {
+				return 0, false
+			}
+		}
+		return b, true
+	}
+	b, ok := key()
+	switch {
+	case !ok:
+		return false, false
+	case b == 0x03:
 		return false, true
-	}
-	if b != 'y' && b != 'Y' {
+	case b != 'y' && b != 'Y':
 		return false, false
 	}
-	at := nowFn()
 	if !drop() {
 		return false, false
 	}
-	b, err = r.ReadByte()
-	if err != nil {
+	b, ok = key()
+	switch {
+	case !ok:
 		return false, false
-	}
-	if b == 0x03 {
+	case b == 0x03:
 		return false, true
 	}
-	if (b != '\r' && b != '\n') || nowFn().Sub(at) < confirmGap {
-		return false, false
-	}
-	return true, false
+	return b == '\r' || b == '\n', false
 }
 
 func isEnter(b byte) bool { return b == '\r' || b == '\n' }

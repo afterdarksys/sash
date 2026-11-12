@@ -1,7 +1,6 @@
 package line
 
 import (
-	"bufio"
 	"bytes"
 	"sort"
 	"strconv"
@@ -165,7 +164,7 @@ func (w *framesWriter) Write(b []byte) (int, error) {
 // submission is painted whole before its output.
 func TestLoopCoalescesPaste(t *testing.T) {
 	line := "echo " + strings.Repeat("a", 4000)
-	in := bufio.NewReaderSize(strings.NewReader(line+"\recho two\r"), 16384)
+	in := newTTYSource(strings.NewReader(line + "\recho two\r"))
 	e := New(grant.Grant{AllowPrivate: true}, nil)
 	e.Syntax = false
 	var out, errOut framesWriter
