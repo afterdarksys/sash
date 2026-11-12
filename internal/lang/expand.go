@@ -371,6 +371,11 @@ func braceOnce(src string) (string, bool, *ExpandProblem) {
 }
 
 func mapWords(src string, fn func(string) (string, *ExpandProblem)) (string, *ExpandProblem) {
+	return mapWordsAt(src, func(_ int, word string) (string, *ExpandProblem) { return fn(word) })
+}
+
+// mapWordsAt is mapWords with each word's byte offset in src.
+func mapWordsAt(src string, fn func(int, string) (string, *ExpandProblem)) (string, *ExpandProblem) {
 	var b strings.Builder
 	ix := newExprSpans(src)
 	for i := 0; i < len(src); {
@@ -411,7 +416,7 @@ func mapWords(src string, fn func(string) (string, *ExpandProblem)) (string, *Ex
 			}
 			j++
 		}
-		repl, prob := fn(src[i:j])
+		repl, prob := fn(i, src[i:j])
 		if prob != nil {
 			return "", prob
 		}
