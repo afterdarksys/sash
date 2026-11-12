@@ -59,8 +59,10 @@ func TestNeedsVerbKinds(t *testing.T) {
 		{"package install curl", 0, []needsWant{{"package.install", "curl", "yes", ""}}, []string{"--package curl"}},
 		{"sysctl get net.ipv4.ip_forward", 0, []needsWant{{"sysctl.get", "net.ipv4.ip_forward", "no", ""}}, []string{"--tweak-sysctl net.ipv4.ip_forward"}},
 		{"sysctl set vm.swappiness 10", 0, []needsWant{{"sysctl.set", "vm.swappiness", "yes", ""}}, []string{"--tweak-sysctl vm.swappiness"}},
-		{"config read /etc/nginx", 0, []needsWant{{"config.read", "/etc/nginx", "no", ""}}, []string{"--config /etc/nginx"}},
-		{"config read etc/nginx", 1, []needsWant{{"config.read", "etc/nginx", "no", noteRelative}}, nil},
+		// A run checks config read against the file_read roots too.
+		{"config read /etc/nginx/nginx.conf", 0, []needsWant{{"config.read", "/etc/nginx/nginx.conf", "no", ""}, {"file.read", "/etc/nginx/nginx.conf", "no", ""}},
+			[]string{"--config /etc/nginx/nginx.conf", "--file-read /etc/nginx"}},
+		{"config read etc/nginx", 1, []needsWant{{"config.read", "etc/nginx", "no", noteRelative}, {"file.read", "etc/nginx", "no", noteRelative}}, nil},
 		{"template /etc/t.tpl", 0, []needsWant{{"file.read", "/etc/t.tpl", "no", ""}}, []string{"--file-read /etc"}},
 		{"template_file /s/v.yaml /t/a.tpl /o/a.conf", 0, []needsWant{
 			{"file.read", "/s/v.yaml", "no", ""}, {"file.read", "/t/a.tpl", "no", ""}, {"file.write", "/o/a.conf", "yes", ""},
@@ -160,7 +162,7 @@ func TestNeedsDynamicIsIncomplete(t *testing.T) {
 		{"unit $s nginx", []needsWant{{"unit.status", "nginx", "no", ""}, {"unit.restart", "nginx", "yes", ""}}},
 		{"package $s curl", []needsWant{{"package.query", "curl", "no", ""}, {"package.install", "curl", "yes", ""}}},
 		{"sysctl $s k 1", []needsWant{{"sysctl.set", "k", "yes", ""}}},
-		{"config read $p", []needsWant{{"config.read", "$", "no", noteDynamic}}},
+		{"config read $p", []needsWant{{"config.read", "$", "no", noteDynamic}, {"file.read", "$", "no", noteDynamic}}},
 		{"use $lib", []needsWant{{"file.read", "$", "no", noteUse}}},
 		{"with prefix $d { cat a }", []needsWant{{"file.read", "$", "no", noteDynamic}, {"file.read", "a", "no", noteRelative}}},
 		// A bound literal is not resolved.

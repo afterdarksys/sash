@@ -528,7 +528,7 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 		}
 	case "config":
 		if (sub == "read" || dynSub) && len(args) == 2 {
-			n.config(args[1])
+			n.config(args[1], b)
 		}
 	default:
 		// A function's body is counted where it is defined. A call may
@@ -542,8 +542,11 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 }
 
 // config is exact: the agent serves config read only when argv is the
-// clean absolute path, so a relative path is never resolved.
-func (n *needsRun) config(w Word) {
+// clean absolute path, so a relative path is never resolved. A run also
+// checks the path against the file_read roots, so it is a file.read need
+// too.
+func (n *needsRun) config(w Word, b needBase) {
+	n.path("file.read", w, needFile, b)
 	s := plain(w)
 	switch {
 	case s == "":
