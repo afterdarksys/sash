@@ -162,6 +162,9 @@ func TestNeedsDynamicIsIncomplete(t *testing.T) {
 		{"unit $s nginx", []needsWant{{"unit.status", "nginx", "no", noteDynamic}, {"unit.restart", "nginx", "yes", noteDynamic}}},
 		{"package $s curl", []needsWant{{"package.query", "curl", "no", noteDynamic}, {"package.install", "curl", "yes", noteDynamic}}},
 		{"sysctl $s k 1", []needsWant{{"sysctl.set", "k", "yes", noteDynamic}}},
+		// The path resolves and is judged as for config read.
+		{"cd /etc; config $op app.toml", []needsWant{{"file.read", "/etc/app.toml", "no", noteDynamic}, {"config.read", "app.toml", "no", noteRelative}}},
+		{"config $op /etc/x/../shadow", []needsWant{{"file.read", "/etc/shadow", "no", noteDynamic}, {"config.read", "/etc/x/../shadow", "no", noteNotGrantable}}},
 		{"config $op /etc/x", []needsWant{{"config.read", "/etc/x", "no", noteDynamic}, {"file.read", "/etc/x", "no", noteDynamic}}},
 		{"config read $p", []needsWant{{"config.read", "$", "no", noteDynamic}, {"file.read", "$", "no", noteDynamic}}},
 		{"use $lib", []needsWant{{"file.read", "$", "no", noteUse}}},

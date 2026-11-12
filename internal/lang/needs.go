@@ -88,6 +88,7 @@ type needsRun struct {
 	nl    []int // offsets of "\n" in the text
 	fns   map[string]*Fn
 	moves bool // a function may move the prefix, or a use may define one
+	dyn   bool // the subcommand is a value: every row added is dynamic
 	rows  map[string]*needRow
 	flags map[string]bool
 }
@@ -251,6 +252,12 @@ func (n *needsRun) add(key, target, note string, at int, flag string) {
 	// policy output, so the manifest is incomplete.
 	if note == "" && flag == "" && needsFlag[key] != "" {
 		note = noteUnpasteable
+	}
+	if n.dyn {
+		if note == "" || note == noteUnpasteable {
+			note = noteDynamic
+		}
+		flag = ""
 	}
 	id := key + "\x00" + target + "\x00" + note
 	r := n.rows[id]
@@ -537,13 +544,8 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 			n.value("sysctl.set", args[1], dynSub)
 		}
 	case "config":
-		if sub == "read" && len(args) == 2 {
-			n.config(args[1], b)
-		} else if dynSub && len(args) == 2 {
-			// Like unit and package: the key is listed, but the run
-			// may or may not use it.
-			n.value("config.read", args[1], true)
-			n.value("file.read", args[1], true)
+		if (sub == "read" || dynSub) && len(args) == 2 {
+			n.config(args[1], b, dynSub)
 		}
 	default:
 		// A function's body is counted where it is defined. A call may
@@ -559,8 +561,11 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 // config is exact: the agent serves config read only when argv is the
 // clean absolute path, so a relative path is never resolved. A run also
 // checks the path against the file_read roots, so it is a file.read need
-// too.
-func (n *needsRun) config(w Word, b needBase) {
+// too. A subcommand from a value (dyn) lists the same rows with no flag,
+// since the run may or may not read: a row with no other note is dynamic.
+func (n *needsRun) config(w Word, b needBase, dyn bool) {
+	n.dyn = dyn
+	defer func() { n.dyn = false }()
 	n.path("file.read", w, needFile, b)
 	s := plain(w)
 	switch {

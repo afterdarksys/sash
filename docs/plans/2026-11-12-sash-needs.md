@@ -34,7 +34,7 @@ Default: one row per distinct need, sorted by key then target, as a `why`-style 
 
 Paths are cleaned and made absolute against a literal `prefix`/`pushd`/`cd` that dominates them statically: `needs` tracks every prefix a statement may run under and resolves a relative path only when exactly one directory is possible. A relative path with no single literal base gets `target` as written and note `relative`; so does any path after `popd`, after a loop, `retry`, or `try` whose body may move the prefix, inside a `fn` body, and after a call when a function or a `use` may move it. A relative glob is never resolved: a run lists globs against the starting prefix, which a script does not have. Globs report the directory before the first `*`, as `why` does.
 
-`config read <path>` is two needs: `config.read` on the path and `file.read` on the path, because a run also checks it against the file_read roots. A relative `config read` path is never resolved (the agent requires the clean absolute path), and an unclean absolute one is `not_grantable`. With the subcommand from a value (`config $op <path>`) both needs print the path as written, note `dynamic`.
+`config read <path>` is two needs: `config.read` on the path and `file.read` on the path, because a run also checks it against the file_read roots. A relative `config read` path is never resolved (the agent requires the clean absolute path), and an unclean absolute one is `not_grantable`. With the subcommand from a value (`config $op <path>`) the path is resolved and judged the same way, no flag is printed, and a row with no other note is `dynamic`.
 
 `--policy` prints instead the systemapi policy flags that would grant the literal needs, one per line, deduplicated, in the CLI's spelling:
 
