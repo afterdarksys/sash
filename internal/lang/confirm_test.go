@@ -76,12 +76,12 @@ func TestConfirmAsksEachMutatingVerb(t *testing.T) {
 	c := &confirmer{answers: []string{"y", "y", "y"}}
 	p := &countParent{}
 	out := confirmRun("ps\nfor i in [ 1..3 ] { unit restart nginx }", c, p)
-	if out.Status != 0 || p.n != 4 || len(c.prompts) != 3 || c.prompts[0] != "confirm unit.restart unit restart nginx? [y/N]" {
+	if out.Status != 0 || p.n != 4 || len(c.prompts) != 3 || c.prompts[0] != "confirm unit.restart unit restart nginx? [y + Enter / N]" {
 		t.Fatalf("%+v calls %d prompts %q", out, p.n, c.prompts)
 	}
 	c = &confirmer{answers: []string{"y", "y"}}
 	out = Run("set -o confirm\necho hi > /tmp/a\ntemplate_file /var/log/s.yaml /var/log/t /tmp/o", confirmGrant(), confirmFiles{}, Options{State: NewState(), Confirm: c.ask})
-	if len(c.prompts) < 1 || c.prompts[0] != "confirm file.write > /tmp/a? [y/N]" {
+	if len(c.prompts) < 1 || c.prompts[0] != "confirm file.write > /tmp/a? [y + Enter / N]" {
 		t.Fatalf("redirect %+v prompts %q", out, c.prompts)
 	}
 	found := false
@@ -167,5 +167,59 @@ func TestConfirmLeavesStaticToolsAlone(t *testing.T) {
 	}
 	if out := Why("unit restart nginx", confirmGrant(), Options{State: func() *State { s := NewState(); s.confirm = true; return s }()}); out.Status == exitType {
 		t.Fatalf("why %+v", out)
+	}
+}
+
+// Once on, confirm is a latch: no route in the language turns it off, and
+// the verb after the attempt is still asked about (or never runs).
+func TestConfirmIsALatch(t *testing.T) {
+	for _, src := range []string{
+		"set +o confirm; unit restart nginx",
+		"set +o confirm\nunit restart nginx",
+		"shopt -u confirm\nunit restart nginx",
+		"with set +o confirm { unit restart nginx }",
+		"fn off() { shopt -u confirm }\noff\nunit restart nginx",
+		"fn off() { set +o confirm }\ntry { off } catch { echo caught }\nunit restart nginx",
+		"try { set +o confirm } catch { echo caught }\nunit restart nginx",
+		"for i in [ 1..2 ] { set +o confirm }\nunit restart nginx",
+	} {
+		c := &confirmer{answers: []string{"n", "n"}}
+		p := &countParent{}
+		out := confirmRun(src, c, p)
+		if p.n != 0 {
+			t.Errorf("%q reached the parent: %+v", src, out)
+		}
+		if !strings.Contains(out.Stderr, msgConfirmLocked) && !strings.Contains(out.Stdout, "caught") {
+			t.Errorf("%q: no lock refusal: %+v", src, out)
+		}
+	}
+	// set +o confirm alone is exit 2.
+	if out := confirmRun("set +o confirm", &confirmer{}, &countParent{}); out.Status != exitType || out.Stderr != msgConfirmLocked+"\n" {
+		t.Fatalf("%+v", out)
+	}
+	// A with block that turns it on leaves it on.
+	st := NewState()
+	c := &confirmer{answers: []string{"n", "n"}}
+	Run("with set -o confirm { ps }", confirmGrant(), &countParent{}, Options{State: st, Confirm: c.ask})
+	if !st.Confirm() {
+		t.Fatal("with dropped the latch")
+	}
+	st.ConfirmOff()
+	if st.Confirm() {
+		t.Fatal("ConfirmOff")
+	}
+}
+
+// A cell with a space, or an empty one, is quoted in the prompt.
+func TestConfirmPromptQuotesCells(t *testing.T) {
+	c := &confirmer{answers: []string{"n"}}
+	confirmRun("echo hi > '/tmp/a b'", c, &countParent{})
+	if len(c.prompts) != 1 || c.prompts[0] != "confirm file.write > '/tmp/a b'? [y + Enter / N]" {
+		t.Fatalf("%q", c.prompts)
+	}
+	c = &confirmer{answers: []string{"n"}}
+	confirmRun("unit restart ''", c, &countParent{})
+	if len(c.prompts) != 1 || c.prompts[0] != "confirm unit.restart unit restart ''? [y + Enter / N]" {
+		t.Fatalf("%q", c.prompts)
 	}
 }

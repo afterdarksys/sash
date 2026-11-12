@@ -313,8 +313,13 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		cells := make([]string, len(v.Argv))
 		for i, a := range v.Argv {
 			cells[i] = needsCell(a)
+			// One word per cell: a cell with a space, or an empty one, is
+			// quoted so the reader sees where it starts and ends.
+			if a == "" || strings.ContainsAny(cells[i], " ") {
+				cells[i] = "'" + cells[i] + "'"
+			}
 		}
-		yes, interrupted := m.confirm("confirm " + needsCell(v.Key) + " " + strings.Join(cells, " ") + "? [y/N]")
+		yes, interrupted := m.confirm("confirm " + needsCell(v.Key) + " " + strings.Join(cells, " ") + "? [y + Enter / N]")
 		if interrupted {
 			m.ctl = ctlHalt
 			m.haltStatus = exitDenied
@@ -572,7 +577,7 @@ func (m *machine) runWith(w *With) (int, bool) {
 	defer func() {
 		m.st.errexit, m.st.nounset, m.st.xtrace, m.st.noglob = saved.errexit, saved.nounset, saved.xtrace, saved.noglob
 		m.st.loopMax, m.st.verbMax = saved.loopMax, saved.verbMax
-		m.st.confirm = saved.confirm
+		// confirm is a latch: a with block that turned it on leaves it on.
 		m.stack = stack
 		m.restoreVars(vars)
 	}()

@@ -146,9 +146,11 @@ v5 fix: `loadHist` drops only lines containing `\n`, `\r`, or `\x00`, so ESC, C1
 
 ## 9. Confirm mode
 
-`set -o confirm` (interactive only) asks `confirm <key> <argv>? [y/N]` (through `needsCell`) for each verb in `mutating` (`eval.go`): the set plan mode stops, including the `file.write` from `>` and `template_file`, in loops and `par`. The check sits in `machine.do` after the `verbmax`, deadline, and plan checks, so plan mode asks nothing.
+`set -o confirm` (interactive only) asks `confirm <key> <argv>? [y + Enter / N]` (through `needsCell`; a cell with a space, or an empty one, is single-quoted) for each verb in `mutating` (`eval.go`): the set plan mode stops, including the `file.write` from `>` and `template_file`, in loops and `par`. The check sits in `machine.do` after the `verbmax`, deadline, and plan checks, so plan mode asks nothing.
 
-The answer comes from the editor's own reader, through a new `Options.Confirm` callback that `Loop` sets. It discards buffered and pending input (`tcflush(TCIFLUSH)`), draws the prompt, then reads one key. Only `y` or `Y` is yes; Enter, any other key, EOF, or Ctrl-C is no, and Ctrl-C also stops the line.
+The answer comes from the editor's own reader, through a new `Options.Confirm` callback that `Loop` sets. It discards buffered and pending input (`tcflush(TCIFLUSH)`), draws the prompt, then reads one key. Yes is `y` or `Y`, then a second flush, then Enter (CR or LF) at least 50 ms after the `y`, so a pasted `y` and newline is not a yes. Bracketed paste (DECSET 2004) is on while the prompt is up and restored after, so a paste starts with ESC; any input starting with ESC (a paste or an arrow key) is no. Enter alone, any other key, `y` then anything but Enter, EOF, or Ctrl-C is no, and Ctrl-C also stops the line.
+
+**Latch.** Once on, confirm cannot be turned off from the language: `set +o confirm`, `shopt -u confirm`, and `with set +o confirm` are exit 2 `confirm is locked`, in scripts, fns, `use` files, and `with` blocks, and a `with` that turns it on leaves it on. Only the editor's whole-line `confirm off` clears it; it never reaches `Run`, and `confirm off; x` is not it (an unknown command, so the line is Block).
 
 **No tty.** `sash file`, `-c`, and stdin runs have no `Confirm`, so `set -o confirm` there is exit 2 `confirm needs a terminal`. It fails closed.
 

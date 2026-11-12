@@ -102,6 +102,21 @@ func (s *State) SetXtrace(on bool) {
 	s.gen++
 }
 
+// msgConfirmLocked refuses turning confirm off from the language: once on
+// it is a latch, so no pasted line, fn, use file, or with block can drop
+// it before a verb. Only the editor's whole-line confirm off clears it.
+const msgConfirmLocked = "confirm is locked"
+
+// ConfirmOff is the editor's confirm off: the one way to clear the latch.
+// It is a whole line the editor handles; it never reaches Run.
+func (s *State) ConfirmOff() {
+	s.confirm = false
+	s.gen++
+}
+
+// Confirm reports whether set -o confirm is on.
+func (s *State) Confirm() bool { return s != nil && s.confirm }
+
 // Plan reports plan mode, for the right prompt.
 func (s *State) Plan() bool { return s != nil && s.plan }
 
@@ -306,6 +321,9 @@ func (s *State) setLong(name string, on bool) error {
 	}
 	if name == "plan" && !on && s.planLocked {
 		return fmt.Errorf("usage set: plan is locked on for this run")
+	}
+	if name == "confirm" && !on && s.confirm {
+		return fmt.Errorf(msgConfirmLocked)
 	}
 	*f = on
 	return nil

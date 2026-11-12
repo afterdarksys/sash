@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/afterdarksys/sash/internal/grant"
@@ -1007,6 +1008,8 @@ func (e *Editor) applySession(cmd string) {
 		e.opt.State.SetXtrace(false)
 	case "trace on":
 		e.opt.State.SetXtrace(true)
+	case "confirm off":
+		e.opt.State.ConfirmOff()
 	case "prompt line":
 		e.closeNovice()
 	case "prompt menu":
@@ -1056,6 +1059,13 @@ func sessionKind(line string) (paint bool, exact string) {
 	switch f[0] {
 	case "abbr":
 		return true, ""
+	case "confirm":
+		// confirm off is the only way to clear the latch, and only as
+		// the whole line: confirm off; x is not it (Fields keeps the ;).
+		if len(f) == 2 && f[1] == "off" && strings.TrimSpace(line) == "confirm off" {
+			return true, "confirm off"
+		}
+		return len(f) == 1 || (len(f) == 2 && strings.HasPrefix("off", f[1])), ""
 	case "bind", "syntax", "trace", "prompt":
 	default:
 		return false, ""
@@ -1323,35 +1333,67 @@ func (e *Editor) termWidth() int {
 	return e.width()
 }
 
-// askConfirm is set -o confirm's question. It throws away everything
-// typed before the prompt, both the terminal's input queue (flush) and
-// what the reader buffered, so a pasted or typed-ahead y never answers;
-// then it draws the prompt and reads exactly one key. Only y or Y is yes.
-// Enter, any other key, EOF, a read error, or a failed flush is no, and
-// Ctrl-C is no that also stops the line. There is no yes to all.
+// confirmGap is the least time between y and Enter: a person pauses, a
+// paste of y and a newline does not.
+const confirmGap = 50 * time.Millisecond
+
+// askConfirm is set -o confirm's question. Threats: a paste or typeahead
+// answering for the person. Everything typed before the prompt is thrown
+// away (the terminal's input queue, flush, and what the reader buffered);
+// bracketed paste (DECSET 2004) is on while the prompt is up, so a paste
+// starts with ESC, and any input starting with ESC (a paste or an arrow
+// key) is no. Yes is y or Y, then a flush, then Enter (CR or LF) at least
+// confirmGap after the y; anything else is no. Ctrl-C at either key is no
+// that also stops the line. A failed flush, EOF, or a read error is no.
+// There is no yes to all.
 func askConfirm(r *bufio.Reader, out io.Writer, flush func() error, prompt string) (yes, interrupted bool) {
-	if flush == nil || flush() != nil {
-		return false, false
-	}
-	if n := r.Buffered(); n > 0 {
-		if _, err := r.Discard(n); err != nil {
-			return false, false
+	drop := func() bool {
+		if flush == nil || flush() != nil {
+			return false
 		}
+		if n := r.Buffered(); n > 0 {
+			if _, err := r.Discard(n); err != nil {
+				return false
+			}
+		}
+		return true
 	}
-	if err := writeAll(out, []byte("\r\n\x1b[J"+prompt+" ")); err != nil {
+	if !drop() {
 		return false, false
 	}
+	if err := writeAll(out, []byte("\x1b[?2004h\r\n\x1b[J"+prompt+" ")); err != nil {
+		return false, false
+	}
+	defer func() {
+		if err := writeAll(out, []byte("\r\n\x1b[?2004l")); err != nil {
+			yes = false
+		}
+	}()
 	b, err := r.ReadByte()
-	if werr := writeAll(out, []byte("\r\n")); werr != nil || err != nil {
+	if err != nil || b == 0x1b {
 		return false, false
 	}
-	switch b {
-	case 'y', 'Y':
-		return true, false
-	case 0x03:
+	if b == 0x03 {
 		return false, true
 	}
-	return false, false
+	if b != 'y' && b != 'Y' {
+		return false, false
+	}
+	at := nowFn()
+	if !drop() {
+		return false, false
+	}
+	b, err = r.ReadByte()
+	if err != nil {
+		return false, false
+	}
+	if b == 0x03 {
+		return false, true
+	}
+	if (b != '\r' && b != '\n') || nowFn().Sub(at) < confirmGap {
+		return false, false
+	}
+	return true, false
 }
 
 func isEnter(b byte) bool { return b == '\r' || b == '\n' }
