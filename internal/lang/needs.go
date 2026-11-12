@@ -265,13 +265,18 @@ func (n *needsRun) add(key, target, note string, at int, flag string) {
 }
 
 // value adds a need whose target is one word: a unit, a package, a key.
-func (n *needsRun) value(key string, w Word) {
+// A subcommand from a value (dyn) lists every key it could be, but not
+// which one the run uses, so each is dynamic and has no flag.
+func (n *needsRun) value(key string, w Word, dyn bool) {
 	s := plain(w)
-	if s == "" {
+	switch {
+	case s == "":
 		n.add(key, "$", noteDynamic, w.Pos, "")
-		return
+	case dyn:
+		n.add(key, s, noteDynamic, w.Pos, "")
+	default:
+		n.add(key, s, "", w.Pos, needsPolicyFlag(key, s))
 	}
-	n.add(key, s, "", w.Pos, needsPolicyFlag(key, s))
 }
 
 func (n *needsRun) path(key string, w Word, kind int, b needBase) {
@@ -505,31 +510,31 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 		}
 		if sub == "status" || dynSub {
 			if len(args) == 2 {
-				n.value("unit.status", args[1])
+				n.value("unit.status", args[1], dynSub)
 			} else {
 				n.add("unit.status", "-", noteNotGrantable, at, "")
 			}
 		}
 		if (sub == "restart" || dynSub) && len(args) == 2 {
-			n.value("unit.restart", args[1])
+			n.value("unit.restart", args[1], dynSub)
 		}
 	case "package":
 		if sub == "query" || dynSub {
 			if len(args) == 2 {
-				n.value("package.query", args[1])
+				n.value("package.query", args[1], dynSub)
 			} else {
 				n.add("package.query", "-", noteNotGrantable, at, "")
 			}
 		}
 		if (sub == "install" || dynSub) && len(args) == 2 {
-			n.value("package.install", args[1])
+			n.value("package.install", args[1], dynSub)
 		}
 	case "sysctl":
 		if (sub == "get" || dynSub) && len(args) == 2 {
-			n.value("sysctl.get", args[1])
+			n.value("sysctl.get", args[1], dynSub)
 		}
 		if (sub == "set" || dynSub) && len(args) == 3 {
-			n.value("sysctl.set", args[1])
+			n.value("sysctl.set", args[1], dynSub)
 		}
 	case "config":
 		if (sub == "read" || dynSub) && len(args) == 2 {
@@ -766,7 +771,7 @@ func (n *needsRun) policy(rows []*needRow) string {
 		why := ""
 		switch {
 		case r.note == noteDynamic:
-			why = "the target comes from a value"
+			why = "the target or the subcommand comes from a value"
 		case r.note == noteRelative:
 			why = "a relative path with no single literal base"
 		case r.note == noteNotGrantable:

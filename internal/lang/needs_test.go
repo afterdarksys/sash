@@ -159,9 +159,9 @@ func TestNeedsDynamicIsIncomplete(t *testing.T) {
 		{"echo x > $f", []needsWant{{"file.write", "$", "yes", noteDynamic}}},
 		{"unit status $u", []needsWant{{"unit.status", "$", "no", noteDynamic}}},
 		// A value subcommand may be either form.
-		{"unit $s nginx", []needsWant{{"unit.status", "nginx", "no", ""}, {"unit.restart", "nginx", "yes", ""}}},
-		{"package $s curl", []needsWant{{"package.query", "curl", "no", ""}, {"package.install", "curl", "yes", ""}}},
-		{"sysctl $s k 1", []needsWant{{"sysctl.set", "k", "yes", ""}}},
+		{"unit $s nginx", []needsWant{{"unit.status", "nginx", "no", noteDynamic}, {"unit.restart", "nginx", "yes", noteDynamic}}},
+		{"package $s curl", []needsWant{{"package.query", "curl", "no", noteDynamic}, {"package.install", "curl", "yes", noteDynamic}}},
+		{"sysctl $s k 1", []needsWant{{"sysctl.set", "k", "yes", noteDynamic}}},
 		{"config read $p", []needsWant{{"config.read", "$", "no", noteDynamic}, {"file.read", "$", "no", noteDynamic}}},
 		{"use $lib", []needsWant{{"file.read", "$", "no", noteUse}}},
 		{"with prefix $d { cat a }", []needsWant{{"file.read", "$", "no", noteDynamic}, {"file.read", "a", "no", noteRelative}}},
@@ -253,7 +253,7 @@ func TestNeedsPolicyDedupesAndComments(t *testing.T) {
 		"--file-read /etc\n" +
 		"--file-read /lib\n" +
 		"--service-status nginx\n" +
-		"# file.read $: the target comes from a value (lines 4)\n" +
+		"# file.read $: the target or the subcommand comes from a value (lines 4)\n" +
 		"# file.read /lib/x.sash: use reads this file; the needs of what it defines are not listed (lines 8)\n" +
 		"# file.read rel: a relative path with no single literal base (lines 7)\n" +
 		"# journal -: no policy flag grants this (lines 5)\n"
