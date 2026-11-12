@@ -200,3 +200,38 @@ func replaceSig(t *testing.T, doc []byte, sig []byte) []byte {
 	}
 	return out
 }
+
+// A root that is or cleans to "/" fails closed with grant_root_slash, in
+// either list and next to a valid root, and the session does not open.
+func TestVerifyRejectsSlashRoot(t *testing.T) {
+	fleet, emergency := testKeys(t)
+	now := time.Unix(1_700_000_000, 0)
+	for _, root := range []string{"/", "//", "/./", "/..", "/../..", "///"} {
+		for _, lists := range []func(*Grant){
+			func(g *Grant) { g.FileRead = []string{root} },
+			func(g *Grant) { g.FileWrite = []string{root} },
+			func(g *Grant) { g.FileRead = []string{"/var/log", root} },
+			func(g *Grant) { g.FileWrite = []string{root, "/tmp"} },
+		} {
+			g := sample(PurposeOpen)
+			lists(&g)
+			_, err := Verify(mustSign(t, g, fleet.priv), fleet.pub, emergency.pub, now)
+			if token(err) != "grant_root_slash" {
+				t.Errorf("%q in %+v: %v", root, g, err)
+			}
+			if err != nil && strings.Contains(err.Error(), root) && root != "/" {
+				t.Errorf("error echoes the root: %v", err)
+			}
+		}
+	}
+	ok := sample(PurposeOpen)
+	ok.FileRead, ok.FileWrite = []string{"/var/log"}, []string{"/tmp"}
+	if _, err := Verify(mustSign(t, ok, fleet.priv), fleet.pub, emergency.pub, now); err != nil {
+		t.Fatalf("valid roots: %v", err)
+	}
+	// under stays narrow too: a "/" root allows only "/" itself.
+	g := Grant{FileRead: []string{"/"}}
+	if g.AllowsRead("/etc/passwd") {
+		t.Fatal("under widened")
+	}
+}

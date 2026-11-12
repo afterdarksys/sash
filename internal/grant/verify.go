@@ -41,6 +41,11 @@ const (
 	ErrStar     Error = "grant_star"
 	ErrBadSig   Error = "grant_bad_sig"
 	ErrExpired  Error = "grant_expired"
+	// ErrRootSlash is a file root that is the whole filesystem: "/", or
+	// anything that cleans to it ("//", "/./", "/.."). sash refuses it,
+	// so no grant hands a session every path; the error is a fixed code
+	// and never echoes the root.
+	ErrRootSlash Error = "grant_root_slash"
 )
 
 type signed struct {
@@ -221,6 +226,9 @@ func shape(doc []byte, w wire) error {
 
 func roots(list []string) error {
 	for _, r := range list {
+		if strings.HasPrefix(r, "/") && path.Clean(r) == "/" {
+			return ErrRootSlash
+		}
 		if path.Clean(r) != r || !strings.HasPrefix(r, "/") {
 			return ErrBadShape
 		}
