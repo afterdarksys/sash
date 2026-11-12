@@ -34,6 +34,7 @@ var lintRules = map[string]string{
 	"constant-check":    lintWarning,
 	"retry-on-mutation": lintWarning,
 	"secret-to-sink":    lintError,
+	"secret-fault":      lintWarning,
 	"silent-catch":      lintWarning,
 	"incomplete-needs":  lintWarning,
 	"shadowed-secret":   lintWarning,
@@ -634,7 +635,7 @@ func (l *linter) sinks(p *Program) {
 			}
 		})
 		if name := l.faults(s); name != "" {
-			l.add(at, "secret-to-sink", "secret "+name+" is in an evaluation that may fail and end the line")
+			l.add(at, "secret-fault", "secret "+name+" is in an evaluation that may fail and end the line")
 		}
 		own := func(what string, f func(map[string]bool)) {
 			if name := l.anyTainted(refsOf(f)); name != "" {

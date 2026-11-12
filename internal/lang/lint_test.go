@@ -151,17 +151,26 @@ func lintSecretCheck(t *testing.T, src string) bool {
 	// The script's own text can spell *** or secret; then only the other
 	// signal counts.
 	body := strings.TrimPrefix(src, "declare -s tok = abc\n")
-	shown := (!strings.Contains(body, "*") && strings.Contains(run.Stdout+run.Stderr, redacted)) ||
-		(!strings.Contains(strings.ToLower(body), "secret") && strings.Contains(run.Stderr, "secret"))
-	if !shown {
+	quiet := !strings.Contains(strings.ToLower(body), "secret")
+	shown := !strings.Contains(body, "*") && strings.Contains(run.Stdout+run.Stderr, redacted)
+	fault := quiet && strings.Contains(run.Stderr, errSecretFault.Error())
+	refused := quiet && !fault && strings.Contains(run.Stderr, "secret")
+	if !shown && !fault && !refused {
 		return false
 	}
 	out := Lint(src)
 	if out.Status == exitType {
 		return true
 	}
-	if !hasRule(lintRows(t, out), "secret-to-sink", "error") {
-		t.Errorf("run showed a secret, lint is clean:\n%s\nrun %+v\nlint %+v", src, run, out)
+	rows := lintRows(t, out)
+	// *** or a refusal is a disclosure: it needs the error. A secret that
+	// ended the line on a failed evaluation needs at least the warning.
+	sink := hasRule(rows, "secret-to-sink", "error")
+	if (shown || refused) && !sink {
+		t.Errorf("run showed or refused a secret, no secret-to-sink:\n%s\nrun %+v\nlint %+v", src, run, out)
+	}
+	if fault && !sink && !hasRule(rows, "secret-fault", "warning") {
+		t.Errorf("a secret ended the line, lint is clean:\n%s\nrun %+v\nlint %+v", src, run, out)
 	}
 	return true
 }
@@ -181,7 +190,8 @@ func FuzzLintNeverMissesASecret(f *testing.F) {
 }
 
 // An evaluation over a secret that may fail ends the line at run time
-// (errSecretFault, exit 2): lint reports it.
+// (errSecretFault, exit 2): lint reports it as secret-fault, a warning
+// that #lint:allow can suppress, not as a sink.
 func TestLintSecretFaultingEvaluation(t *testing.T) {
 	for _, src := range []string{
 		"declare -s tok = abc\nlet _a = [ {\"k\": $tok.A} ]",
@@ -190,12 +200,24 @@ func TestLintSecretFaultingEvaluation(t *testing.T) {
 		"declare -s tok = abc\nlet _a = [ $tok + 1 ]",
 		"declare -s tok = abc\nlet _a = [ len($tok) ]",
 		"declare -s tok = abc\nlet _a = [ -$tok ]",
-		"declare -s tok = abc\nfor _x in $tok.list { let _y = 1 }",
 	} {
 		run := Run(src, exprGrant(), &rowsParent{}, Options{})
 		rows := lintRows(t, Lint(src))
-		if !hasRule(rows, "secret-to-sink", "error") {
+		if !hasRule(rows, "secret-fault", "warning") || hasRule(rows, "secret-to-sink", "") {
 			t.Errorf("%q: run %+v, lint %+v", src, run, rows)
+		}
+		if out := Lint(src + " #lint:allow secret-fault the value is always a string"); hasRule(lintRows(t, out), "secret-fault", "") {
+			t.Errorf("%q: allow kept %s", src, out.Stdout)
+		}
+	}
+}
+
+// A fault inside a real sink is both: the sink stays an error.
+func TestLintFaultInASinkIsStillASink(t *testing.T) {
+	for _, src := range []string{"declare -s tok = abc\nfor _x in $tok.list { let _y = 1 }", "declare -s tok = abc\necho [ upper($tok) ]"} {
+		rows := lintRows(t, Lint(src+" #lint:allow secret-fault reason"))
+		if !hasRule(rows, "secret-to-sink", "error") {
+			t.Errorf("%q: %+v", src, rows)
 		}
 	}
 }
@@ -337,15 +359,17 @@ func TestLintOutputAndExit(t *testing.T) {
 
 func TestLintAllow(t *testing.T) {
 	for src, kept := range map[string]bool{
-		"exit 0\necho a #lint:allow unreachable kept for the demo":    false,
-		"exit 0\necho a # lint:allow unreachable kept for the demo":   false,
-		"let x = 1 #lint:allow unused-binding shown in docs":          false,
-		"exit 0\necho a #lint:allow unreachable":                      true,
-		"exit 0\necho a #lint:allow constant-check wrong rule":        true,
-		"exit 0 #lint:allow unreachable wrong line\necho a":           true,
-		"exit 0\necho a #lint:allow nosuch-rule reason":               true,
-		"$cmd #lint:allow incomplete-needs errors cannot be allowed":  true,
-		"declare -s t = a\necho $t #lint:allow secret-to-sink no way": true,
+		"exit 0\necho a #lint:allow unreachable kept for the demo":                          false,
+		"exit 0\necho a # lint:allow unreachable kept for the demo":                         false,
+		"let x = 1 #lint:allow unused-binding shown in docs":                                false,
+		"exit 0\necho a #lint:allow unreachable":                                            true,
+		"exit 0\necho a #lint:allow constant-check wrong rule":                              true,
+		"exit 0 #lint:allow unreachable wrong line\necho a":                                 true,
+		"exit 0\necho a #lint:allow nosuch-rule reason":                                     true,
+		"$cmd #lint:allow incomplete-needs errors cannot be allowed":                        true,
+		"declare -s t = a\necho $t #lint:allow secret-to-sink no way":                       true,
+		"declare -s t = a\nlet _u = [ upper($t) ] #lint:allow secret-fault always a string": false,
+		"declare -s t = a\nlet _u = [ upper($t) ] #lint:allow secret-fault":                 true,
 	} {
 		out := Lint(src)
 		if (out.Stdout != "") != kept {
