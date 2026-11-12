@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -66,25 +67,27 @@ func main() {
 	os.Exit(langExit(got.Status))
 }
 
+// readSource takes exactly one source: -c script, one file, or stdin.
+// Anything after the source, or a flag where the source goes (--needs or
+// --policy out of place), is a usage error and nothing runs.
 func readSource(args []string) (string, error) {
-	if len(args) >= 2 && args[0] == "-c" {
+	switch {
+	case len(args) == 2 && args[0] == "-c":
 		return args[1], nil
-	}
-	if len(args) == 1 {
+	case len(args) == 1 && !strings.HasPrefix(args[0], "-"):
 		b, err := os.ReadFile(args[0])
 		if err != nil {
 			return "", err
 		}
 		return string(b), nil
-	}
-	if len(args) == 0 {
+	case len(args) == 0:
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return "", err
 		}
 		return string(b), nil
 	}
-	return "", fmt.Errorf(usage)
+	return "", errors.New(usage)
 }
 
 const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]"
