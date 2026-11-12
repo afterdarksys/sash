@@ -164,7 +164,7 @@ The answer comes from the editor's own reader, through a new `Options.Confirm` c
 
 - `proto.Serve` (`internal/proto/proto.go:97`) has `_ = Write(...)` on the frame-body error path, against the no-`_ =` rule.
 - A bare `try { }` with no `catch` discards the failure and its stderr. Decided: section 0 makes it a parse error.
-- The editor does not wrap: a line wider than the terminal draws past the right edge and the cursor column is wrong. `Frame` counts display width (East Asian wide 2, combining 0, from a compact table in `paint.go`), but line wrapping is out of scope for v5.
+- The editor does not wrap: a line wider than the terminal draws past the right edge and the cursor column is wrong. `Frame` counts display width (East Asian wide 2, combining 0, the emoji blocks and default-emoji symbols in 2600-27BF 2, from a compact table in `paint.go`; VS16 after a one-column rune makes it 2, and a regional-indicator pair is one 2-column flag), but line wrapping is out of scope for v5.
 
 ## Order
 
