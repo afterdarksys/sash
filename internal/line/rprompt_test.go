@@ -166,3 +166,37 @@ func TestRightPromptNeverCallsParent(t *testing.T) {
 		Frame(e.View())
 	}
 }
+
+// The right prompt is drawn before the line, so a line whose width is
+// counted short (wide runes missing from wideRanges, such as U+1F201)
+// paints over the prompt and a trailing stage stays visible.
+func TestRightPromptNeverHidesTheLine(t *testing.T) {
+	withNow(t)
+	g := grant.Grant{Purpose: "terminal:open", Exp: rpNow.Unix() + 600, Entitlements: []string{"unit.restart"}, AllowPrivate: true}
+	for _, width := range []int{40, 60, 70, 80, 120} {
+		e := New(g, failParent{t})
+		e.width = func() int { return width }
+		line := "echo " + strings.Repeat("\U0001F201", 11) + "; unit restart db"
+		e.Feed([]byte(line))
+		f := Frame(e.View())
+		at := strings.Index(f, promptText)
+		tail := strings.Index(f, "unit restart db")
+		if at < 0 || tail < at {
+			t.Fatalf("width %d: line missing or before the prompt text: %q", width, f)
+		}
+		if r := strings.Index(f, "\x1b[90mterminal:open"); r >= 0 && r > at {
+			t.Fatalf("width %d: right prompt drawn after the line: %q", width, f)
+		}
+	}
+}
+
+// The text \x1b in a purpose does not render like a real ESC.
+func TestRightPromptPurposeUnambiguous(t *testing.T) {
+	lit, real := capPurpose(`a\x1b`), capPurpose("a\x1b")
+	if lit == real || lit != `a\\x1b` || real != `a\x1b` {
+		t.Fatalf("literal %q real %q", lit, real)
+	}
+	if got := capPurpose(strings.Repeat("a", 30) + `\x1b`); got != strings.Repeat("a", 30)+`\x` {
+		t.Fatalf("cut %q", got)
+	}
+}

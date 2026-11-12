@@ -36,6 +36,10 @@ type State struct {
 	// definition, set, declare, check) happens inside Run, which bumps it
 	// once when it returns, or in a setter below, which bumps it too.
 	gen uint64
+	// secrets memoizes SecretCount for one generation.
+	secrets    int
+	secretsGen uint64
+	secretsOK  bool
 }
 
 // Generation is the write counter: equal values mean no write between.
@@ -106,12 +110,18 @@ func (s *State) SecretCount() int {
 	if s == nil {
 		return 0
 	}
+	if s.secretsOK && s.secretsGen == s.gen {
+		return s.secrets
+	}
+	// Only a data value can hold a secretVal: rows, bytes, and strings
+	// never do, so nothing is converted.
 	n := 0
 	for _, v := range s.vars {
-		if isSecret(toDatum(v)) {
+		if v.kind == valData && isSecret(v.d) {
 			n++
 		}
 	}
+	s.secrets, s.secretsGen, s.secretsOK = n, s.gen, true
 	return n
 }
 

@@ -200,11 +200,14 @@ func sgr(face lang.Face, syntax bool) string {
 func Frame(v View) string {
 	var b strings.Builder
 	b.WriteString("\r\x1b[J")
+	// The right prompt is drawn first and the line over it, so a width
+	// this package counts short (a wide rune missing from wideRanges)
+	// can only hide prompt text under the line, never the line.
+	if col := rightAt(v); col > 0 {
+		fmt.Fprintf(&b, "\x1b[%dG\x1b[90m%s\x1b[0m\r", col, v.Right)
+	}
 	b.WriteString(promptText)
 	b.WriteString(Paint(v.Line, v.Suggestion, v.Spans, v.Syntax))
-	if col := rightAt(v); col > 0 {
-		fmt.Fprintf(&b, "\x1b[%dG\x1b[90m%s\x1b[0m", col, v.Right)
-	}
 	extra := 0
 	if v.MenuOpen {
 		extra = len(v.Menu)

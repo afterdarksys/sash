@@ -880,6 +880,10 @@ func safeText(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// Cell is needsCell for callers outside lang: one line, every control
+// character (a newline included) escaped.
+func Cell(s string) string { return needsCell(s) }
+
 // SafeText is safeText for callers outside lang: a message that carries
 // text from a script, a file name, or the host, made safe for a terminal.
 func SafeText(s string) string { return safeText(s) }

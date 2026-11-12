@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -195,4 +196,33 @@ func TestFormatReviewFixes(t *testing.T) {
 	if _, err := decodeJSON([]byte("[" + strings.Repeat(`"xxxxxxxxxxxxxxxx",`, 300000) + "1]")); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("json streaming budget: %v", err)
 	}
+}
+
+// SecretCount is memoized per State generation and never converts a row
+// value, so the right prompt costs nothing per keystroke.
+func BenchmarkSecretCountLargeRows(b *testing.B) {
+	st := NewState()
+	rows := make([]parent.Row, 5000)
+	for i := range rows {
+		rows[i] = parent.Row{"a": strings.Repeat("x", 64), "b": "y"}
+	}
+	for i := 0; i < 200; i++ {
+		st.vars[fmt.Sprintf("r%d", i)] = value{kind: valRows, rows: rows, cols: []string{"a", "b"}}
+	}
+	Run("declare -s t = abc", grant.Grant{}, nil, Options{State: st})
+	b.Run("memo", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if st.SecretCount() != 1 {
+				b.Fatal("count")
+			}
+		}
+	})
+	b.Run("recount", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			st.gen++
+			if st.SecretCount() != 1 {
+				b.Fatal("count")
+			}
+		}
+	})
 }

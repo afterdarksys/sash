@@ -48,26 +48,22 @@ func rightPrompt(g grant.Grant, st *lang.State, last int, now time.Time) string 
 	return strings.Join(fields, "  ")
 }
 
-// capPurpose escapes each rune and stops before the escaped text would
-// pass purposeMax runes, so an escape is never cut in half.
+// capPurpose is the purpose through needsCell's grammar (a literal
+// backslash before an escape-looking sequence is doubled, so the text
+// \x1b never reads as a real ESC), cut at the longest prefix whose
+// escaped form fits purposeMax runes, so an escape is never cut in half.
 func capPurpose(p string) string {
-	var b strings.Builder
-	n := 0
+	out := ""
 	for i := 0; i < len(p); {
 		_, size := utf8.DecodeRuneInString(p[i:])
-		cell := lang.SafeText(p[i : i+size])
-		if p[i] == '\n' || p[i] == '\r' {
-			cell = fmt.Sprintf(`\x%02x`, p[i])
-		}
-		c := utf8.RuneCountInString(cell)
-		if n+c > purposeMax {
+		next := lang.Cell(p[:i+size])
+		if utf8.RuneCountInString(next) > purposeMax {
 			break
 		}
-		b.WriteString(cell)
-		n += c
+		out = next
 		i += size
 	}
-	return b.String()
+	return out
 }
 
 func expField(left int64) string {
