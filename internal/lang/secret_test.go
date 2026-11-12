@@ -95,3 +95,43 @@ func mapOf(k string, v any) any {
 	o.set(k, v)
 	return o
 }
+
+// History never copies a declare -s line: !! and !$ refuse it, in a run
+// and in needs, and the refusal does not echo the secret.
+func TestHistoryRefusesASecretLine(t *testing.T) {
+	for _, decl := range []string{
+		`declare -s tok = "hunter2"`,
+		`declare -rs tok = hunter2`,
+		`declare -r -s tok = hunter2`,
+		`declare "-s" tok = hunter2`,
+		`de"cl"are -s tok = hunter2`,
+		`echo x; declare -s tok = hunter2`,
+		`  declare  -s  tok = hunter2`,
+	} {
+		for _, use := range []string{"unit status !$", "!!", `echo "!$"`, "echo !!"} {
+			src := decl + "\n" + use
+			p := &listParent{}
+			out := Run(src, allow(), p, Options{})
+			if out.Status != exitType || len(p.calls) != 0 || strings.Contains(out.Stdout+out.Stderr, "hunter2") {
+				t.Errorf("run %q: %+v calls %d", src, out, len(p.calls))
+			}
+			n := Needs(src, NeedsOptions{})
+			if n.Status != exitType || n.Stdout != "" || strings.Contains(n.Stderr, "hunter2") {
+				t.Errorf("needs %q: %+v", src, n)
+			}
+		}
+	}
+	// The session history the editor passes is checked the same way.
+	out := Run("unit status !$", allow(), &listParent{}, Options{History: []string{"declare -s tok = hunter2"}})
+	if out.Status != exitType || strings.Contains(out.Stderr, "hunter2") {
+		t.Fatalf("session history: %+v", out)
+	}
+	// A line that only reads a secret by name is history as before.
+	out = Run("declare -s tok = hunter2\necho $tok\n!!", allow(), &listParent{}, Options{})
+	if out.Status != 0 || strings.Contains(out.Stdout, "hunter2") {
+		t.Fatalf("by name: %+v", out)
+	}
+	if DeclaresSecret("declare -r x = 1") || DeclaresSecret("echo -s declare") {
+		t.Fatalf("false match")
+	}
+}

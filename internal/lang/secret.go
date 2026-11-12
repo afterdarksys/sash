@@ -1,6 +1,9 @@
 package lang
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // A secret (declare -s) is a value that never leaves sash in v4: it renders
 // as *** everywhere, anything computed from it is a secret too, and a verb
@@ -18,6 +21,28 @@ var errSecretFault = fmt.Errorf("a secret ended the line")
 
 // errSecretBranch refuses a condition computed from a secret.
 var errSecretBranch = fmt.Errorf("a secret cannot decide a branch")
+
+// DeclaresSecret is true when line may bind a declare -s literal. History
+// never carries such a line: !! and !$ refuse it, and the editor does not
+// keep it. Quotes and backslashes are dropped first, so "-s", -rs, and
+// de"cl"are still match; a false match only refuses, it never leaks.
+func DeclaresSecret(line string) bool {
+	line = strings.NewReplacer("'", "", "\"", "", "\\", "").Replace(line)
+	words := strings.FieldsFunc(line, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || strings.ContainsRune("|&;<>(){}=", r)
+	})
+	declare := false
+	for _, w := range words {
+		if w == "declare" {
+			declare = true
+			continue
+		}
+		if declare && strings.HasPrefix(w, "-") && strings.ContainsRune(w, 's') {
+			return true
+		}
+	}
+	return false
+}
 
 type secretVal struct{ d any }
 

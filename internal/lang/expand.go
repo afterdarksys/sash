@@ -256,6 +256,11 @@ func historyReplace(kind int, hist []string, quoted bool) (string, *ExpandProble
 		return "", histProb()
 	}
 	newest := hist[len(hist)-1]
+	// A declare -s line holds the secret as a literal; copying its words
+	// would carry the secret onto the line. The message does not echo it.
+	if DeclaresSecret(newest) {
+		return "", &ExpandProblem{Status: exitType, Msg: "history: a declare -s line is not history"}
+	}
 	var rep string
 	if kind == histBang {
 		rep = newest
