@@ -95,6 +95,9 @@ type Editor struct {
 	note    string
 	hold    string
 
+	// abbrs are this session's abbreviations (abbr.go); never stored.
+	abbrs map[string]string
+
 	// width reports the terminal width; nil is unknown.
 	width func() int
 
@@ -348,6 +351,9 @@ func (e *Editor) handleSearch(k key) {
 func (e *Editor) handleInsert(k key) {
 	switch k.kind {
 	case keyRune:
+		if k.r == ' ' {
+			e.expandAtCursor()
+		}
 		e.insert(k.r)
 	case keyEnter:
 		e.submit()
@@ -885,6 +891,18 @@ func (e *Editor) submit() {
 		e.explain()
 		return
 	}
+	if f := strings.Fields(e.line); len(f) > 0 && f[0] == "abbr" {
+		e.hold = ""
+		e.abbrCommand(e.line)
+		e.line = ""
+		e.cursor = 0
+		e.browseAt = -1
+		return
+	}
+	if e.expandLine() {
+		e.hold = ""
+		return
+	}
 	if exact := sessionExact(e.line); exact != "" {
 		e.hold = ""
 		e.applySession(exact)
@@ -1020,6 +1038,8 @@ func sessionKind(line string) (paint bool, exact string) {
 		return true, ""
 	}
 	switch f[0] {
+	case "abbr":
+		return true, ""
 	case "bind", "syntax", "trace", "prompt":
 	default:
 		return false, ""

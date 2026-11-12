@@ -2,6 +2,7 @@ package lang
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -167,4 +168,49 @@ func InsertedWords(line string, from, to int) ([]string, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+// Reserved reports a name the language keeps: a keyword, a builtin, or a
+// row tool. The editor refuses it as an abbreviation name.
+func Reserved(name string) bool { return reserved(name) }
+
+// LiteralWords is line as plain literal words, or ok false when it does
+// not lex or holds anything else: a $ reference, a [ ] expression, an
+// operator, a redirect, or a separator. The editor reads abbr through it.
+func LiteralWords(line string) ([]string, bool) {
+	toks, err := lex(line)
+	if err != nil {
+		return nil, false
+	}
+	var out []string
+	for _, t := range toks {
+		switch {
+		case t.kind == kEOF:
+		case t.kind == kWord && len(t.word.Parts) == 1 && !t.word.Parts[0].Exp && t.word.Parts[0].X == nil:
+			out = append(out, t.word.Parts[0].Lit)
+		default:
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// CommandWords are the source spans [start, end) of every stage's
+// command word in line, in source order, fn bodies included. A line that
+// does not parse has none.
+func CommandWords(line string) [][2]int {
+	prog, err := parse(line)
+	if err != nil {
+		return nil
+	}
+	var out [][2]int
+	needsEachPipe(prog, func(p Pipeline) {
+		for _, st := range p.Stages {
+			if len(st.Argv) > 0 {
+				out = append(out, [2]int{st.Argv[0].Pos, st.Argv[0].End})
+			}
+		}
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	return out
 }

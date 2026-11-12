@@ -111,6 +111,8 @@ Space or Enter after a command-position word equal to `name` replaces the word i
 - Decision: Enter on an unexpanded abbreviation expands and runs, or expands and stops. Recommended: stops, because an abbreviation can name `unit restart`, and the reader should see the verb before a second Enter.
 - Decision: session-only, or a file. Recommended: session-only in v5. CVE-2022-20001 was fish running config from a repo in the current directory. An agent-stored list would need its own contract, like history. There will never be an rc file in the prefix, the home directory, or a `use` path.
 
+**As built.** The text is plain words separated by single spaces, each from `[A-Za-z0-9_./:@%+=,-]`, so it holds no `;`, `|`, `&`, `#`, `<`, `>`, quote, `$`, `[ ]`, backtick, or control character, and needs no quoting when inserted. The name is `[A-Za-z_][A-Za-z0-9_-]*`, not reserved, not a builtin form, and not an editor word (`abbr`, `bind`, `syntax`, `trace`, `prompt`, `why`, `exit`, `logout`); at most 256 abbreviations. `abbr` alone lists the names. `abbr` lines are not kept in history. In a script, `abbr` is an unknown command (exit 127), as `bind` is.
+
 ## 7. History autosuggestions
 
 This exists: `suggestionSuffix` takes the newest history line with the typed prefix, `Paint` draws it grey, and only Right or Ctrl-F at end of line inserts it. `submit` runs `e.line` only. `pushHist` and `loadHist` drop `DeclaresSecret` lines, and a private session loads no history.

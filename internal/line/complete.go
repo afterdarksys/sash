@@ -103,17 +103,7 @@ func (e *Editor) complete() ([]completion, int, int) {
 	if !lang.LexOK(lexed) {
 		return nil, 0, 0
 	}
-	cmdFrom := strings.LastIndexAny(line[:start], ";|{(&") + 1
-	for {
-		for cmdFrom < start && (line[cmdFrom] == ' ' || line[cmdFrom] == '\t') {
-			cmdFrom++
-		}
-		end := strings.IndexAny(line[cmdFrom:cur], " \t")
-		if end < 0 || !cmdKeywords[line[cmdFrom:cmdFrom+end]] {
-			break
-		}
-		cmdFrom += end
-	}
+	cmdFrom := commandStart(line, start, cur)
 	cmd := line[cmdFrom:cur]
 	if strings.HasPrefix(word, "$") {
 		return e.completeNames(line[:start], word[1:]), start, cur
@@ -125,6 +115,24 @@ func (e *Editor) complete() ([]completion, int, int) {
 		return completeFlags(cmd, word), start, cur
 	}
 	return e.completePaths(word), start, cur
+}
+
+// commandStart is where the command holding the word at [start, cur)
+// begins: after the last ; | { ( or &, past spaces and a leading if,
+// while, do, else, or try.
+func commandStart(line string, start, cur int) int {
+	cmdFrom := strings.LastIndexAny(line[:start], ";|{(&") + 1
+	for {
+		for cmdFrom < start && (line[cmdFrom] == ' ' || line[cmdFrom] == '\t') {
+			cmdFrom++
+		}
+		end := strings.IndexAny(line[cmdFrom:cur], " \t")
+		if end < 0 || !cmdKeywords[line[cmdFrom:cmdFrom+end]] {
+			break
+		}
+		cmdFrom += end
+	}
+	return cmdFrom
 }
 
 // completeCommand offers forms that strictly extend what is typed of the

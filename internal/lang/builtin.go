@@ -107,6 +107,7 @@ var builtins = []builtinRow{
 	{"catch", "keyword", "", "the handler of try", false},
 	{"logout", "session", "", "end the session", false},
 	{"bind", "session", "", "vi or emacs keys", false},
+	{"abbr", "session", "", "abbr name 'text' or abbr -e name: a visible rewrite", false},
 	{"syntax", "session", "", "line colors on or off", false},
 	{"trace", "session", "", "print each stage key first", false},
 	{"prompt", "session", "", "menu or line", false},
