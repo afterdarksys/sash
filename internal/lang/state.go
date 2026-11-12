@@ -96,6 +96,33 @@ func (s *State) SetXtrace(on bool) {
 	s.gen++
 }
 
+// Names are the bound names, sorted, for Tab after $. Values are never
+// returned.
+func (s *State) Names() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.vars))
+	for n := range s.vars {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// FnNames are the defined functions, sorted, for Tab.
+func (s *State) FnNames() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.fns))
+	for n := range s.fns {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Xtrace reports set -x.
 func (s *State) Xtrace() bool { return s.xtrace }
 

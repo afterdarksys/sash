@@ -96,3 +96,24 @@ func unsecret(d any) (any, bool) {
 	}
 	return d, false
 }
+
+// PathWords are the literal words of line that name a path: a plain word
+// or redirect target with a "/" and no "*", as written. The editor keeps
+// them as seen paths for Tab. It lexes only; a line that does not lex has
+// none.
+func PathWords(line string) []string {
+	toks, err := lex(line)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, t := range toks {
+		if t.kind != kWord {
+			continue
+		}
+		if w := plain(t.word); strings.Contains(w, "/") && !strings.Contains(w, "*") {
+			out = append(out, w)
+		}
+	}
+	return out
+}

@@ -70,6 +70,8 @@ Compiled in, from `lang.Builtins`, extended with a `Flags []string` per form (`-
 
 - Decision: may Tab call the agent's `ls` (key `file.read`, as `walk` does), or do paths come only from what the session has already seen? Recommended: seen only, filtered by `grant.AllowsRead` in process. "Seen" means literal paths in submitted lines, the prefix stack, and glob results at Enter. `proto.Client.Do` holds one mutex across a blocking write and read with no request id, so an `ls` cannot be cancelled, and each Tab would add an agent audit row. Revisit with a multiplexed pipe.
 
+**As built.** Tab replaces the word at the cursor and keeps the rest of the line. A command (after `;`, `|`, `{`, `(`, `&&`, `||`, or a leading `if`, `while`, `do`, `else`, `try`) completes to forms that strictly extend what is typed, so `cat ` then Tab completes an argument, not `cat` again. A word starting `-` completes the Flags of the longest form the command starts with. Seen paths are the literal path words of each line that ran (after expansion, so glob results count; never a `declare -s` line), resolved against the prefix it ran under, plus the prefix it left; at most 1024, oldest dropped. A relative word matches seen paths under the prefix. A menu shows at most 50 rows. A path with a `'` is inserted double-quoted with `"`, `\\`, and `$` escaped.
+
 ## 4. Right prompt
 
 Fixed fields in fixed order, rendered once per `Frame` as literal text:

@@ -29,19 +29,6 @@ func buildTable() []completion {
 	return out
 }
 
-func matches(prefix string) []completion {
-	if prefix == "" {
-		return nil
-	}
-	var out []completion
-	for _, row := range table {
-		if strings.HasPrefix(row.insert, prefix) {
-			out = append(out, row)
-		}
-	}
-	return out
-}
-
 // nearMiss offers a closed-table form for a mistyped command.
 // Equal distance keeps the earlier table row. An exact prefix is not a miss.
 func nearMiss(line string) string {

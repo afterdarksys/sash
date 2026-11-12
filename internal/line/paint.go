@@ -238,9 +238,10 @@ func menuLine(row MenuRow, selected, syntax bool) string {
 	if selected {
 		mark = "> "
 	}
-	body := mark + strings.TrimRight(row.Insert, " ") + "  " + row.Desc
+	// Every cell is escaped: a seen path is a name from the host.
+	body := mark + lang.SafeText(strings.TrimRight(row.Insert, " ")) + "  " + lang.SafeText(row.Desc)
 	if row.Key != "" {
-		body += "  " + row.Key
+		body += "  " + lang.SafeText(row.Key)
 	}
 	if row.Denied {
 		return "\x1b[2m" + body + "\x1b[0m"

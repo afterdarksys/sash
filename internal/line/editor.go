@@ -71,7 +71,14 @@ type Editor struct {
 	menu     []completion
 	menuOpen bool
 	menuIdx  int
-	novice   [][]noviceItem
+	// menuFrom and menuTo are the span of the line a menu row replaces.
+	menuFrom int
+	menuTo   int
+
+	// seen are the paths this session has named, for Tab (complete.go).
+	seen    []string
+	seenSet map[string]bool
+	novice  [][]noviceItem
 
 	searching      bool
 	searchQ        string
@@ -653,8 +660,7 @@ func (e *Editor) tab() {
 		e.menuIdx = (e.menuIdx + 1) % n
 		return
 	}
-	prefix := strings.TrimRight(e.line, " \t")
-	got := matches(prefix)
+	got, from, to := e.complete()
 	if len(got) == 0 {
 		return
 	}
@@ -667,15 +673,25 @@ func (e *Editor) tab() {
 		}
 	}
 	if len(got) == 1 && entitled == 1 {
-		e.line = one.insert
-		e.cursor = len(e.line)
-		e.touch()
+		e.replace(from, to, one.insert)
 		return
 	}
 	e.menu = got
+	e.menuFrom, e.menuTo = from, to
 	e.menuOpen = true
 	e.menuIdx = 0
 	e.browseAt = -1
+}
+
+// replace puts insert over line[from:to], the word Tab completed, and
+// keeps the rest of the line.
+func (e *Editor) replace(from, to int, insert string) {
+	if from < 0 || to > len(e.line) || from > to {
+		return
+	}
+	e.line = e.line[:from] + insert + e.line[to:]
+	e.cursor = from + len(insert)
+	e.touch()
 }
 
 func (e *Editor) acceptMenu() {
@@ -686,9 +702,7 @@ func (e *Editor) acceptMenu() {
 	if row.key != "" && !e.g.Has(row.key) {
 		return
 	}
-	e.line = row.insert
-	e.cursor = len(e.line)
-	e.touch()
+	e.replace(e.menuFrom, e.menuTo, row.insert)
 }
 
 func (e *Editor) histUp() {
@@ -890,6 +904,7 @@ func (e *Editor) submit() {
 	out := e.run(e.line)
 	e.Runs++
 	e.Last = out
+	e.remember(e.line, e.opt.Prefix, out.Prefix)
 	if out.Exit {
 		e.pushHist(e.line)
 		e.done = true

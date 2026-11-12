@@ -15,9 +15,18 @@ type Builtin struct {
 	Key  string // the entitlement; "" for anything in process
 	Desc string
 	Tab  bool // offered by Tab and prompt menu
+	// Flags are the flags Tab completes after the form. They come from
+	// builtinFlags, compiled in; nothing is loaded from disk.
+	Flags []string
 }
 
-var builtins = []Builtin{
+// builtinRow is one row of the table as written; Builtins adds Flags.
+type builtinRow struct {
+	Form, Kind, Key, Desc string
+	Tab                   bool
+}
+
+var builtins = []builtinRow{
 	{"ps", "verb", "ps", "process table", true},
 	{"unit status", "verb", "unit.status", "service status", true},
 	{"unit restart", "verb", "unit.restart", "restart a service", true},
@@ -103,8 +112,25 @@ var builtins = []Builtin{
 	{"prompt", "session", "", "menu or line", false},
 }
 
-// Builtins returns a copy of the table.
-func Builtins() []Builtin { return append([]Builtin(nil), builtins...) }
+// builtinFlags are the flags of each form that takes any, for Tab. A test
+// checks every key is a form in the table.
+var builtinFlags = map[string][]string{
+	"template_file": {"--check"},
+	"set":           {"-e", "-u", "-x", "-f", "-o"},
+	"shopt":         {"-s", "-u"},
+	"declare":       {"-r", "-i", "-a", "-A", "-p", "-s"},
+	"from csv":      {"--noheader"},
+	"from tsv":      {"--noheader"},
+}
+
+// Builtins returns a copy of the table, with each form's Flags.
+func Builtins() []Builtin {
+	out := make([]Builtin, len(builtins))
+	for i, b := range builtins {
+		out[i] = Builtin{Form: b.Form, Kind: b.Kind, Key: b.Key, Desc: b.Desc, Tab: b.Tab, Flags: append([]string(nil), builtinFlags[b.Form]...)}
+	}
+	return out
+}
 
 var builtinCols = []string{"name", "kind", "key", "desc"}
 
