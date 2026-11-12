@@ -187,9 +187,14 @@ func TestNeedsDynamicIsIncomplete(t *testing.T) {
 			t.Errorf("%q: resolved a value\n%s", c.src, out.Stdout)
 		}
 	}
-	// A value command name does not run.
-	if out := Needs("$cmd /etc/x", NeedsOptions{}); out.Status != 0 || len(needsTableRows(t, out)) != 0 {
-		t.Fatalf("value command: %d\n%s", out.Status, out.Stdout)
+	// A value command name does not run: the run refuses the stage.
+	for _, src := range []string{"$cmd /etc/x", "let c = unit\n$c restart nginx", "fn f(p) { $p restart nginx }"} {
+		out := Needs(src, NeedsOptions{})
+		rows := needsTableRows(t, out)
+		if out.Status != 1 || !needsHas(rows, needsWant{"-", "$", "no", noteCommandFromValue}) ||
+			strings.Contains(out.Stdout, "unit.restart") {
+			t.Fatalf("%q: %d\n%s", src, out.Status, out.Stdout)
+		}
 	}
 }
 

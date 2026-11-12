@@ -35,6 +35,10 @@ const (
 	noteRelative     = "relative"
 	noteNotGrantable = "not_grantable"
 	noteUse          = "use: not followed"
+	// noteCommandFromValue is a stage a run refuses: its command name is
+	// a value. The script can run up to it, so it is incomplete, not a
+	// usage error.
+	noteCommandFromValue = msgCommandFromValue
 
 	needsLineCap = 10
 	// needsBaseCap bounds the prefixes tracked at one point; past it the
@@ -430,7 +434,9 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 	}
 	name := plain(st.Argv[0])
 	if name == "" {
-		// A command name from a value does not run.
+		// A command name from a value does not run: a run refuses the
+		// stage before any call.
+		n.add("-", "$", noteCommandFromValue, st.Argv[0].Pos, "")
 		return b
 	}
 	// A literal stage classify refuses never runs. A stage with a value
@@ -757,6 +763,8 @@ func (n *needsRun) policy(rows []*needRow) string {
 			why = "a relative path with no single literal base"
 		case r.note == noteNotGrantable:
 			why = "no policy flag grants this"
+		case r.note == noteCommandFromValue:
+			why = "a command name from a value does not run; the run stops here"
 		case r.note == noteUse:
 			why = "use reads this file; the needs of what it defines are not listed"
 		case r.unflagged:

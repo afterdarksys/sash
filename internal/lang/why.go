@@ -173,7 +173,7 @@ func (m *machine) whyStage(text string, st Stage) []parent.Row {
 	}
 	var rows []parent.Row
 	if argv[0] == "$" {
-		rows = append(rows, whyRow(command, "", "-", "value", "a command name from a value does not run"))
+		rows = append(rows, whyRow(command, "", "no", msgCommandFromValue, "a command name from a value does not run"))
 	} else {
 		rows = append(rows, m.whyCommand(command, argv, literal))
 	}

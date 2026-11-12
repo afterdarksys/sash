@@ -1031,6 +1031,9 @@ type expStage struct {
 	x Expr
 }
 
+// msgCommandFromValue refuses a stage whose command name is not a literal.
+const msgCommandFromValue = "command_from_value"
+
 type problem struct {
 	status int
 	msg    string
@@ -1039,6 +1042,12 @@ type problem struct {
 func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 	exp := make([]expStage, len(pipe.Stages))
 	for i, st := range pipe.Stages {
+		// A command name is a literal on the line, never a value: the
+		// verb a line runs is the verb its reader sees. This is checked
+		// before any expansion, classify, or parent call.
+		if len(st.Argv) == 0 || plain(st.Argv[0]) == "" {
+			return nil, &problem{exitType, msgCommandFromValue}
+		}
 		m.sawSecret = false
 		var rowX Expr
 		var argv []string
