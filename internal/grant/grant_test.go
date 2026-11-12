@@ -40,3 +40,22 @@ func TestPathRoots(t *testing.T) {
 		t.Fatal("write root accepted a sibling")
 	}
 }
+
+// A "/" root is every absolute path, and still nothing relative.
+func TestSlashRootCoversEverything(t *testing.T) {
+	g := Grant{FileRead: []string{"/"}, FileWrite: []string{"/"}}
+	for _, p := range []string{"/", "/etc", "/etc/passwd", "/var/log/../../etc/shadow"} {
+		if !g.AllowsRead(p) || !g.AllowsWrite(p) {
+			t.Errorf("%q denied", p)
+		}
+	}
+	for _, p := range []string{"", "etc/passwd", "./x", "../x"} {
+		if g.AllowsRead(p) || g.AllowsWrite(p) {
+			t.Errorf("%q allowed", p)
+		}
+	}
+	tmp := Grant{FileRead: []string{"/tmp"}}
+	if tmp.AllowsRead("/tmpx") || tmp.AllowsRead("/") || !tmp.AllowsRead("/tmp/a") {
+		t.Fatal("non-root roots changed")
+	}
+}
