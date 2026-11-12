@@ -96,6 +96,25 @@ func (s *State) SetXtrace(on bool) {
 	s.gen++
 }
 
+// Plan reports plan mode, for the right prompt.
+func (s *State) Plan() bool { return s != nil && s.plan }
+
+// SecretCount is how many bound names hold a secret (declare -s, or a
+// value computed from one), for the right prompt. It returns a count
+// only: never a name or a value.
+func (s *State) SecretCount() int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, v := range s.vars {
+		if isSecret(toDatum(v)) {
+			n++
+		}
+	}
+	return n
+}
+
 // Names are the bound names, sorted, for Tab after $. Values are never
 // returned.
 func (s *State) Names() []string {

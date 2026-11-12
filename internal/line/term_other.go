@@ -14,3 +14,6 @@ func enterRaw(fd int) (func() error, error) {
 func IsTerm(f *os.File) bool {
 	return false
 }
+
+// termWidth is unknown here, so the right prompt is never drawn.
+func termWidth(fd int) int { return 0 }

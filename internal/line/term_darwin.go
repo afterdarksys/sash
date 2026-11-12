@@ -38,3 +38,14 @@ func IsTerm(f *os.File) bool {
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TIOCGETA, uintptr(unsafe.Pointer(&t)))
 	return errno == 0
 }
+
+// termWidth is the terminal's column count, or 0 when fd is not a
+// terminal or the size is unknown. Frame asks on every paint, so a resize
+// (SIGWINCH) is seen at the next key without a cache to invalidate.
+func termWidth(fd int) int {
+	var ws struct{ Row, Col, X, Y uint16 }
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws))); errno != 0 {
+		return 0
+	}
+	return int(ws.Col)
+}

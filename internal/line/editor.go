@@ -47,6 +47,10 @@ type View struct {
 	Syntax     bool
 	Block      bool
 	Denied     bool
+	// Right is the right prompt (rprompt.go) and Width the terminal
+	// width; 0 is unknown and drops it.
+	Right string
+	Width int
 }
 
 // Editor is the live line. Suggestion history comes from the agent for
@@ -90,6 +94,9 @@ type Editor struct {
 	pending []byte
 	note    string
 	hold    string
+
+	// width reports the terminal width; nil is unknown.
+	width func() int
 
 	// memo is the last Preview, keyed by the line, the prefix, and the
 	// State generation. Cursor moves, the menu, and history browsing
@@ -281,6 +288,8 @@ func (e *Editor) View() View {
 		Syntax:     e.Syntax,
 		Block:      block,
 		Denied:     denied,
+		Right:      rightPrompt(e.g, e.opt.State, e.Last.Status, nowFn()),
+		Width:      e.termWidth(),
 	}
 }
 
@@ -1212,6 +1221,7 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		}
 		return 1
 	}
+	e.width = func() int { return termWidth(int(out.Fd())) }
 	return finishRaw(restore, e.loop(bufio.NewReader(in), out, errOut))
 }
 
@@ -1264,6 +1274,13 @@ func (e *Editor) loop(reader *bufio.Reader, out, errOut io.Writer) int {
 			e.hasOut = false
 		}
 	}
+}
+
+func (e *Editor) termWidth() int {
+	if e.width == nil {
+		return 0
+	}
+	return e.width()
 }
 
 func isEnter(b byte) bool { return b == '\r' || b == '\n' }

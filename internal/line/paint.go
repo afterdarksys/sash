@@ -202,6 +202,9 @@ func Frame(v View) string {
 	b.WriteString("\r\x1b[J")
 	b.WriteString(promptText)
 	b.WriteString(Paint(v.Line, v.Suggestion, v.Spans, v.Syntax))
+	if col := rightAt(v); col > 0 {
+		fmt.Fprintf(&b, "\x1b[%dG\x1b[90m%s\x1b[0m", col, v.Right)
+	}
 	extra := 0
 	if v.MenuOpen {
 		extra = len(v.Menu)

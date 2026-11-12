@@ -85,6 +85,8 @@ Fixed fields in fixed order, rendered once per `Frame` as literal text:
 
 Placed with `\x1b[{col}G` from the terminal width (new `TIOCGWINSZ` in `term_*.go`). Dropped when it would overlap the line or when the width is unknown.
 
+**As built.** A field with nothing to say is left out: no purpose or expiry without a grant (a hand start), `plan` only when on, `secrets N` only when N > 0, `!N` only on a failure. Expiry shows `exp 30s`, `exp 41m`, `exp 2h`, `exp 3d`, or `expired`. The purpose is escaped rune by rune and stops before 32 runes, so an escape is never cut. The width is read with `TIOCGWINSZ` on every paint, so a resize is seen at the next key with no cache to invalidate; the overlap test uses display width. `secrets N` counts names bound to a secret, including names a fn body binds, since fn bodies bind globally.
+
 There is no prompt variable, no format string, and no expansion. CVE-2021-45444: zsh `PROMPT_SUBST` expanded a value (a branch name) a second time and ran code. Here no displayed value is ever parsed.
 
 - Decision: show `secrets N` or not. Recommended: show it, because the operator needs to know a secret is live before running `declare -p` or `trace on`. The count reveals nothing the source does not.
