@@ -690,6 +690,12 @@ func (e *Editor) replace(from, to int, row completion) {
 	if from < 0 || to > len(e.line) || from > to {
 		return
 	}
+	// Text glued after the cursor would join the insert: 'x y'a reads as
+	// one thing and lexes as two. Only a stop (space, ;, |, …) may follow.
+	if to < len(e.line) && !strings.HasSuffix(row.insert, " ") && !strings.ContainsRune(wordStop, rune(e.line[to])) {
+		e.menuOpen = false
+		return
+	}
 	line := e.line[:from] + row.insert + e.line[to:]
 	want := row.words
 	if want == nil {

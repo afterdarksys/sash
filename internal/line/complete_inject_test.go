@@ -130,3 +130,24 @@ func TestTabInsertMustLexAsItsWords(t *testing.T) {
 		t.Fatalf("good insert refused: %q", e.line)
 	}
 }
+
+// A quoted insert is refused when text is glued after the cursor, and
+// allowed when a stop follows.
+func TestTabRefusesGluedText(t *testing.T) {
+	for line, want := range map[string]string{
+		"cat /srv/xa":   "cat /srv/xa",
+		"cat /srv/x'b'": "cat /srv/x'b'",
+		"cat /srv/x;ps": "cat '/srv/x y';ps",
+		"cat /srv/x ps": "cat '/srv/x y' ps",
+		"cat /srv/x|ps": "cat '/srv/x y'|ps",
+		"cat /srv/x":    "cat '/srv/x y'",
+	} {
+		e := New(srvGrant(), failParent{t})
+		e.see("/srv/x y")
+		e.line, e.cursor = line, len("cat /srv/x")
+		e.Feed([]byte("\t"))
+		if e.line != want {
+			t.Errorf("%q: %q want %q", line, e.line, want)
+		}
+	}
+}
