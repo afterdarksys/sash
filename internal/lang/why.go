@@ -30,13 +30,13 @@ func Why(src string, g grant.Grant, opt Options) Outcome {
 	}
 	if prob != nil {
 		out.Status = prob.Status
-		out.Stderr = prob.Msg + "\n"
+		out.Stderr = safeText(prob.Msg) + "\n"
 		return out
 	}
 	prog, err := parse(text)
 	if err != nil {
 		out.Status = exitType
-		out.Stderr = err.Error() + "\n"
+		out.Stderr = safeText(err.Error()) + "\n"
 		return out
 	}
 	var pipes []Pipeline

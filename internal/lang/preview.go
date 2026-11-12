@@ -56,19 +56,19 @@ func (denyParent) Do(parent.Verb) (parent.Result, error) {
 func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	var out LinePreview
 	if _, err := lex(src); err != nil {
-		out.Smile = err.Error()
+		out.Smile = safeText(err.Error())
 		out.Block = true
 		return out
 	}
 	prog, err := parse(src)
 	if err != nil {
-		out.Smile = err.Error()
+		out.Smile = safeText(err.Error())
 		out.Block = true
 		return out
 	}
 	toks, err := lex(src)
 	if err != nil {
-		out.Smile = err.Error()
+		out.Smile = safeText(err.Error())
 		out.Block = true
 		return out
 	}
@@ -129,9 +129,9 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 		out.Denied = true
 		out.Block = true
 		if denial != "" {
-			out.Smile = denial
+			out.Smile = safeText(denial)
 		} else {
-			out.Smile = known
+			out.Smile = safeText(known)
 		}
 		for i := range out.Spans {
 			if out.Spans[i].Face == FaceTypePipe {
@@ -144,7 +144,7 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 		out.Smile = "type |>"
 		return out
 	}
-	out.Smile = other
+	out.Smile = safeText(other)
 	return out
 }
 

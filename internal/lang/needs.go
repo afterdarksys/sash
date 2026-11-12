@@ -172,7 +172,7 @@ func (b needBase) under(p string) needBase {
 // fn body, called or not.
 func Needs(src string, opt NeedsOptions) Outcome {
 	fail := func(msg string) Outcome {
-		return Outcome{Status: exitType, Stderr: msg + "\n"}
+		return Outcome{Status: exitType, Stderr: safeText(msg) + "\n"}
 	}
 	text, prob := expandHistory(src, nil)
 	if prob == nil && len(text) > expandMax {
@@ -850,6 +850,26 @@ func needsQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 
+// safeText makes a message safe to print: each line goes through
+// needsCell and the newlines stay. Every message that can carry script
+// text (a run's stderr, a parse or expansion error, a preview hint)
+// leaves the interpreter through it, so a literal in an error cannot
+// drive the terminal.
+func safeText(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = needsCell(l)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// unsafeRune is a rune that must not reach a terminal as is: a control
+// character, a format character (bidi overrides, zero-width), U+2028,
+// U+2029, or anything else unicode.IsPrint rejects.
+func unsafeRune(r rune) bool {
+	return r < 0x20 || r == 0x7f || unicode.Is(unicode.Cf, r) || !unicode.IsPrint(r)
+}
+
 // needsCell makes s safe to print: a tab becomes a space, and a control
 // character (below 0x20, 0x7f, C1 0x80-0x9f), a format character (bidi
 // overrides, zero-width), U+2028 and U+2029, anything else not printable,
@@ -867,7 +887,7 @@ func needsCell(s string) string {
 			fmt.Fprintf(&b, `\x%02x`, r)
 		case r == '\\':
 			b.WriteString(`\\`)
-		case unicode.Is(unicode.Cf, r) || !unicode.IsPrint(r):
+		case unsafeRune(r):
 			if r > 0xffff {
 				fmt.Fprintf(&b, `\U%08x`, r)
 			} else {

@@ -96,7 +96,7 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	}
 	prog, err := parse(expanded)
 	if err != nil {
-		return Outcome{Status: exitType, Stderr: err.Error() + "\n", Prefix: opt.Prefix}
+		return Outcome{Status: exitType, Stderr: safeText(err.Error()) + "\n", Prefix: opt.Prefix}
 	}
 	m := newMachine(g, p, opt.State)
 	m.trace = opt.Trace
@@ -107,7 +107,7 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if m.ctl == ctlHalt {
 		status = exitType
 	}
-	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: m.err.String(), Prefix: m.prefix()}
+	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: safeText(m.err.String()), Prefix: m.prefix()}
 	if m.ctl == ctlExit {
 		out.Status = m.exitCode
 		out.Exit = true

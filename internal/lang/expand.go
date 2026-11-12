@@ -39,8 +39,16 @@ type ExpandProblem struct {
 
 // Expand rewrites history, then braces, then globs. An empty src is unchanged.
 // History is copied. A second call is a no-op once designators, brace patterns,
-// and unquoted globs are gone.
+// and unquoted globs are gone. A problem's Msg is escaped for the terminal.
 func Expand(src string, g grant.Grant, p parent.Parent, opt Options) (string, *ExpandProblem) {
+	out, prob := expand(src, g, p, opt)
+	if prob != nil {
+		prob = &ExpandProblem{Status: prob.Status, Msg: safeText(prob.Msg)}
+	}
+	return out, prob
+}
+
+func expand(src string, g grant.Grant, p parent.Parent, opt Options) (string, *ExpandProblem) {
 	if src == "" {
 		return "", nil
 	}
