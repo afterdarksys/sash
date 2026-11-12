@@ -908,11 +908,11 @@ func unsafeRune(r rune) bool {
 	return r < 0x20 || r == 0x7f || unicode.Is(unicode.Cf, r) || !unicode.IsPrint(r)
 }
 
-// needsCell makes s safe to print: a tab becomes a space, and a control
-// character (below 0x20, 0x7f, C1 0x80-0x9f), a format character (bidi
-// overrides, zero-width), U+2028 and U+2029, anything else not printable,
-// and a byte that is not UTF-8 are escaped. why prints its cells through
-// it too.
+// needsCell makes s safe to print: a control character (a tab, anything
+// below 0x20, 0x7f, C1 0x80-0x9f), a format character (bidi overrides,
+// zero-width), U+2028 and U+2029, anything else not printable, and a byte
+// that is not UTF-8 are escaped. A tab is \x09, so /etc/a<TAB>b and
+// /etc/a b print apart. why prints its cells through it too.
 //
 // A backslash stays one backslash (C:\dir, a\b) unless what follows would
 // read as an escape: another backslash, xHH, uHHHH, UHHHHHHHH, or a rune
@@ -920,7 +920,6 @@ func unsafeRune(r rune) bool {
 // is a backslash, those forms are the escaped rune, and any other
 // backslash is itself, so the printed text decodes to s one way only.
 func needsCell(s string) string {
-	s = strings.ReplaceAll(s, "\t", " ")
 	var b strings.Builder
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])

@@ -20,13 +20,13 @@ Most of this exists. `Loop` (`internal/line/editor.go`) calls `View` before ever
 | `command_from_value` | `plainArgv` fails, `paintStage` paints the stage `FaceFilter` (green: looks safe) | `FaceFromValue` on argv[0], and Block |
 | subcommand from a value (`unit $op x`) | `FaceFilter` | `FaceDynamic` on that word, matching the `needs` note `dynamic` |
 
-**Latency.** `Preview` p99 ≤ 2 ms on a `maxLine` (8192-byte) line at parse depth 64; `BenchmarkPreviewMaxLine` guards it. Drop the duplicate `lex` in `Preview`.
+**Latency.** `Preview` p99 ≤ 2 ms on a `maxLine` (8192-byte) line nested 64 deep; `BenchmarkPreviewMaxLine` guards it (measured p99 about 1.15 ms on an i9-9880H). Drop the duplicate `lex` in `Preview`.
 
-**Caching.** A one-entry memo in `Editor` keyed by (line, prefix, State generation). `State` gains a generation counter bumped by every write (`assign`, fn definition, `set`, `declare`). Cursor, menu, and history browsing reuse the memo.
+**Caching.** A one-entry memo in `Editor` keyed by (line, prefix, State generation). `State` gains a generation counter. Every write (`assign`, fn definition, `set`, `declare`, `check`) happens inside `Run`, so `Run` bumps it once when it returns, whatever ran; `SetXtrace` and `LockPlan`, the only writes outside `Run`, bump it too. One bump per `Run` cannot miss a write site. Cursor, menu, and history browsing reuse the memo.
 
-**Paste.** `Loop` reads one byte at a time and repaints, so pasting 8 KiB costs 8192 previews of a growing line. v5 feeds every buffered byte up to and including the next Enter before one `View`. Each submission is still shown, as the comment in `Loop` requires.
+**Paste.** `Loop` reads one byte at a time and repaints, so pasting 8 KiB costs 8192 previews of a growing line. v5 feeds every buffered byte up to the next Enter, then one `View`, then the Enter on its own. Feeding the Enter after that paint keeps each submission shown whole before its output, as the comment in `Loop` requires.
 
-**Huge or deep lines.** `maxLine` and depth 64 cap the work. A line that fails to lex or parse is Block with the error and no partial colouring.
+**Huge or deep lines.** `maxLine` and depth 64 cap the work. Only `[ ]` expressions (and decoded data) are capped at depth 64; block nesting (`if { if { … } }`) has no depth cap of its own and is bounded by `maxLine`. A line that fails to lex or parse is Block with the error and no partial colouring.
 
 **Never the parent.** `Preview` uses `denyParent` and never calls `Expand`; globs list through `walk` only at Enter, in `submit`. Test: a parent that fails the test on any call while a fuzz corpus is typed key by key.
 
@@ -162,6 +162,7 @@ The answer comes from the editor's own reader, through a new `Options.Confirm` c
 
 - `proto.Serve` (`internal/proto/proto.go:97`) has `_ = Write(...)` on the frame-body error path, against the no-`_ =` rule.
 - A bare `try { }` with no `catch` discards the failure and its stderr. Decided: section 0 makes it a parse error.
+- The editor does not wrap: a line wider than the terminal draws past the right edge and the cursor column is wrong. `Frame` counts display width (East Asian wide 2, combining 0, from a compact table in `paint.go`), but line wrapping is out of scope for v5.
 
 ## Order
 

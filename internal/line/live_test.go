@@ -78,6 +78,28 @@ func TestPaintEscapesFormatAndC1(t *testing.T) {
 	}
 }
 
+// The cursor column is the display width: a wide rune is two columns, a
+// combining mark none.
+func TestFrameCountsDisplayWidth(t *testing.T) {
+	for line, cols := range map[string]int{
+		"echo 日本":         5 + 4,
+		"echo ｱ":          5 + 1,
+		"echo Ａ":          5 + 2,
+		"echo e\u0301":    5 + 1,
+		"echo 한국":         5 + 4,
+		"echo \U0001f600": 5 + 2,
+		"echo café":       5 + 4,
+	} {
+		e := New(grant.Grant{AllowPrivate: true}, nil)
+		e.Feed([]byte(line))
+		f := Frame(e.View())
+		want := "\r\x1b[" + strconv.Itoa(len(promptText)+cols) + "C"
+		if !strings.HasSuffix(f, want) {
+			t.Errorf("%q: want column %d, frame ends %q", line, len(promptText)+cols, f[len(f)-10:])
+		}
+	}
+}
+
 // The memo is keyed by line, prefix, and State generation: a cursor move
 // reuses it, and a write to State, made anywhere, refreshes it.
 func TestPreviewMemo(t *testing.T) {

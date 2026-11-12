@@ -123,14 +123,14 @@ func TestCellBackslashIsUnambiguous(t *testing.T) {
 		"a\\\u202eb":    `a\\\u202eb`,
 		`a\U0001f600z`:  `a\\U0001f600z`,
 		`a\U0001f60`:    `a\U0001f60`,
-		"tab\\\tx":      `tab\ x`,
+		"tab\\\tx":      `tab\\\x09x`,
 		"bad\\\xffbyte": `bad\\\xffbyte`,
 	} {
 		if got := needsCell(in); got != want {
 			t.Errorf("cell %q = %q want %q", in, got, want)
 		}
 	}
-	alpha := []string{`\`, "x", "u", "U", "1", "b", "\x1b", "\xff", "\u202e", "0"}
+	alpha := []string{`\`, "x", "u", "U", "1", "b", "\x1b", "\xff", "\u202e", "0", "\t"}
 	var walk func(prefix string, n int)
 	walk = func(prefix string, n int) {
 		if got := decodeCell(needsCell(prefix)); got != prefix {

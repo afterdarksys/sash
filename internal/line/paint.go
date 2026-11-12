@@ -3,6 +3,7 @@ package line
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/afterdarksys/sash/internal/lang"
@@ -78,7 +79,7 @@ func Paint(line, suggestion string, spans []lang.Span, syntax bool) string {
 }
 
 // paintedWidth counts the columns Paint uses for s: an escaped rune is
-// its escape's length, any other rune one column.
+// its escape's length, any other rune its display width.
 func paintedWidth(s string) int {
 	n := 0
 	for i := 0; i < len(s); {
@@ -86,11 +87,39 @@ func paintedWidth(s string) int {
 		if ok {
 			n += len(esc)
 		} else {
-			n++
+			r, _ := utf8.DecodeRuneInString(s[i:])
+			n += runeWidth(r)
 		}
 		i += size
 	}
 	return n
+}
+
+// wideRanges are the East Asian Wide and Fullwidth blocks and the emoji
+// blocks a terminal draws two columns wide. It is a compact table, not
+// the full Unicode EastAsianWidth data: a rare wide rune outside it
+// counts one column and leaves the cursor short.
+var wideRanges = [][2]rune{
+	{0x1100, 0x115f}, {0x2329, 0x232a}, {0x2e80, 0x303e}, {0x3041, 0x33ff},
+	{0x3400, 0x4dbf}, {0x4e00, 0x9fff}, {0xa000, 0xa4cf}, {0xa960, 0xa97f},
+	{0xac00, 0xd7a3}, {0xf900, 0xfaff}, {0xfe10, 0xfe19}, {0xfe30, 0xfe6f},
+	{0xff00, 0xff60}, {0xffe0, 0xffe6}, {0x1f300, 0x1f64f}, {0x1f900, 0x1f9ff},
+	{0x20000, 0x2fffd}, {0x30000, 0x3fffd},
+}
+
+// runeWidth is the columns a printable rune takes: 0 for a combining mark
+// or a Hangul medial jamo, 2 for a wide one, else 1. Format characters
+// (zero-width) never get here: Paint escapes them.
+func runeWidth(r rune) int {
+	if unicode.In(r, unicode.Mn, unicode.Me) || (r >= 0x1160 && r <= 0x11ff) {
+		return 0
+	}
+	for _, w := range wideRanges {
+		if r >= w[0] && r <= w[1] {
+			return 2
+		}
+	}
+	return 1
 }
 
 // sgr is a face's color. The authorization marks (denied, out of root,
