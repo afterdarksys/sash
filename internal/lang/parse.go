@@ -165,6 +165,11 @@ func parse(src string) (*Program, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseTokens(toks)
+}
+
+// parseTokens parses what lex returned. It does not change toks.
+func parseTokens(toks []token) (*Program, error) {
 	p := &parser{tok: toks}
 	prog, err := p.program()
 	if err != nil {

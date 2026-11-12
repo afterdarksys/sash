@@ -90,6 +90,9 @@ type Options struct {
 // Run expands src, then parses and executes it. Toolkit names call p.
 // Filters stay in process. A denied or mistyped pipeline performs no parent call.
 func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
+	if opt.State != nil {
+		defer func() { opt.State.gen++ }()
+	}
 	expanded, prob := Expand(src, g, p, opt)
 	if prob != nil {
 		return Outcome{Status: prob.Status, Stderr: prob.Msg + "\n", Prefix: opt.Prefix}
@@ -1040,13 +1043,29 @@ type problem struct {
 }
 
 func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
+	exp, prob, _ := m.prepareAt(pipe)
+	return exp, prob
+}
+
+// refusal locates what prepare refused, for Preview: the stage, and the
+// argv index (bindPaths) or the redirect index of the path out of the
+// grant's roots. ok is false when no one word is to blame.
+type refusal struct {
+	ok    bool
+	stage int
+	arg   int
+	redir int
+}
+
+// prepareAt is prepare, plus where a path denial points.
+func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 	exp := make([]expStage, len(pipe.Stages))
 	for i, st := range pipe.Stages {
 		// A command name is a literal on the line, never a value: the
 		// verb a line runs is the verb its reader sees. This is checked
 		// before any expansion, classify, or parent call.
 		if len(st.Argv) == 0 || plain(st.Argv[0]) == "" {
-			return nil, &problem{exitType, msgCommandFromValue}
+			return nil, &problem{exitType, msgCommandFromValue}, refusal{}
 		}
 		m.sawSecret = false
 		var rowX Expr
@@ -1059,11 +1078,11 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 			// datum for check and log.
 			rowX = exprOf(st.Argv[last])
 			if argv, err = m.expandArgv(st.Argv[:last]); err != nil {
-				return nil, &problem{exitType, err.Error()}
+				return nil, &problem{exitType, err.Error()}, refusal{}
 			}
 			argv = append(argv, exprMark)
 		} else if argv, err = m.expandArgv(st.Argv); err != nil {
-			return nil, &problem{exitType, err.Error()}
+			return nil, &problem{exitType, err.Error()}, refusal{}
 		}
 		type redirText struct {
 			kind string
@@ -1074,7 +1093,7 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		for _, r := range st.Redirs {
 			text, err := m.expand(r.Path)
 			if err != nil {
-				return nil, &problem{exitType, err.Error()}
+				return nil, &problem{exitType, err.Error()}, refusal{}
 			}
 			texts = append(texts, redirText{r.Kind, text})
 			switch r.Kind {
@@ -1085,11 +1104,11 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 			}
 		}
 		if reads+heres > 1 || (i != 0 && reads+heres > 0) {
-			return nil, &problem{exitType, "usage <"}
+			return nil, &problem{exitType, "usage <"}, refusal{}
 		}
 		var inPath, outPath string
 		var here []byte
-		for _, r := range texts {
+		for j, r := range texts {
 			if r.kind == "<<<" {
 				here = []byte(r.text + "\n")
 				continue
@@ -1097,43 +1116,43 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 			if r.kind == "<" {
 				full, perr := resolvePath(m.prefix(), r.text)
 				if perr != nil {
-					return nil, &problem{exitType, "prefix_unset"}
+					return nil, &problem{exitType, "prefix_unset"}, refusal{}
 				}
 				if !m.g.AllowsRead(full) {
-					return nil, &problem{exitDenied, "denied file.read"}
+					return nil, &problem{exitDenied, "denied file.read"}, refusal{ok: true, stage: i, arg: -1, redir: j}
 				}
 				inPath = full
 				continue
 			}
 			full, perr := resolvePath(m.prefix(), r.text)
 			if perr != nil {
-				return nil, &problem{exitType, "prefix_unset"}
+				return nil, &problem{exitType, "prefix_unset"}, refusal{}
 			}
 			if i != len(pipe.Stages)-1 || outPath != "" {
-				return nil, &problem{exitType, "usage >"}
+				return nil, &problem{exitType, "usage >"}, refusal{}
 			}
 			if !m.g.AllowsWrite(full) {
-				return nil, &problem{exitDenied, "denied file.write"}
+				return nil, &problem{exitDenied, "denied file.write"}, refusal{ok: true, stage: i, arg: -1, redir: j}
 			}
 			outPath = full
 		}
 		info, prob := classify(argv, m.fns)
 		if prob != nil {
-			return nil, prob
+			return nil, prob, refusal{}
 		}
 		// A secret prints as ***, but it does not leave sash: not as a verb
 		// argument, a path, or a function argument.
 		if m.sawSecret && (info.key != "" || info.call != nil || inPath != "" || outPath != "" || len(st.Redirs) > 0) {
-			return nil, &problem{exitType, "a secret cannot leave sash"}
+			return nil, &problem{exitType, "a secret cannot leave sash"}, refusal{}
 		}
 		if info.call != nil && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
-			return nil, &problem{exitType, "type fn"}
+			return nil, &problem{exitType, "type fn"}, refusal{}
 		}
 		if argv[0] == "template_file" && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
-			return nil, &problem{exitType, "type template_file"}
+			return nil, &problem{exitType, "type template_file"}, refusal{}
 		}
 		if info.mover && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
-			return nil, &problem{exitType, "type " + argv[0]}
+			return nil, &problem{exitType, "type " + argv[0]}, refusal{}
 		}
 		op := ""
 		if i > 0 {
@@ -1145,19 +1164,19 @@ func (m *machine) prepare(pipe Pipeline) ([]expStage, *problem) {
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
-		return nil, prob
+		return nil, prob, refusal{}
 	}
 	for i := range exp {
 		if exp[i].key != "" && !m.g.Has(exp[i].key) {
-			return nil, &problem{exitDenied, "denied " + exp[i].key}
+			return nil, &problem{exitDenied, "denied " + exp[i].key}, refusal{}
 		}
 	}
 	for i := range exp {
-		if prob := m.bindPaths(&exp[i]); prob != nil {
-			return nil, prob
+		if arg, prob := m.bindPaths(&exp[i]); prob != nil {
+			return nil, prob, refusal{ok: arg >= 0, stage: i, arg: arg, redir: -1}
 		}
 	}
-	return exp, nil
+	return exp, nil, refusal{}
 }
 
 type classified struct {
@@ -1455,56 +1474,56 @@ func stageShape(st expStage) (int, int) {
 	}
 }
 
-func (m *machine) bindPaths(st *expStage) *problem {
+// bindPaths resolves and checks a stage's path words. On a refusal it
+// returns the argv index of the word refused: 0 when the path is the
+// prefix itself (ls with no argument), -1 when no word is to blame.
+func (m *machine) bindPaths(st *expStage) (int, *problem) {
 	switch st.argv[0] {
 	case "cat":
-		for _, a := range st.argv[1:] {
+		for i, a := range st.argv[1:] {
 			if prob := m.needRead(st, a); prob != nil {
-				return prob
+				return 1 + i, prob
 			}
 			st.paths = append(st.paths, st.path)
 		}
 	case "ls":
-		p := m.prefix()
 		if len(st.argv) == 2 {
-			p = st.argv[1]
+			return 1, m.needRead(st, st.argv[1])
 		}
-		return m.needRead(st, p)
+		return 0, m.needRead(st, m.prefix())
 	case "config":
-		return m.needRead(st, st.argv[2])
-	case "cd", "pushd":
-		return m.needRead(st, st.argv[1])
-	case "template":
-		return m.needRead(st, st.argv[1])
+		return 2, m.needRead(st, st.argv[2])
+	case "cd", "pushd", "template":
+		return 1, m.needRead(st, st.argv[1])
 	case "template_file":
 		if !m.g.Has("file.read") {
-			return &problem{exitDenied, "denied file.read"}
+			return -1, &problem{exitDenied, "denied file.read"}
 		}
-		for _, a := range st.argv[1:3] {
+		for i, a := range st.argv[1:3] {
 			if prob := m.needRead(st, a); prob != nil {
-				return prob
+				return 1 + i, prob
 			}
 			st.paths = append(st.paths, st.path)
 		}
 		full, err := resolvePath(m.prefix(), st.argv[3])
 		if err != nil {
-			return &problem{exitType, "prefix_unset"}
+			return 3, &problem{exitType, "prefix_unset"}
 		}
 		if len(st.argv) == 5 {
 			if !m.g.AllowsRead(full) {
-				return &problem{exitDenied, "denied file.read"}
+				return 3, &problem{exitDenied, "denied file.read"}
 			}
 			st.paths = append(st.paths, full)
-			return nil
+			return -1, nil
 		}
 		// out is written by the > door in execPrepared.
 		if !m.g.AllowsWrite(full) {
-			return &problem{exitDenied, "denied file.write"}
+			return 3, &problem{exitDenied, "denied file.write"}
 		}
 		st.paths = append(st.paths, full)
 		st.outPath = full
 	}
-	return nil
+	return -1, nil
 }
 
 func (m *machine) needRead(st *expStage, p string) *problem {

@@ -867,6 +867,18 @@ func safeText(s string) string {
 // text from a script, a file name, or the host, made safe for a terminal.
 func SafeText(s string) string { return safeText(s) }
 
+// EscapeRune is how needsCell prints the rune (or the bad byte) at the
+// start of s, and the bytes it covers. ok is false for a rune that
+// prints as itself. The editor paints these in reverse video and keeps
+// the bytes on the line.
+func EscapeRune(s string) (esc string, size int, ok bool) {
+	r, size := utf8.DecodeRuneInString(s)
+	if size == 0 || !(r == utf8.RuneError && size == 1) && !unsafeRune(r) {
+		return "", size, false
+	}
+	return needsCell(s[:size]), size, true
+}
+
 // escapeAhead reports whether a backslash followed by rest would read as
 // an escape in needsCell's output.
 func escapeAhead(rest string) bool {

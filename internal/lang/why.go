@@ -211,7 +211,7 @@ func (m *machine) whyCommand(command string, argv []string, literal bool) parent
 		return whyRow(command, key, "yes", "value_path", "a path from a value is checked when the line runs")
 	}
 	es := expStage{argv: whyGlobDirs(argv), key: key}
-	if prob := m.bindPaths(&es); prob != nil {
+	if _, prob := m.bindPaths(&es); prob != nil {
 		return m.whyPathRow(command, key, prob, m.g.FileRead)
 	}
 	return whyRow(command, key, "yes", "granted", whyAgentNote(key))

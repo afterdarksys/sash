@@ -62,7 +62,9 @@ func emit(out *[]token, k kind, w Word, at, n int) {
 }
 
 func lex(src string) ([]token, error) {
-	var out []token
+	// A token is at least one byte and usually a few: one guess saves
+	// the regrowth that dominated Preview on a long line.
+	out := make([]token, 0, len(src)/4+1)
 	ix := newExprSpans(src)
 	i := 0
 	for i < len(src) {

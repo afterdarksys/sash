@@ -31,10 +31,26 @@ type State struct {
 	planLocked bool
 	// checks are the check rows of this session, for checks.
 	checks []parent.Row
+	// gen changes whenever the State may have been written, so a display
+	// memo keyed by it is never stale. Every write (assign, fn
+	// definition, set, declare, check) happens inside Run, which bumps it
+	// once when it returns, or in a setter below, which bumps it too.
+	gen uint64
+}
+
+// Generation is the write counter: equal values mean no write between.
+func (s *State) Generation() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.gen
 }
 
 // LockPlan turns plan mode on for good: sash --plan.
-func (s *State) LockPlan() { s.plan, s.planLocked = true, true }
+func (s *State) LockPlan() {
+	s.plan, s.planLocked = true, true
+	s.gen++
+}
 
 // NewState returns the defaults: errexit, nounset, xtrace, and noglob off,
 // pipefail on, loopmax 100000, verbmax 10000.
@@ -75,7 +91,10 @@ func (s *State) clone() *State {
 }
 
 // SetXtrace is the editor's trace on and trace off.
-func (s *State) SetXtrace(on bool) { s.xtrace = on }
+func (s *State) SetXtrace(on bool) {
+	s.xtrace = on
+	s.gen++
+}
 
 // Xtrace reports set -x.
 func (s *State) Xtrace() bool { return s.xtrace }

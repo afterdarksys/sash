@@ -3,6 +3,7 @@ package lang
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/afterdarksys/sash/internal/grant"
@@ -25,6 +26,15 @@ const (
 	FaceDanger
 	FaceDenied
 	FaceTypePipe
+	// FaceOutOfRoot is the one path word or redirect target outside the
+	// grant's roots. It is an authorization mark.
+	FaceOutOfRoot
+	// FaceFromValue is a command name that is not a literal
+	// (command_from_value). The line is Block.
+	FaceFromValue
+	// FaceDynamic is a subcommand from a value (unit $op x): the key is
+	// known only when the line runs, as the needs note dynamic says.
+	FaceDynamic
 )
 
 // Span covers source bytes [Start, End). Later spans win on overlap.
@@ -52,21 +62,19 @@ func (denyParent) Do(parent.Verb) (parent.Result, error) {
 }
 
 // Preview paints src with the same parse and preflight as Run.
-// A denied line is Block. Usage and type errors are not.
+// A denied line is Block, and so is a command name from a value, which
+// the run would refuse after running the statements before it. Usage and
+// type errors are not. A line that fails to lex or parse is Block with
+// the error and no spans.
 func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	var out LinePreview
-	if _, err := lex(src); err != nil {
-		out.Smile = safeText(err.Error())
-		out.Block = true
-		return out
-	}
-	prog, err := parse(src)
+	toks, err := lex(src)
 	if err != nil {
 		out.Smile = safeText(err.Error())
 		out.Block = true
 		return out
 	}
-	toks, err := lex(src)
+	prog, err := parseTokens(toks)
 	if err != nil {
 		out.Smile = safeText(err.Error())
 		out.Block = true
@@ -74,8 +82,11 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	}
 	var pipes []Pipeline
 	needsEachPipe(prog, func(p Pipeline) { pipes = append(pipes, p) })
+	fromValue := false
 	for _, pipe := range pipes {
-		paintPipe(toks, pipe, g, &out.Spans)
+		if paintPipe(toks, pipe, g, &out.Spans) {
+			fromValue = true
+		}
 	}
 	// prepare reads names and never writes them, so the session's own
 	// state is safe to show from.
@@ -87,7 +98,7 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	typePipe := false
 	other := ""
 	for _, pipe := range pipes {
-		_, prob := m.prepare(pipe)
+		_, prob, at := m.prepareAt(pipe)
 		if prob == nil {
 			continue
 		}
@@ -96,6 +107,11 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 				denial = prob.msg
 			}
 			key := strings.TrimPrefix(prob.msg, "denied ")
+			if sp, ok := refusedSpan(pipe, at); ok && g.Has(key) {
+				sp.Key = key
+				out.Spans = append(out.Spans, sp)
+				continue
+			}
 			for i := range out.Spans {
 				if out.Spans[i].Key == key {
 					out.Spans[i].Face = FaceDenied
@@ -140,12 +156,36 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 		}
 		return out
 	}
+	if fromValue {
+		out.Smile = msgCommandFromValue
+		out.Block = true
+		return out
+	}
 	if typePipe {
 		out.Smile = "type |>"
 		return out
 	}
 	out.Smile = safeText(other)
 	return out
+}
+
+// refusedSpan is the source span of the one word prepare refused: an
+// argv word from bindPaths, or a redirect target.
+func refusedSpan(pipe Pipeline, at refusal) (Span, bool) {
+	if !at.ok || at.stage < 0 || at.stage >= len(pipe.Stages) {
+		return Span{}, false
+	}
+	st := pipe.Stages[at.stage]
+	var w Word
+	switch {
+	case at.redir >= 0 && at.redir < len(st.Redirs):
+		w = st.Redirs[at.redir].Path
+	case at.arg >= 0 && at.arg < len(st.Argv):
+		w = st.Argv[at.arg]
+	default:
+		return Span{}, false
+	}
+	return Span{Start: w.Pos, End: w.End, Face: FaceOutOfRoot}, true
 }
 
 // collectUses finds use statements at any depth.
@@ -194,27 +234,49 @@ func (m *machine) useDenied(u *Use) string {
 	return ""
 }
 
-func paintPipe(toks []token, pipe Pipeline, g grant.Grant, spans *[]Span) {
+// paintPipe paints each stage and reports whether a command name comes
+// from a value.
+func paintPipe(toks []token, pipe Pipeline, g grant.Grant, spans *[]Span) bool {
+	fromValue := false
 	for _, st := range pipe.Stages {
-		paintStage(st, g, spans)
+		if paintStage(st, g, spans) {
+			fromValue = true
+		}
 		paintRedir(toks, st, g, spans)
 	}
 	paintTypePipe(toks, pipe, spans)
+	return fromValue
 }
 
-func paintStage(st Stage, g grant.Grant, spans *[]Span) {
+// subcommands are the commands whose second word picks the verb.
+var subcommands = map[string]bool{"unit": true, "package": true, "sysctl": true, "config": true}
+
+// paintStage paints one stage and reports a command name from a value.
+func paintStage(st Stage, g grant.Grant, spans *[]Span) bool {
 	if len(st.Argv) == 0 {
-		return
+		return false
 	}
 	start := st.Argv[0].Pos
 	end := st.Argv[len(st.Argv)-1].End
+	name := plain(st.Argv[0])
+	if name == "" {
+		*spans = append(*spans, Span{Start: start, End: end, Face: FaceFilter})
+		*spans = append(*spans, Span{Start: start, End: st.Argv[0].End, Face: FaceFromValue})
+		return true
+	}
+	if subcommands[name] && len(st.Argv) > 1 && plain(st.Argv[1]) == "" {
+		*spans = append(*spans, Span{Start: start, End: end, Face: FaceToolkit})
+		*spans = append(*spans, Span{Start: st.Argv[1].Pos, End: st.Argv[1].End, Face: FaceDynamic})
+		return false
+	}
 	argv, ok := plainArgv(st)
 	if !ok {
 		*spans = append(*spans, Span{Start: start, End: end, Face: FaceFilter})
-		return
+		return false
 	}
 	face, key := stageFace(argv, g)
 	*spans = append(*spans, Span{Start: start, End: end, Face: face, Key: key})
+	return false
 }
 
 func paintRedir(toks []token, st Stage, g grant.Grant, spans *[]Span) {
@@ -228,12 +290,15 @@ func paintRedir(toks []token, st Stage, g grant.Grant, spans *[]Span) {
 			k = kLT
 			key = "file.read"
 		}
+		// The operator is the nearest token of its kind before the
+		// target. Tokens are in source order, so search, then step back.
 		var op token
 		found := false
-		for _, t := range toks {
-			if t.kind == k && t.end <= r.Path.Pos {
-				op = t
+		for j := sort.Search(len(toks), func(j int) bool { return toks[j].end > r.Path.Pos }) - 1; j >= 0; j-- {
+			if toks[j].kind == k {
+				op = toks[j]
 				found = true
+				break
 			}
 		}
 		if !found {
@@ -252,7 +317,11 @@ func paintRedir(toks []token, st Stage, g grant.Grant, spans *[]Span) {
 }
 
 func paintTypePipe(toks []token, pipe Pipeline, spans *[]Span) {
-	if len(pipe.Stages) < 2 {
+	rowPipe := false
+	for _, op := range pipe.Ops {
+		rowPipe = rowPipe || op == "|>"
+	}
+	if len(pipe.Stages) < 2 || !rowPipe {
 		return
 	}
 	exp := make([]expStage, len(pipe.Stages))
