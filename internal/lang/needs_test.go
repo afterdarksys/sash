@@ -309,12 +309,78 @@ func TestNeedsEscapesControlCharacters(t *testing.T) {
 		if !policy && !strings.Contains(out.Stdout, `/etc/a\x1b[31mb`) {
 			t.Fatalf("escape missing:\n%s", out.Stdout)
 		}
-		if policy && !strings.Contains(out.Stdout, `# file.read /x\x1b/y: the path has control characters`) {
+		if policy && !strings.Contains(out.Stdout, `# file.read /x\x1b/y: the path cannot be a flag value`) {
 			t.Fatalf("an unpasteable root must be a comment:\n%s", out.Stdout)
 		}
+		// The root /x\x1b cannot be pasted, so the manifest is incomplete.
+		if out.Status != 1 {
+			t.Fatalf("policy %v: status %d", policy, out.Status)
+		}
 	}
-	if got := needsCell("a\tb\\c\x01\xff\u009b"); got != `a b\\c\x01\xff\u009b` {
-		t.Fatalf("cell %q", got)
+	cells := map[string]string{
+		"a\tb\\c\x01\xff\u009b": `a b\\c\x01\xff\u009b`,
+		"a\u202eb":              `a\u202eb`,
+		"a\u200bb\u200db":       `a\u200bb\u200db`,
+		"a\u2028b\u2029c":       `a\u2028b\u2029c`,
+		"a\ufeffb":              `a\ufeffb`,
+		"a\U000e0001b":          `a\U000e0001b`,
+		"/etc/naïve-日本":         "/etc/naïve-日本",
+	}
+	for in, want := range cells {
+		if got := needsCell(in); got != want {
+			t.Errorf("cell %q = %q want %q", in, got, want)
+		}
+	}
+}
+
+// Bidi and zero-width characters are escaped in the table and the policy.
+func TestNeedsEscapesFormatCharacters(t *testing.T) {
+	src := "cat '/etc/a\u202eb'\nunit status 'ngi\u200bnx'\npackage query 'cu\u2028rl'"
+	for _, policy := range []bool{false, true} {
+		out := Needs(src, NeedsOptions{Policy: policy})
+		for _, bad := range []string{"\u202e", "\u200b", "\u2028"} {
+			if strings.Contains(out.Stdout, bad) {
+				t.Fatalf("policy %v printed %q:\n%q", policy, bad, out.Stdout)
+			}
+		}
+		if out.Status != 1 {
+			t.Fatalf("policy %v: status %d\n%s", policy, out.Status, out.Stdout)
+		}
+		if policy && (strings.Contains(out.Stdout, "--service-status") || strings.Contains(out.Stdout, "--package") ||
+			!strings.Contains(out.Stdout, "# unit.status ngi\\u200bnx: the unit cannot be a flag value") ||
+			!strings.Contains(out.Stdout, "# package.query cu\\u2028rl: the package cannot be a flag value") ||
+			!strings.Contains(out.Stdout, "--file-read /etc\n")) {
+			t.Fatalf("policy:\n%s", out.Stdout)
+		}
+	}
+}
+
+// A target that starts with "-" would be read as another flag: it is a
+// comment, never a flag, and the manifest is incomplete.
+func TestNeedsFlagShapedTargetIsNotAFlag(t *testing.T) {
+	cases := []struct{ src, kind string }{
+		{`unit status "--file-write=/"`, "unit"},
+		{`unit restart -x`, "unit"},
+		{`package install "--file-write=/"`, "package"},
+		{`sysctl get -a`, "sysctl key"},
+	}
+	for _, c := range cases {
+		out := Needs(c.src, NeedsOptions{Policy: true})
+		if out.Status != 1 {
+			t.Errorf("%q: status %d", c.src, out.Status)
+		}
+		for _, l := range strings.Split(strings.TrimRight(out.Stdout, "\n"), "\n") {
+			if !strings.HasPrefix(l, "# ") {
+				t.Errorf("%q: flag line %q", c.src, l)
+			}
+		}
+		if !strings.Contains(out.Stdout, "the "+c.kind+" cannot be a flag value") {
+			t.Errorf("%q: %q", c.src, out.Stdout)
+		}
+		tab := Needs(c.src, NeedsOptions{})
+		if tab.Status != 1 || !needsHas(needsTableRows(t, tab), needsWant{key: needsTableRows(t, tab)[0][0], target: needsTableRows(t, tab)[0][1], note: noteUnpasteable}) {
+			t.Errorf("%q table:\n%s", c.src, tab.Stdout)
+		}
 	}
 }
 

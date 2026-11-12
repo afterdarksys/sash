@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -35,6 +36,9 @@ const (
 	noteRelative     = "relative"
 	noteNotGrantable = "not_grantable"
 	noteUse          = "use: not followed"
+	// noteUnpasteable is a literal target no flag can carry: it starts
+	// with "-" or has a control or format character.
+	noteUnpasteable = "unpasteable"
 	// noteCommandFromValue is a stage a run refuses: its command name is
 	// a value. The script can run up to it, so it is incomplete, not a
 	// usage error.
@@ -78,8 +82,6 @@ const (
 type needRow struct {
 	key, target, note string
 	lines             map[int]bool
-	// unflagged is a literal need whose flag cannot be pasted.
-	unflagged bool
 }
 
 type needsRun struct {
@@ -245,6 +247,11 @@ func (n *needsRun) line(at int) int {
 }
 
 func (n *needsRun) add(key, target, note string, at int, flag string) {
+	// A literal need whose flag cannot be pasted is not granted by the
+	// policy output, so the manifest is incomplete.
+	if note == "" && flag == "" && needsFlag[key] != "" {
+		note = noteUnpasteable
+	}
 	id := key + "\x00" + target + "\x00" + note
 	r := n.rows[id]
 	if r == nil {
@@ -254,8 +261,6 @@ func (n *needsRun) add(key, target, note string, at int, flag string) {
 	r.lines[n.line(at)] = true
 	if flag != "" {
 		n.flags[flag] = true
-	} else if note == "" && needsFlag[key] != "" {
-		r.unflagged = true
 	}
 }
 
@@ -770,8 +775,8 @@ func (n *needsRun) policy(rows []*needRow) string {
 			why = "a command name from a value does not run; the run stops here"
 		case r.note == noteUse:
 			why = "use reads this file; the needs of what it defines are not listed"
-		case r.unflagged:
-			why = "the path has control characters; grant it by hand"
+		case r.note == noteUnpasteable:
+			why = "the " + needsKind(r.key) + " cannot be a flag value (it starts with - or has a control or format character); grant it by hand"
 		default:
 			continue
 		}
@@ -780,12 +785,30 @@ func (n *needsRun) policy(rows []*needRow) string {
 	return b.String()
 }
 
+// needsKind names what a key's flag value is.
+func needsKind(key string) string {
+	switch {
+	case strings.HasPrefix(key, "file."):
+		return "path"
+	case strings.HasPrefix(key, "unit."):
+		return "unit"
+	case strings.HasPrefix(key, "package."):
+		return "package"
+	case strings.HasPrefix(key, "sysctl."):
+		return "sysctl key"
+	case key == "config.read":
+		return "config dir"
+	}
+	return "target"
+}
+
 // needsPolicyFlag is the flag for key on v, or "" when v cannot be
-// pasted: it has control characters. A value a shell would split or
-// expand is single-quoted.
+// pasted: it starts with "-", so a CLI would read it as a flag, or it has
+// a character needsCell escapes. A value a shell would split or expand is
+// single-quoted.
 func needsPolicyFlag(key, v string) string {
 	flag := needsFlag[key]
-	if flag == "" || needsCell(v) != v {
+	if flag == "" || strings.HasPrefix(v, "-") || needsCell(v) != v {
 		return ""
 	}
 	return flag + " " + needsQuote(v)
@@ -807,8 +830,9 @@ func needsQuote(v string) string {
 }
 
 // needsCell makes s safe to print: a tab becomes a space, and a control
-// character (below 0x20, 0x7f, C1 0x80-0x9f), a backslash, and a byte
-// that is not UTF-8 are escaped.
+// character (below 0x20, 0x7f, C1 0x80-0x9f), a format character (bidi
+// overrides, zero-width), U+2028 and U+2029, anything else not printable,
+// a backslash, and a byte that is not UTF-8 are escaped.
 func needsCell(s string) string {
 	s = strings.ReplaceAll(s, "\t", " ")
 	var b strings.Builder
@@ -819,10 +843,14 @@ func needsCell(s string) string {
 			fmt.Fprintf(&b, `\x%02x`, s[i])
 		case r < 0x20 || r == 0x7f:
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case r >= 0x80 && r <= 0x9f:
-			fmt.Fprintf(&b, `\u%04x`, r)
 		case r == '\\':
 			b.WriteString(`\\`)
+		case unicode.Is(unicode.Cf, r) || !unicode.IsPrint(r):
+			if r > 0xffff {
+				fmt.Fprintf(&b, `\U%08x`, r)
+			} else {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
 		default:
 			b.WriteRune(r)
 		}
