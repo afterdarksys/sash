@@ -58,26 +58,27 @@ func init() {
 			}
 			return textOf(a[0]), nil
 		}},
-		"bool":    {1, 1, func(a []any, _ *evalCtx) (any, error) { return truthy(a[0]), nil }},
-		"type":    {1, 1, func(a []any, _ *evalCtx) (any, error) { return typeName(a[0]), nil }},
-		"sum":     {1, 1, fnSum},
-		"avg":     {1, 1, fnAvg},
-		"min":     {1, 1, func(a []any, _ *evalCtx) (any, error) { return fnExtreme(a[0], -1) }},
-		"max":     {1, 1, func(a []any, _ *evalCtx) (any, error) { return fnExtreme(a[0], 1) }},
-		"sort":    {1, 1, fnSort},
-		"uniq":    {1, 1, fnUniq},
-		"reverse": {1, 1, fnReverse},
-		"first":   {2, 2, func(a []any, c *evalCtx) (any, error) { return fnSlice(a, c, true) }},
-		"last":    {2, 2, func(a []any, c *evalCtx) (any, error) { return fnSlice(a, c, false) }},
-		"range":   {2, 2, fnRange},
-		"keys":    {1, 1, fnKeys},
-		"values":  {1, 1, fnValues},
-		"has":     {2, 2, fnHas},
-		"get":     {3, 3, fnGet},
-		"merge":   {2, 2, fnMerge},
-		"sha256":  {1, 1, encFn(func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) })},
-		"base64":  {1, 1, encFn(func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) })},
-		"hex":     {1, 1, encFn(func(s string) string { return hex.EncodeToString([]byte(s)) })},
+		"bool":     {1, 1, func(a []any, _ *evalCtx) (any, error) { return truthy(a[0]), nil }},
+		"type":     {1, 1, func(a []any, _ *evalCtx) (any, error) { return typeName(a[0]), nil }},
+		"sum":      {1, 1, fnSum},
+		"avg":      {1, 1, fnAvg},
+		"min":      {1, 1, func(a []any, _ *evalCtx) (any, error) { return fnExtreme(a[0], -1) }},
+		"max":      {1, 1, func(a []any, _ *evalCtx) (any, error) { return fnExtreme(a[0], 1) }},
+		"sort":     {1, 1, fnSort},
+		"uniq":     {1, 1, fnUniq},
+		"reverse":  {1, 1, fnReverse},
+		"first":    {2, 2, func(a []any, c *evalCtx) (any, error) { return fnSlice(a, c, true) }},
+		"last":     {2, 2, func(a []any, c *evalCtx) (any, error) { return fnSlice(a, c, false) }},
+		"range":    {2, 2, fnRange},
+		"keys":     {1, 1, fnKeys},
+		"values":   {1, 1, fnValues},
+		"has":      {2, 2, fnHas},
+		"contains": {2, 2, fnContains},
+		"get":      {3, 3, fnGet},
+		"merge":    {2, 2, fnMerge},
+		"sha256":   {1, 1, encFn(func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) })},
+		"base64":   {1, 1, encFn(func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) })},
+		"hex":      {1, 1, encFn(func(s string) string { return hex.EncodeToString([]byte(s)) })},
 		"unbase64": {1, 1, func(a []any, c *evalCtx) (any, error) {
 			s, ok := a[0].(string)
 			if !ok {
@@ -622,6 +623,28 @@ func fnValues(a []any, c *evalCtx) (any, error) {
 		out[i] = o.m[k]
 	}
 	return out, nil
+}
+
+// fnContains is contains(s, sub) on text and contains(list, x) on a list,
+// by deep equality, the same as == (so 2 and "2" are equal). A map is refused: has answers that. The scan is linear
+// and builds nothing, so it charges nothing.
+func fnContains(a []any, _ *evalCtx) (any, error) {
+	switch x := a[0].(type) {
+	case string:
+		sub, ok := a[1].(string)
+		if !ok {
+			return nil, fnErr("contains", a...)
+		}
+		return strings.Contains(x, sub), nil
+	case []any:
+		for _, it := range x {
+			if dataEqual(it, a[1]) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	return nil, fnErr("contains", a...)
 }
 
 func fnHas(a []any, _ *evalCtx) (any, error) {

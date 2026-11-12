@@ -744,11 +744,11 @@ func (l *linter) blocks(p *Program) {
 	lintEach(p, true, func(s Stmt, at int, _ bool) {
 		switch s := s.(type) {
 		case *If:
-			if s.CondX != nil && len(refsOf(func(o map[string]bool) { exprRefs(s.CondX, o) })) == 0 {
+			if s.CondX != nil && lintConstant(s.CondX) {
 				l.add(at, "constant-check", "if [ ] reads no name")
 			}
 		case *While:
-			if s.CondX != nil && len(refsOf(func(o map[string]bool) { exprRefs(s.CondX, o) })) == 0 && !lintBreaks(&s.Body) {
+			if s.CondX != nil && lintConstant(s.CondX) && !lintBreaks(&s.Body) {
 				l.add(at, "constant-check", "while [ ] reads no name and has no break")
 			}
 		case *Retry:
@@ -766,12 +766,55 @@ func (l *linter) blocks(p *Program) {
 				if plain(st.Argv[0]) != "check" || last < 1 || exprOf(st.Argv[last]) == nil {
 					continue
 				}
-				if len(refsOf(func(o map[string]bool) { exprRefs(exprOf(st.Argv[last]), o) })) == 0 {
+				if lintConstant(exprOf(st.Argv[last])) {
 					l.add(st.Argv[0].Pos, "constant-check", "check [ ] reads no name")
 				}
 			}
 		})
 	})
+}
+
+// lintConstant is a [ ] that reads no name and calls only pure
+// functions: every expression function is pure (contains included)
+// except uuid, which is random.
+func lintConstant(x Expr) bool {
+	if len(refsOf(func(o map[string]bool) { exprRefs(x, o) })) > 0 {
+		return false
+	}
+	pure := true
+	var walk func(Expr)
+	walk = func(x Expr) {
+		switch x := x.(type) {
+		case exprCall:
+			if x.name == "uuid" {
+				pure = false
+			}
+			for _, a := range x.args {
+				walk(a)
+			}
+		case exprList:
+			for _, it := range x.items {
+				walk(it)
+			}
+		case exprMap:
+			for _, v := range x.vals {
+				walk(v)
+			}
+		case exprUnary:
+			walk(x.x)
+		case exprBinary:
+			walk(x.l)
+			walk(x.r)
+		case exprIndex:
+			walk(x.x)
+			walk(x.key)
+		case exprRange:
+			walk(x.lo)
+			walk(x.hi)
+		}
+	}
+	walk(x)
+	return pure
 }
 
 func lintBreaks(p *Program) bool {
