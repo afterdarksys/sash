@@ -180,11 +180,31 @@ func FuzzLintNeverMissesASecret(f *testing.F) {
 	})
 }
 
+// An evaluation over a secret that may fail ends the line at run time
+// (errSecretFault, exit 2): lint reports it.
+func TestLintSecretFaultingEvaluation(t *testing.T) {
+	for _, src := range []string{
+		"declare -s tok = abc\nlet _a = [ {\"k\": $tok.A} ]",
+		"declare -s tok = abc\nlet _a = $tok.A",
+		"declare -s tok = abc\nlet _a = [ $tok[0] ]",
+		"declare -s tok = abc\nlet _a = [ $tok + 1 ]",
+		"declare -s tok = abc\nlet _a = [ len($tok) ]",
+		"declare -s tok = abc\nlet _a = [ -$tok ]",
+		"declare -s tok = abc\nfor _x in $tok.list { let _y = 1 }",
+	} {
+		run := Run(src, exprGrant(), &rowsParent{}, Options{})
+		rows := lintRows(t, Lint(src))
+		if !hasRule(rows, "secret-to-sink", "error") {
+			t.Errorf("%q: run %+v, lint %+v", src, run, rows)
+		}
+	}
+}
+
 // A secret that only travels and never reaches a sink is not reported,
 // and neither is a plain value in every sink.
 func TestLintSecretNoFalseError(t *testing.T) {
 	for _, src := range []string{
-		"declare -s tok = abc\nlet _a = $tok\nlet _b = [ upper($_a) ]",
+		"declare -s tok = abc\nlet _a = $tok\nlet _b = [ $_a ]\nlet _c = [ [$_a, {\"k\": $tok}] ]",
 		"declare -s tok = abc\nlet _a = (echo $tok | head 1)",
 		"let x = abc\necho $x\nunit status $x",
 	} {
@@ -344,4 +364,49 @@ func TestLintTaintReachesFnBody(t *testing.T) {
 		}
 	}
 	t.Fatalf("%+v", rows)
+}
+
+// { } nesting past 64 is a parse error for every reader of the source;
+// 64 itself parses.
+func TestBlockDepthCap(t *testing.T) {
+	nest := func(n int) string { return strings.Repeat("if [ true ] { ", n) + "echo in" + strings.Repeat(" }", n) }
+	if out := Run(nest(blockDepthMax), grant.Grant{}, &countParent{}, Options{}); out.Status != 0 || out.Stdout != "in\n" {
+		t.Fatalf("64 deep: %+v", out)
+	}
+	for _, src := range []string{nest(blockDepthMax + 1), strings.Repeat("fn f() { ", 65) + "ps" + strings.Repeat(" }", 65), strings.Repeat("try { ", 65) + "ps" + strings.Repeat(" } catch { }", 65)} {
+		const msg = "parse: too deep"
+		if out := Run(src, grant.Grant{}, &countParent{}, Options{}); out.Status != exitType || out.Stderr != msg+"\n" {
+			t.Errorf("run %+v", out)
+		}
+		if pv := Preview(src, grant.Grant{}, Options{}); !pv.Block || pv.Smile != msg {
+			t.Errorf("preview %+v", pv)
+		}
+		for name, out := range map[string]Outcome{"why": Why(src, grant.Grant{}, Options{}), "needs": Needs(src, NeedsOptions{}), "lint": Lint(src)} {
+			if out.Status != exitType || out.Stdout != "" || !strings.Contains(out.Stderr, msg) {
+				t.Errorf("%s %+v", name, out)
+			}
+		}
+	}
+}
+
+// A catch name is tainted by any secret its try body reads, at any depth
+// and through nested tries, even when the body sinks nothing.
+func TestLintCatchTaint(t *testing.T) {
+	for _, src := range []string{
+		"declare -s tok = abc\ntry { let _q = [ $tok ] } catch e { let _r = 1 }\necho $e",
+		"declare -s tok = abc\ntry { try { let _q = [ $tok ] } catch _f { let _r = 1 } } catch e { let _s = 1 }\necho $e",
+		"declare -s tok = abc\ntry { try { let _q = 1 } catch { let _r = [ $tok ] } } catch e { let _s = 1 }\necho $e",
+	} {
+		found := false
+		for _, r := range lintRows(t, Lint(src)) {
+			found = found || (r.line == "3" && r.what == "secret e reaches echo")
+		}
+		if !found {
+			t.Errorf("%q: %s", src, Lint(src).Stdout)
+		}
+	}
+	src := "declare -s tok = abc\ntry { let _q = 1 } catch e { let _r = [ $tok ] }\necho $e"
+	if strings.Contains(Lint(src).Stdout, "secret e") {
+		t.Errorf("catch body taints its own name: %s", Lint(src).Stdout)
+	}
 }

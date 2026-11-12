@@ -158,9 +158,18 @@ type Redir struct {
 }
 
 type parser struct {
-	tok []token
-	i   int
+	tok   []token
+	i     int
+	depth int
 }
+
+// blockDepthMax bounds { } nesting, as exprDepthMax bounds [ ]: the v1
+// rule is that everything is bounded by depth 64. Every walker of the
+// tree (run, needs, why, the preview, lint) recurses per block, and some
+// rescan a body per level, so an unbounded depth made a 1 MiB script
+// quadratic. Real scripts nest a handful deep; 64 is far past that and
+// the same number a [ ] expression and decoded data already meet.
+const blockDepthMax = 64
 
 func parse(src string) (*Program, error) {
 	toks, err := lex(src)
@@ -624,6 +633,11 @@ func (p *parser) fn() (Stmt, error) {
 func (p *parser) block() (*Program, error) {
 	if p.peek().kind != kLBrace {
 		return nil, fmt.Errorf("parse: needs {")
+	}
+	p.depth++
+	defer func() { p.depth-- }()
+	if p.depth > blockDepthMax {
+		return nil, fmt.Errorf("parse: too deep")
 	}
 	p.i++
 	body, err := p.program()

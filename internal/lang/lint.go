@@ -65,7 +65,6 @@ type lintBinding struct {
 	top        bool
 	readonly   bool
 	secret     bool // declare -s binds it
-	refs       map[string]bool
 }
 
 type linter struct {
@@ -76,7 +75,10 @@ type linter struct {
 	reads    map[string]bool
 	secrets  map[string]bool // names bound or marked by declare -s
 	tainted  map[string]bool
+	deps     map[string][]string // taint edges: a name to the names it taints
+	mutated  map[string]string   // retry-on-mutation per fn and depth
 	hasUse   bool
+	tries    int
 	out      []lintFinding
 }
 
@@ -89,8 +91,11 @@ func Lint(src string) Outcome {
 	if err != nil {
 		return Outcome{Status: exitType, Stderr: safeText(err.Error()) + "\n"}
 	}
-	l := &linter{n: n, prog: prog, fns: n.fns, reads: map[string]bool{}, secrets: map[string]bool{}, tainted: map[string]bool{}}
-	l.collect(prog, true)
+	l := &linter{
+		n: n, prog: prog, fns: n.fns, reads: map[string]bool{}, secrets: map[string]bool{},
+		tainted: map[string]bool{}, deps: map[string][]string{}, mutated: map[string]string{},
+	}
+	l.collect(prog, true, "")
 	l.taint()
 	l.sinks(prog)
 	l.unused()
@@ -268,10 +273,135 @@ func ownRefs(s Stmt, out map[string]bool) {
 	}
 }
 
-func progRefs(p *Program) map[string]bool {
-	out := map[string]bool{}
-	lintEach(p, false, func(s Stmt, _ int, _ bool) { ownRefs(s, out) })
-	return out
+// ownWords calls w for every word and x for every bare [ ] condition or
+// source a statement evaluates itself, not in nested bodies; for's $
+// source is passed as a word.
+func ownWords(s Stmt, w func(Word), x func(Expr)) {
+	pipe := func(p Pipeline) {
+		for _, st := range p.Stages {
+			for _, a := range st.Argv {
+				w(a)
+			}
+			for _, r := range st.Redirs {
+				w(r.Path)
+			}
+		}
+	}
+	let := func(l *Let) {
+		if l == nil {
+			return
+		}
+		if l.Word != nil {
+			w(*l.Word)
+		}
+		if l.Pipe != nil {
+			pipe(*l.Pipe)
+		}
+	}
+	switch s := s.(type) {
+	case *Chain:
+		for _, p := range s.Pipes {
+			pipe(p)
+		}
+	case *Let:
+		let(s)
+	case *Declare:
+		let(s.Value)
+	case *If:
+		if s.CondX != nil {
+			x(s.CondX)
+		}
+		pipe(s.Cond)
+	case *For:
+		if s.SrcX != nil {
+			x(s.SrcX)
+		}
+		if s.SrcRef != "" {
+			w(Word{Parts: []Part{{Lit: s.SrcRef, Exp: true}}})
+		}
+		pipe(s.Src)
+	case *While:
+		if s.CondX != nil {
+			x(s.CondX)
+		}
+		pipe(s.Cond)
+	case *Jump:
+		if s.Word != nil {
+			w(*s.Word)
+		}
+	case *With:
+		if s.Prefix != nil {
+			w(*s.Prefix)
+		}
+		for _, l := range s.Lets {
+			let(l)
+		}
+	case *Retry:
+		w(s.N)
+		if s.Delay != nil {
+			w(*s.Delay)
+		}
+	case *Timeout:
+		w(s.D)
+	case *Use:
+		w(s.Path)
+	}
+}
+
+// exprMayFail reports whether evaluating x can fail on a value's type or
+// shape: an index, a call, an operator, or a range anywhere in it. A
+// literal, a bare reference, and a list or map of those cannot.
+func exprMayFail(x Expr) bool {
+	switch x := x.(type) {
+	case exprIndex, exprCall, exprBinary, exprUnary, exprRange:
+		return true
+	case exprList:
+		for _, it := range x.items {
+			if exprMayFail(it) {
+				return true
+			}
+		}
+	case exprMap:
+		for _, v := range x.vals {
+			if exprMayFail(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// faults is the secret a statement reads where an evaluation can fail: a
+// run ends the line on such an error (errSecretFault, exit 2), which
+// try cannot catch, so lint counts it as a refusal it must report. An
+// access path ($tok.a, $tok[0]) or any [ ] that may fail and reads a
+// secret qualifies.
+func (l *linter) faults(s Stmt) string {
+	found := ""
+	note := func(name string) {
+		if found == "" || name < found {
+			found = name
+		}
+	}
+	expr := func(x Expr) {
+		if exprMayFail(x) {
+			if name := l.anyTainted(refsOf(func(o map[string]bool) { exprRefs(x, o) })); name != "" {
+				note(name)
+			}
+		}
+	}
+	ownWords(s, func(w Word) {
+		for _, p := range w.Parts {
+			if p.X != nil {
+				expr(p.X)
+			} else if p.Exp {
+				if name, steps := pathSteps(p.Lit); len(steps) > 0 && l.tainted[name] {
+					note(name)
+				}
+			}
+		}
+	}, expr)
+	return found
 }
 
 func refsOf(f func(map[string]bool)) map[string]bool {
@@ -280,12 +410,36 @@ func refsOf(f func(map[string]bool)) map[string]bool {
 	return out
 }
 
-// collect finds every binding, every read, and the secret names.
-func (l *linter) collect(p *Program, top bool) {
-	lintEach(p, top, func(s Stmt, at int, top bool) {
-		ownRefs(s, l.reads)
-		bind := func(name, kind string, refs map[string]bool) {
-			l.bindings = append(l.bindings, lintBinding{name: name, kind: kind, at: at, top: top, refs: refs})
+// collect finds every binding, every read, and the secret names, and
+// records each taint edge once: a name read by a binding's value, and
+// every name a try body reads, to its catch name. A try with a catch name
+// is a node: a read in its body taints the node, the node taints the
+// catch name and the node of the try around it. tryNode is the innermost
+// such node around p, so a body is walked once and a read adds one edge
+// however many tries enclose it.
+func (l *linter) collect(p *Program, top bool, tryNode string) {
+	if p == nil {
+		return
+	}
+	for i, s := range p.Stmts {
+		at := 0
+		if i < len(p.Pos) {
+			at = p.Pos[i]
+		}
+		own := map[string]bool{}
+		ownRefs(s, own)
+		for r := range own {
+			l.reads[r] = true
+			if tryNode != "" {
+				l.dep(r, tryNode)
+			}
+		}
+		bind := func(name, kind string, refs map[string]bool) *lintBinding {
+			l.bindings = append(l.bindings, lintBinding{name: name, kind: kind, at: at, top: top})
+			for r := range refs {
+				l.dep(r, name)
+			}
+			return &l.bindings[len(l.bindings)-1]
 		}
 		switch s := s.(type) {
 		case *Use:
@@ -293,29 +447,35 @@ func (l *linter) collect(p *Program, top bool) {
 		case *Let:
 			bind(s.Name, "let", refsOf(func(o map[string]bool) { letRefs(s, o) }))
 		case *Declare:
-			if s.Name == "" {
-				return
-			}
-			if strings.Contains(s.Flags, "s") {
+			if s.Name != "" && strings.Contains(s.Flags, "s") {
 				l.secrets[s.Name] = true
 			}
-			if s.Value != nil {
-				bind(s.Name, "declare", refsOf(func(o map[string]bool) { letRefs(s.Value, o) }))
-				b := &l.bindings[len(l.bindings)-1]
+			if s.Name != "" && s.Value != nil {
+				b := bind(s.Name, "declare", refsOf(func(o map[string]bool) { letRefs(s.Value, o) }))
 				b.readonly = strings.Contains(s.Flags, "r")
 				b.secret = strings.Contains(s.Flags, "s")
 			}
 		case *For:
-			refs := refsOf(func(o map[string]bool) { ownRefs(s, o) })
-			bind(s.Name, "for", refs)
+			bind(s.Name, "for", own)
 			if s.Name2 != "" {
-				bind(s.Name2, "for", refs)
+				bind(s.Name2, "for", own)
 			}
 		case *Try:
+			inner := tryNode
 			if s.Name != "" {
-				// A failure message can carry what the body read.
-				bind(s.Name, "catch", progRefs(&s.Body))
+				// A failure message can carry what the body read. The
+				// node name has a NUL, so it is never a script name.
+				bind(s.Name, "catch", nil)
+				l.tries++
+				inner = fmt.Sprintf("\x00try%d", l.tries)
+				l.dep(inner, s.Name)
+				if tryNode != "" {
+					l.dep(inner, tryNode)
+				}
 			}
+			l.collect(&s.Body, false, inner)
+			l.collect(s.Catch, false, tryNode)
+			continue
 		case *With:
 			for _, w := range s.Lets {
 				bind(w.Name, "with", refsOf(func(o map[string]bool) { letRefs(w, o) }))
@@ -323,10 +483,18 @@ func (l *linter) collect(p *Program, top bool) {
 		case *Fn:
 			for _, prm := range s.Params {
 				// Params are tainted from call sites in taint.
-				bind(prm, "parameter", map[string]bool{})
+				bind(prm, "parameter", nil)
 			}
 		}
-	})
+		for _, body := range lintBodies(s) {
+			l.collect(body, false, tryNode)
+		}
+	}
+}
+
+// dep records that a taint on from taints to.
+func (l *linter) dep(from, to string) {
+	l.deps[from] = append(l.deps[from], to)
 }
 
 func (l *linter) anyTainted(refs map[string]bool) string {
@@ -345,40 +513,40 @@ func (l *linter) anyTainted(refs map[string]bool) string {
 
 // taint is the flow-insensitive fixpoint: declare -s names, then any name
 // bound from something that references a tainted name, and any fn
-// parameter a call passes a tainted word to.
+// parameter a call passes a tainted word to. It is a worklist over the
+// edges collect and the calls record: each name is taken once and each
+// edge followed once, so a long chain in any order is linear.
 func (l *linter) taint() {
-	for n := range l.secrets {
-		l.tainted[n] = true
-	}
-	var calls []Stage
 	lintEach(l.prog, true, func(s Stmt, _ int, _ bool) {
 		lintEachPipe(s, func(p Pipeline, _ string) {
 			for _, st := range p.Stages {
-				if _, ok := l.fns[plain(st.Argv[0])]; ok {
-					calls = append(calls, st)
+				fn, ok := l.fns[plain(st.Argv[0])]
+				if !ok {
+					continue
+				}
+				for i, w := range st.Argv[1:] {
+					if i >= len(fn.Params) {
+						break
+					}
+					for r := range refsOf(func(o map[string]bool) { wordRefs(w, o) }) {
+						l.dep(r, fn.Params[i])
+					}
 				}
 			}
 		})
 	})
-	for changed := true; changed; {
-		changed = false
-		mark := func(name string) {
-			if !l.tainted[name] {
-				l.tainted[name] = true
-				changed = true
-			}
-		}
-		for _, b := range l.bindings {
-			if l.anyTainted(b.refs) != "" {
-				mark(b.name)
-			}
-		}
-		for _, st := range calls {
-			fn := l.fns[plain(st.Argv[0])]
-			for i, w := range st.Argv[1:] {
-				if i < len(fn.Params) && l.anyTainted(refsOf(func(o map[string]bool) { wordRefs(w, o) })) != "" {
-					mark(fn.Params[i])
-				}
+	var work []string
+	for n := range l.secrets {
+		l.tainted[n] = true
+		work = append(work, n)
+	}
+	for len(work) > 0 {
+		n := work[len(work)-1]
+		work = work[:len(work)-1]
+		for _, d := range l.deps[n] {
+			if !l.tainted[d] {
+				l.tainted[d] = true
+				work = append(work, d)
 			}
 		}
 	}
@@ -465,6 +633,9 @@ func (l *linter) sinks(p *Program) {
 				}
 			}
 		})
+		if name := l.faults(s); name != "" {
+			l.add(at, "secret-to-sink", "secret "+name+" is in an evaluation that may fail and end the line")
+		}
 		own := func(what string, f func(map[string]bool)) {
 			if name := l.anyTainted(refsOf(f)); name != "" {
 				l.add(at, "secret-to-sink", "secret "+name+" "+what)
@@ -580,7 +751,7 @@ func (l *linter) blocks(p *Program) {
 				l.add(at, "constant-check", "while [ ] reads no name and has no break")
 			}
 		case *Retry:
-			if what := l.mutates(&s.Body, 0, map[string]bool{}); what != "" {
+			if what := l.mutates(&s.Body, 0); what != "" {
 				l.add(at, "retry-on-mutation", "retry repeats "+what)
 			}
 		case *Try:
@@ -642,7 +813,7 @@ func lintKey(st Stage) string {
 // template_file write, or a > redirect, through fns called by literal
 // name up to depth 8. A try body is skipped: its catch keeps the failure
 // from reaching the retry. The catch itself is not.
-func (l *linter) mutates(p *Program, depth int, seen map[string]bool) string {
+func (l *linter) mutates(p *Program, depth int) string {
 	if p == nil {
 		return ""
 	}
@@ -663,12 +834,8 @@ func (l *linter) mutates(p *Program, depth int, seen map[string]bool) string {
 					what = key
 					return
 				}
-				name := plain(st.Argv[0])
-				if fn, ok := l.fns[name]; ok && depth < lintFnDepth && !seen[name] {
-					seen[name] = true
-					if inner := l.mutates(&fn.Body, depth+1, seen); inner != "" {
-						what = inner + " through " + name
-					}
+				if inner := l.fnMutates(plain(st.Argv[0]), depth+1); inner != "" {
+					what = inner
 				}
 			}
 		})
@@ -684,12 +851,33 @@ func (l *linter) mutates(p *Program, depth int, seen map[string]bool) string {
 			bodies = lintBodies(s)
 		}
 		for _, b := range bodies {
-			if what := l.mutates(b, depth, seen); what != "" {
+			if what := l.mutates(b, depth); what != "" {
 				return what
 			}
 		}
 	}
 	return ""
+}
+
+// fnMutates is mutates of fn name's body at depth, memoized per name and
+// depth: each body is scanned at most once per depth however many retries
+// call it, and depth (at most 8) ends a cycle.
+func (l *linter) fnMutates(name string, depth int) string {
+	fn, ok := l.fns[name]
+	if !ok || depth > lintFnDepth {
+		return ""
+	}
+	key := fmt.Sprint(depth, " ", name)
+	if what, ok := l.mutated[key]; ok {
+		return what
+	}
+	l.mutated[key] = ""
+	what := l.mutates(&fn.Body, depth)
+	if what != "" {
+		what += " through " + name
+	}
+	l.mutated[key] = what
+	return what
 }
 
 // needs is incomplete-needs, from the Needs rows themselves.
