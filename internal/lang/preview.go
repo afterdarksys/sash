@@ -73,7 +73,7 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 		return out
 	}
 	var pipes []Pipeline
-	collectPipes(prog, &pipes)
+	needsEachPipe(prog, func(p Pipeline) { pipes = append(pipes, p) })
 	for _, pipe := range pipes {
 		paintPipe(toks, pipe, g, &out.Spans)
 	}
@@ -192,54 +192,6 @@ func (m *machine) useDenied(u *Use) string {
 		}
 	}
 	return ""
-}
-
-func collectPipes(prog *Program, out *[]Pipeline) {
-	if prog == nil {
-		return
-	}
-	for _, s := range prog.Stmts {
-		switch s := s.(type) {
-		case *Chain:
-			*out = append(*out, s.Pipes...)
-		case *Let:
-			if s.Pipe != nil {
-				*out = append(*out, *s.Pipe)
-			}
-		case *If:
-			if s.CondX == nil {
-				*out = append(*out, s.Cond)
-			}
-			collectPipes(&s.Then, out)
-			collectPipes(s.Else, out)
-		case *For:
-			if s.SrcX == nil && s.SrcRef == "" {
-				*out = append(*out, s.Src)
-			}
-			collectPipes(&s.Body, out)
-		case *While:
-			if s.CondX == nil {
-				*out = append(*out, s.Cond)
-			}
-			collectPipes(&s.Body, out)
-		case *Try:
-			collectPipes(&s.Body, out)
-			collectPipes(s.Catch, out)
-		case *Retry:
-			collectPipes(&s.Body, out)
-		case *Timeout:
-			collectPipes(&s.Body, out)
-		case *With:
-			for _, l := range s.Lets {
-				if l.Pipe != nil {
-					*out = append(*out, *l.Pipe)
-				}
-			}
-			collectPipes(&s.Body, out)
-		case *Fn:
-			collectPipes(&s.Body, out)
-		}
-	}
 }
 
 func paintPipe(toks []token, pipe Pipeline, g grant.Grant, spans *[]Span) {

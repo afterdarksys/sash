@@ -40,7 +40,7 @@ func Why(src string, g grant.Grant, opt Options) Outcome {
 		return out
 	}
 	var pipes []Pipeline
-	collectPipes(prog, &pipes)
+	needsEachPipe(prog, func(p Pipeline) { pipes = append(pipes, p) })
 	// A copy: whyFns registers the line's functions, and why must not
 	// change the session.
 	m := newMachine(g, denyParent{}, opt.State.clone())

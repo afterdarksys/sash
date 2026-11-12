@@ -90,3 +90,12 @@ func TestRunBindViStaysUnknown(t *testing.T) {
 		t.Fatalf("status %d stderr %q calls %d", got.Status, got.Stderr, c.n)
 	}
 }
+
+// The preview walks the same pipes as a run, a declare value included.
+func TestPreviewDeclarePipeDenied(t *testing.T) {
+	g := grant.Grant{Entitlements: []string{"*", "ps"}}
+	got := Preview("declare x = (ps)", g, Options{})
+	if !got.Denied || !got.Block || got.Smile != "denied ps" {
+		t.Fatalf("denied %v block %v smile %q", got.Denied, got.Block, got.Smile)
+	}
+}

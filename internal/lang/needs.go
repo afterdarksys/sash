@@ -659,41 +659,47 @@ func needsEachStmt(p *Program, fn func(Stmt)) {
 // needsEachStage calls fn on every stage at any depth, conditions,
 // sources, and let, declare, and with values included.
 func needsEachStage(p *Program, fn func(Stage)) {
-	pipe := func(pl Pipeline) {
+	needsEachPipe(p, func(pl Pipeline) {
 		for _, st := range pl.Stages {
 			fn(st)
 		}
-	}
+	})
+}
+
+// needsEachPipe calls fn on every pipeline a run may reach, in source
+// order: chains, conditions, loop sources, let, declare, and with values,
+// and every fn body. why and the preview walk the same pipelines.
+func needsEachPipe(p *Program, fn func(Pipeline)) {
 	needsEachStmt(p, func(s Stmt) {
 		switch s := s.(type) {
 		case *Chain:
 			for _, pl := range s.Pipes {
-				pipe(pl)
+				fn(pl)
 			}
 		case *Let:
 			if s.Pipe != nil {
-				pipe(*s.Pipe)
+				fn(*s.Pipe)
 			}
 		case *Declare:
 			if s.Value != nil && s.Value.Pipe != nil {
-				pipe(*s.Value.Pipe)
+				fn(*s.Value.Pipe)
 			}
 		case *If:
 			if s.CondX == nil {
-				pipe(s.Cond)
+				fn(s.Cond)
 			}
 		case *For:
 			if s.SrcX == nil && s.SrcRef == "" {
-				pipe(s.Src)
+				fn(s.Src)
 			}
 		case *While:
 			if s.CondX == nil {
-				pipe(s.Cond)
+				fn(s.Cond)
 			}
 		case *With:
 			for _, l := range s.Lets {
 				if l.Pipe != nil {
-					pipe(*l.Pipe)
+					fn(*l.Pipe)
 				}
 			}
 		}

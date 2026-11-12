@@ -163,3 +163,28 @@ func TestWhyKnowsFunctionsDefinedOnTheLine(t *testing.T) {
 		t.Fatalf("fn\n%s", out.Stdout)
 	}
 }
+
+// A run reaches the pipes of let, declare, and with values, so why
+// explains each of their stages, a command name from a value included.
+func TestWhyExplainsValuePipes(t *testing.T) {
+	g := whyGrant()
+	cases := []struct {
+		src  string
+		want [3]string
+	}{
+		{"declare x = (unit restart nginx)", [3]string{"unit.restart", "no", "not_in_grant"}},
+		{"declare -r x = (cat /etc/passwd)", [3]string{"file.read", "no", "outside_roots"}},
+		{"let x = (cat /etc/passwd)", [3]string{"file.read", "no", "outside_roots"}},
+		{"with v = (unit restart nginx) { echo $v }", [3]string{"unit.restart", "no", "not_in_grant"}},
+		{"fn f() { declare x = (unit restart nginx) }", [3]string{"unit.restart", "no", "not_in_grant"}},
+		{"let c = unit\ndeclare x = ($c restart nginx)", [3]string{"-", "no", msgCommandFromValue}},
+		{"let c = unit\nwith v = ($c restart nginx) { echo $v }", [3]string{"-", "no", msgCommandFromValue}},
+	}
+	for _, c := range cases {
+		out := Why(c.src, g, Options{})
+		rows := whyLines(t, out)
+		if !hasRow(rows, c.want[0], c.want[1], c.want[2]) {
+			t.Errorf("%q: missing %v in\n%s", c.src, c.want, out.Stdout)
+		}
+	}
+}
