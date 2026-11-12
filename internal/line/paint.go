@@ -12,6 +12,10 @@ const promptText = "sash> "
 
 // Paint draws the line. Denial dim stays when syntax colors are off.
 // A syntax-off filter emits no trailing reset. The suggestion is gray.
+// A control, C1, format (bidi, zero-width), or other unprintable rune,
+// and a byte that is not UTF-8, is drawn as its needsCell escape in
+// reverse video, in the line and the suggestion; the line keeps the
+// bytes, so a pasted U+202E cannot disguise what Enter runs.
 func Paint(line, suggestion string, spans []lang.Span, syntax bool) string {
 	faces := make([]lang.Face, len(line))
 	covered := make([]bool, len(line))
@@ -26,6 +30,15 @@ func Paint(line, suggestion string, spans []lang.Span, syntax bool) string {
 	var b strings.Builder
 	open := ""
 	for i := 0; i < len(line); {
+		if esc, size, ok := lang.EscapeRune(line[i:]); ok {
+			if open != "" {
+				b.WriteString("\x1b[0m")
+				open = ""
+			}
+			b.WriteString("\x1b[7m" + esc + "\x1b[0m")
+			i += size
+			continue
+		}
 		_, size := utf8.DecodeRuneInString(line[i:])
 		if size < 1 {
 			size = 1
@@ -50,15 +63,46 @@ func Paint(line, suggestion string, spans []lang.Span, syntax bool) string {
 	}
 	if suggestion != "" {
 		b.WriteString("\x1b[90m")
-		b.WriteString(suggestion)
+		for i := 0; i < len(suggestion); {
+			esc, size, ok := lang.EscapeRune(suggestion[i:])
+			if ok {
+				b.WriteString("\x1b[7m" + esc + "\x1b[0m\x1b[90m")
+			} else {
+				b.WriteString(suggestion[i : i+size])
+			}
+			i += size
+		}
 		b.WriteString("\x1b[0m")
 	}
 	return b.String()
 }
 
+// paintedWidth counts the columns Paint uses for s: an escaped rune is
+// its escape's length, any other rune one column.
+func paintedWidth(s string) int {
+	n := 0
+	for i := 0; i < len(s); {
+		esc, size, ok := lang.EscapeRune(s[i:])
+		if ok {
+			n += len(esc)
+		} else {
+			n++
+		}
+		i += size
+	}
+	return n
+}
+
+// sgr is a face's color. The authorization marks (denied, out of root,
+// command from a value) stay when syntax colors are off.
 func sgr(face lang.Face, syntax bool) string {
-	if face == lang.FaceDenied {
+	switch face {
+	case lang.FaceDenied:
 		return "\x1b[2m"
+	case lang.FaceOutOfRoot:
+		return "\x1b[2;4m"
+	case lang.FaceFromValue:
+		return "\x1b[2;3;4m"
 	}
 	if !syntax {
 		return ""
@@ -74,6 +118,8 @@ func sgr(face lang.Face, syntax bool) string {
 		return "\x1b[31m"
 	case lang.FaceTypePipe:
 		return "\x1b[35m"
+	case lang.FaceDynamic:
+		return "\x1b[33;4m"
 	default:
 		return ""
 	}
@@ -109,7 +155,7 @@ func Frame(v View) string {
 	if cur > len(line) {
 		cur = len(line)
 	}
-	col := utf8.RuneCountInString(promptText) + utf8.RuneCountInString(line[:cur])
+	col := utf8.RuneCountInString(promptText) + paintedWidth(line[:cur])
 	b.WriteByte('\r')
 	if col > 0 {
 		fmt.Fprintf(&b, "\x1b[%dC", col)

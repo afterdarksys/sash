@@ -84,6 +84,11 @@ type Editor struct {
 	note    string
 	hold    string
 
+	// memo is the last Preview, keyed by the line, the prefix, and the
+	// State generation. Cursor moves, the menu, and history browsing
+	// repaint from it without parsing again.
+	memo previewMemo
+
 	Syntax bool
 	Vi     bool
 	viCmd  bool
@@ -175,9 +180,29 @@ func (e *Editor) Feed(in []byte) int {
 	return i
 }
 
+type previewMemo struct {
+	ok     bool
+	line   string
+	prefix string
+	gen    uint64
+	pv     lang.LinePreview
+}
+
+// preview is lang.Preview through the one-entry memo. The grant is fixed
+// for the editor's life, so it is not part of the key.
+func (e *Editor) preview() lang.LinePreview {
+	gen := e.opt.State.Generation()
+	if e.memo.ok && e.memo.line == e.line && e.memo.prefix == e.opt.Prefix && e.memo.gen == gen {
+		return e.memo.pv
+	}
+	pv := lang.Preview(e.line, e.g, e.opt)
+	e.memo = previewMemo{ok: true, line: e.line, prefix: e.opt.Prefix, gen: gen, pv: pv}
+	return pv
+}
+
 // View paints the current line with the real parser.
 func (e *Editor) View() View {
-	pv := lang.Preview(e.line, e.g, e.opt)
+	pv := e.preview()
 	smile := pv.Smile
 	spans := pv.Spans
 	denied := pv.Denied
@@ -1155,46 +1180,61 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		}
 		return 1
 	}
-	// Process and display each key before consuming the next one. A paste can
-	// contain several submissions (and EOF); batching Feed would retain only
-	// the last outcome and could exit before displaying any of them.
-	reader := bufio.NewReader(in)
-	buf := make([]byte, 1)
+	return finishRaw(restore, e.loop(bufio.NewReader(in), out, errOut))
+}
+
+// loop paints, reads, and runs until the session ends. A paste is fed in
+// one go up to the next Enter, then painted once, so 8 KiB costs one
+// preview, not 8192. The Enter is fed on its own after that paint: each
+// submission is shown as it was typed before its output, and a paste with
+// several submissions (and EOF) keeps every outcome, since the loop
+// never feeds past an Enter before writing what it ran.
+func (e *Editor) loop(reader *bufio.Reader, out, errOut io.Writer) int {
+	var chunk []byte
 	for {
 		view := e.View()
 		if err := writeAll(out, []byte(Frame(view))); err != nil {
-			return finishRaw(restore, 1)
+			return 1
 		}
-		n, err := reader.Read(buf)
+		b, err := reader.ReadByte()
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
-			st := 1
 			if errors.Is(err, io.EOF) {
-				st = e.status
+				return e.status
 			}
-			return finishRaw(restore, st)
+			return 1
+		}
+		chunk = append(chunk[:0], b)
+		for !isEnter(b) && reader.Buffered() > 0 {
+			next, err := reader.Peek(1)
+			if err != nil || isEnter(next[0]) {
+				break
+			}
+			if b, err = reader.ReadByte(); err != nil {
+				break
+			}
+			chunk = append(chunk, b)
 		}
 		before := view
-		e.Feed(buf[:n])
+		e.Feed(chunk)
 		if e.done {
 			if err := writeAll(out, []byte("\r\n")); err != nil {
-				return finishRaw(restore, 1)
-			}
-			if err := restore(); err != nil {
 				return 1
 			}
 			return e.status
 		}
 		if e.hasOut {
 			if err := writeSubmit(out, errOut, before, e.Last); err != nil {
-				return finishRaw(restore, 1)
+				return 1
 			}
 			e.hasOut = false
 		}
 	}
 }
+
+func isEnter(b byte) bool { return b == '\r' || b == '\n' }
 
 func finishRaw(restore func() error, status int) int {
 	if err := restore(); err != nil {
@@ -1203,7 +1243,7 @@ func finishRaw(restore func() error, status int) int {
 	return status
 }
 
-func writeSubmit(out, errOut *os.File, before View, last lang.Outcome) error {
+func writeSubmit(out, errOut io.Writer, before View, last lang.Outcome) error {
 	extra := 0
 	if before.MenuOpen {
 		extra = len(before.Menu)
@@ -1227,7 +1267,7 @@ func writeSubmit(out, errOut *os.File, before View, last lang.Outcome) error {
 	return nil
 }
 
-func writeAll(f *os.File, b []byte) error {
+func writeAll(f io.Writer, b []byte) error {
 	for len(b) > 0 {
 		n, err := f.Write(b)
 		if n > 0 {
