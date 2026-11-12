@@ -94,7 +94,9 @@ func Serve(rw io.ReadWriter, h func(parent.Verb) (parent.Result, error)) error {
 		if req.Body != "" {
 			b, decErr := base64.StdEncoding.DecodeString(req.Body)
 			if decErr != nil {
-				_ = Write(rw, response{Error: "frame body"})
+				if err := Write(rw, response{Error: "frame body"}); err != nil {
+					return err
+				}
 				continue
 			}
 			verb.Body = b

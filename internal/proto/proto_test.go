@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -86,5 +87,33 @@ func TestPipeRunsBytePipeline(t *testing.T) {
 	}, &Client{RW: a}, lang.Options{})
 	if got.Status != 0 || got.Stdout != "root  1  /usr/sbin/sshd\n" {
 		t.Fatalf("status %d stdout %q stderr %q", got.Status, got.Stdout, got.Stderr)
+	}
+}
+
+// failWriter reads frames from in and fails every write.
+type failWriter struct {
+	in *bytes.Buffer
+}
+
+func (f failWriter) Read(p []byte) (int, error) { return f.in.Read(p) }
+func (failWriter) Write([]byte) (int, error)    { return 0, errors.New("pipe broken") }
+
+// A bad frame body whose error reply cannot be written ends Serve with that
+// error instead of reading the next verb on a broken pipe.
+func TestServeReturnsBodyErrorWriteFailure(t *testing.T) {
+	var in bytes.Buffer
+	if err := Write(&in, request{Key: "file.write", Path: "/tmp/x", Body: "!not base64!"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(&in, request{Key: "ps"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err := Serve(failWriter{in: &in}, func(parent.Verb) (parent.Result, error) {
+		calls++
+		return parent.Result{}, nil
+	})
+	if err == nil || err.Error() != "pipe broken" || calls != 0 {
+		t.Fatalf("err %v calls %d", err, calls)
 	}
 }
