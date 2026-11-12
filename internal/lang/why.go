@@ -326,7 +326,7 @@ func whyTable(rows []parent.Row) string {
 	for _, row := range rows {
 		cells := make([]string, len(whyCols))
 		for i, c := range whyCols {
-			cells[i] = strings.ReplaceAll(row[c], "\t", " ")
+			cells[i] = needsCell(row[c])
 		}
 		tw.Write([]byte(strings.Join(cells, "\t") + "\n"))
 	}

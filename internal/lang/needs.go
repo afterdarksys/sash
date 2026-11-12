@@ -843,7 +843,8 @@ func needsQuote(v string) string {
 // needsCell makes s safe to print: a tab becomes a space, and a control
 // character (below 0x20, 0x7f, C1 0x80-0x9f), a format character (bidi
 // overrides, zero-width), U+2028 and U+2029, anything else not printable,
-// a backslash, and a byte that is not UTF-8 are escaped.
+// a backslash, and a byte that is not UTF-8 are escaped. why prints its
+// cells through it too.
 func needsCell(s string) string {
 	s = strings.ReplaceAll(s, "\t", " ")
 	var b strings.Builder

@@ -188,3 +188,25 @@ func TestWhyExplainsValuePipes(t *testing.T) {
 		}
 	}
 }
+
+// A literal path is printed escaped: a bidi override, an escape sequence,
+// or a zero-width character cannot rewrite or disguise the terminal.
+func TestWhyEscapesCells(t *testing.T) {
+	g := whyGrant()
+	cases := []struct{ src, bad, want string }{
+		{"cat '/etc/a\u202eb'", "\u202e", `/etc/a\u202eb`},
+		{"cat '/etc/a\x1b[31mb'", "\x1b", `/etc/a\x1b[31mb`},
+		{"cat '/etc/a\x1b]0;x\x07b'", "\x07", `/etc/a\x1b]0;x\x07b`},
+		{"cat '/etc/a\u200bb\u200dc'", "\u200b", `/etc/a\u200bb\u200dc`},
+		{"cat '/etc/a\ufeffb'", "\ufeff", `/etc/a\ufeffb`},
+		{"cat '/etc/a\u2028b'", "\u2028", `/etc/a\u2028b`},
+		{"cat '/etc/a\u0085b'", "\u0085", `/etc/a\u0085b`},
+		{"cat '/etc/a\xffb'", "\xff", `/etc/a\xffb`},
+	}
+	for _, c := range cases {
+		out := Why(c.src, g, Options{})
+		if strings.Contains(out.Stdout, c.bad) || !strings.Contains(out.Stdout, c.want) {
+			t.Errorf("%q printed\n%q", c.src, out.Stdout)
+		}
+	}
+}
