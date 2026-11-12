@@ -82,6 +82,11 @@ type Options struct {
 	Prefix  string
 	History []string
 	Trace   bool
+	// Confirm asks the person at the terminal about one mutating verb
+	// under set -o confirm: yes only for y or Y; interrupted (Ctrl-C) also
+	// stops the line. Only the editor's Loop sets it; nil is no terminal,
+	// and confirm then fails closed.
+	Confirm func(prompt string) (yes, interrupted bool)
 	// State carries names, functions, and set options from line to line.
 	// nil is a fresh State: a script, or sash -c.
 	State *State
@@ -103,12 +108,16 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	}
 	m := newMachine(g, p, opt.State)
 	m.trace = opt.Trace
+	m.confirm = opt.Confirm
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
 	status, _ := m.runProg(prog)
 	if m.ctl == ctlHalt {
 		status = exitType
+		if m.haltStatus != 0 {
+			status = m.haltStatus
+		}
 	}
 	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: safeText(m.err.String()), Prefix: m.prefix()}
 	if m.ctl == ctlExit {
@@ -158,11 +167,23 @@ type machine struct {
 	// scope restores its name on the way out, so declare -r there would be
 	// undone; it is refused.
 	scoped map[string]int
+	// confirm is Options.Confirm; declined is set when a verb was declined
+	// in the current retry attempt, so retry does not ask again.
+	confirm  func(string) (bool, bool)
+	declined bool
+	// haltStatus, when set, is the status of a ctlHalt (a Ctrl-C at a
+	// confirm prompt stops the line with 126).
+	haltStatus int
 }
 
+// msgConfirmTerminal refuses confirm mode without a terminal to ask.
+const msgConfirmTerminal = "confirm needs a terminal"
+
 var (
-	errVerbMax = fmt.Errorf("verb max")
-	errTimeout = fmt.Errorf("timeout")
+	errVerbMax  = fmt.Errorf("verb max")
+	errTimeout  = fmt.Errorf("timeout")
+	errDeclined = fmt.Errorf("declined")
+	errNoTTY    = fmt.Errorf(msgConfirmTerminal)
 	// nowFn and sleepFn are the clock; tests replace them.
 	nowFn   = time.Now
 	sleepFn = time.Sleep
@@ -240,9 +261,15 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 				sleepFn(wait)
 			}
 		}
+		m.declined = false
 		st, stop = m.runProg(&r.Body)
 		if stop && m.ctl != ctlNone {
 			return st, true
+		}
+		if m.declined {
+			// A no is an answer, not a failure: asking again would make
+			// the person decline it N times.
+			return st, stop
 		}
 		if !stop && st == 0 {
 			return 0, false
@@ -276,7 +303,51 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		m.err.WriteString("plan: would " + what + "\n")
 		return parent.Result{Kind: parent.KindBytes}, nil
 	}
+	// Confirm sits after verbmax, the deadline, and plan, so plan mode
+	// asks nothing. Waiting counts against timeout: the deadline is
+	// checked again after the answer, before the parent call.
+	if m.st.confirm && mutating[v.Key] {
+		if m.confirm == nil {
+			return parent.Result{}, errNoTTY
+		}
+		cells := make([]string, len(v.Argv))
+		for i, a := range v.Argv {
+			cells[i] = needsCell(a)
+		}
+		yes, interrupted := m.confirm("confirm " + needsCell(v.Key) + " " + strings.Join(cells, " ") + "? [y/N]")
+		if interrupted {
+			m.ctl = ctlHalt
+			m.haltStatus = exitDenied
+		}
+		if !yes || interrupted {
+			m.declined = true
+			return parent.Result{}, errDeclined
+		}
+		if m.pastDeadline() {
+			return parent.Result{}, errTimeout
+		}
+	}
 	return m.p.Do(v)
+}
+
+// doFailed writes why a door call failed and returns the status: a
+// decline is 126 declined <key>, which try catches with key set; a
+// timeout or a missing terminal is 2; anything else is the parent's.
+func (m *machine) doFailed(key string, err error) int {
+	switch {
+	case errors.Is(err, errDeclined):
+		m.err.WriteString("declined " + key + "\n")
+		return exitDenied
+	case errors.Is(err, errTimeout):
+		m.err.WriteString("timeout\n")
+		return exitType
+	case errors.Is(err, errNoTTY):
+		m.err.WriteString(msgConfirmTerminal + "\n")
+		m.ctl = ctlHalt
+		return exitType
+	}
+	m.err.WriteString("parent " + key + "\n")
+	return 1
 }
 
 func newMachine(g grant.Grant, p parent.Parent, st *State) *machine {
@@ -501,6 +572,7 @@ func (m *machine) runWith(w *With) (int, bool) {
 	defer func() {
 		m.st.errexit, m.st.nounset, m.st.xtrace, m.st.noglob = saved.errexit, saved.nounset, saved.xtrace, saved.noglob
 		m.st.loopMax, m.st.verbMax = saved.loopMax, saved.verbMax
+		m.st.confirm = saved.confirm
 		m.stack = stack
 		m.restoreVars(vars)
 	}()
@@ -513,6 +585,9 @@ func (m *machine) runWith(w *With) (int, bool) {
 		}
 		if _, err := m.st.runSet(append([]string{"set"}, w.Set...)); err != nil {
 			return fail(exitType, err.Error())
+		}
+		if m.st.confirm && m.confirm == nil {
+			return fail(exitType, msgConfirmTerminal)
 		}
 	}
 	for _, k := range []string{"loopmax", "verbmax"} {
@@ -964,6 +1039,8 @@ func (m *machine) runTry(t *Try) (int, bool) {
 		key := ""
 		if first, _, _ := strings.Cut(msg, "\n"); strings.HasPrefix(first, "denied ") {
 			key = strings.TrimPrefix(first, "denied ")
+		} else if strings.HasPrefix(first, "declined ") {
+			key = strings.TrimPrefix(first, "declined ")
 		}
 		e.set("key", key)
 		m.vars[t.Name] = value{kind: valData, d: e}
@@ -1627,8 +1704,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			Path: exp[len(exp)-1].outPath,
 			Body: []byte(body),
 		}); err != nil {
-			m.err.WriteString("parent file.write\n")
-			return 1, cur
+			return m.doFailed("file.write", err), cur
 		}
 	}
 	return status, cur
@@ -1728,6 +1804,10 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return v, 0
 	case "set", "shopt":
 		v, err := m.st.runSet(st.argv)
+		if err == nil && m.st.confirm && m.confirm == nil {
+			m.st.confirm = false
+			err = errNoTTY
+		}
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return value{}, exitType
@@ -1802,8 +1882,7 @@ func (m *machine) move(st expStage) (value, int) {
 func (m *machine) toolkit(st expStage) (value, int) {
 	res, err := m.do(parent.Verb{Key: st.key, Argv: st.argv, Path: st.path})
 	if err != nil {
-		m.err.WriteString("parent " + st.key + "\n")
-		return value{}, 1
+		return value{}, m.doFailed(st.key, err)
 	}
 	return fromResult(res), res.Exit
 }

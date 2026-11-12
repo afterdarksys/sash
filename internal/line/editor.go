@@ -1258,7 +1258,11 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		return 1
 	}
 	e.width = func() int { return termWidth(int(out.Fd())) }
-	return finishRaw(restore, e.loop(bufio.NewReader(in), out, errOut))
+	reader := bufio.NewReader(in)
+	e.opt.Confirm = func(prompt string) (bool, bool) {
+		return askConfirm(reader, out, func() error { return flushInput(int(in.Fd())) }, prompt)
+	}
+	return finishRaw(restore, e.loop(reader, out, errOut))
 }
 
 // loop paints, reads, and runs until the session ends. A paste is fed in
@@ -1317,6 +1321,37 @@ func (e *Editor) termWidth() int {
 		return 0
 	}
 	return e.width()
+}
+
+// askConfirm is set -o confirm's question. It throws away everything
+// typed before the prompt, both the terminal's input queue (flush) and
+// what the reader buffered, so a pasted or typed-ahead y never answers;
+// then it draws the prompt and reads exactly one key. Only y or Y is yes.
+// Enter, any other key, EOF, a read error, or a failed flush is no, and
+// Ctrl-C is no that also stops the line. There is no yes to all.
+func askConfirm(r *bufio.Reader, out io.Writer, flush func() error, prompt string) (yes, interrupted bool) {
+	if flush == nil || flush() != nil {
+		return false, false
+	}
+	if n := r.Buffered(); n > 0 {
+		if _, err := r.Discard(n); err != nil {
+			return false, false
+		}
+	}
+	if err := writeAll(out, []byte("\r\n\x1b[J"+prompt+" ")); err != nil {
+		return false, false
+	}
+	b, err := r.ReadByte()
+	if werr := writeAll(out, []byte("\r\n")); werr != nil || err != nil {
+		return false, false
+	}
+	switch b {
+	case 'y', 'Y':
+		return true, false
+	case 0x03:
+		return false, true
+	}
+	return false, false
 }
 
 func isEnter(b byte) bool { return b == '\r' || b == '\n' }

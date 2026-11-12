@@ -49,3 +49,13 @@ func termWidth(fd int) int {
 	}
 	return int(ws.Col)
 }
+
+// flushInput throws away input typed but not read (tcflush TCIFLUSH):
+// confirm asks only after it, so typeahead never answers.
+func flushInput(fd int) error {
+	which := 1 // FREAD
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCFLUSH, uintptr(unsafe.Pointer(&which))); errno != 0 {
+		return errno
+	}
+	return nil
+}

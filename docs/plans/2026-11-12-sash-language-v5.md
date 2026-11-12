@@ -156,6 +156,8 @@ The answer comes from the editor's own reader, through a new `Options.Confirm` c
 
 **Timeout.** Waiting counts against `timeout`. The deadline is checked again after the answer and before the parent call.
 
+**As built.** `set -o confirm` (also `shopt -s confirm` and `with set -o confirm`) without `Options.Confirm` is exit 2 `confirm needs a terminal`; a State that has it on and no `Confirm` refuses each mutating verb the same way, before the parent. The flush is `TIOCFLUSH` (FREAD) on darwin and `TCFLSH` (`TCIFLUSH`, 0x540B) on linux 386, amd64, arm, arm64, riscv64, s390x and loong64, plus whatever the line reader had buffered; a failed flush is no, and other platforms always answer no. A no stops `retry` at once (it is an answer, not a failure). Ctrl-C ends the line with 126 `declined <key>`, which `try` cannot catch. When `par` lands it runs with N forced to 1 under confirm, so prompts arrive in source order (section 8); `par` is not built yet.
+
 - Decision: offer "yes to all for this line". Recommended: no, because a loop is where a wrong yes costs most.
 
 ## Threats

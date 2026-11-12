@@ -29,6 +29,8 @@ type State struct {
 	// --plan) keeps a script from turning it off.
 	plan       bool
 	planLocked bool
+	// confirm asks y/N before each mutating verb (interactive only).
+	confirm bool
 	// checks are the check rows of this session, for checks.
 	checks []parent.Row
 	// gen changes whenever the State may have been written, so a display
@@ -167,6 +169,7 @@ var setOptions = []setOption{
 	{"xtrace", 'x', "print each stage key before it runs (trace)"},
 	{"noglob", 'f', "* stays a literal word"},
 	{"plan", 0, "mutating verbs print would and do not run"},
+	{"confirm", 0, "ask y/N before each mutating verb (terminal only)"},
 	{"pipefail", 0, "a pipeline fails when a stage fails (always on)"},
 	{"loopmax", 0, "iterations one loop may run"},
 	{"verbmax", 0, "agent verbs one line may call"},
@@ -184,6 +187,8 @@ func (s *State) flag(name string) *bool {
 		return &s.noglob
 	case "plan":
 		return &s.plan
+	case "confirm":
+		return &s.confirm
 	}
 	return nil
 }
