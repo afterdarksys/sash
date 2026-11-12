@@ -537,8 +537,13 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 			n.value("sysctl.set", args[1], dynSub)
 		}
 	case "config":
-		if (sub == "read" || dynSub) && len(args) == 2 {
+		if sub == "read" && len(args) == 2 {
 			n.config(args[1], b)
+		} else if dynSub && len(args) == 2 {
+			// Like unit and package: the key is listed, but the run
+			// may or may not use it.
+			n.value("config.read", args[1], true)
+			n.value("file.read", args[1], true)
 		}
 	default:
 		// A function's body is counted where it is defined. A call may

@@ -162,6 +162,7 @@ func TestNeedsDynamicIsIncomplete(t *testing.T) {
 		{"unit $s nginx", []needsWant{{"unit.status", "nginx", "no", noteDynamic}, {"unit.restart", "nginx", "yes", noteDynamic}}},
 		{"package $s curl", []needsWant{{"package.query", "curl", "no", noteDynamic}, {"package.install", "curl", "yes", noteDynamic}}},
 		{"sysctl $s k 1", []needsWant{{"sysctl.set", "k", "yes", noteDynamic}}},
+		{"config $op /etc/x", []needsWant{{"config.read", "/etc/x", "no", noteDynamic}, {"file.read", "/etc/x", "no", noteDynamic}}},
 		{"config read $p", []needsWant{{"config.read", "$", "no", noteDynamic}, {"file.read", "$", "no", noteDynamic}}},
 		{"use $lib", []needsWant{{"file.read", "$", "no", noteUse}}},
 		{"with prefix $d { cat a }", []needsWant{{"file.read", "$", "no", noteDynamic}, {"file.read", "a", "no", noteRelative}}},
