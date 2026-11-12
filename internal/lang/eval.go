@@ -404,7 +404,7 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 		if err != nil {
 			return fail(err)
 		}
-		m.out.WriteString(render(v))
+		m.out.WriteString(display(v))
 		return 0, false
 	}
 	if strings.Contains(d.Flags, "p") {
@@ -412,7 +412,7 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 		if err != nil {
 			return fail(err)
 		}
-		m.out.WriteString(render(v))
+		m.out.WriteString(display(v))
 		return 0, false
 	}
 	if err := m.st.checkBind(d.Name); err != nil {
@@ -996,7 +996,7 @@ func (m *machine) runChain(c *Chain) (int, bool) {
 			return st, true
 		}
 		if exp[len(exp)-1].outPath == "" && (exp[0].call == nil || v.kind != valBytes || len(v.b) > 0) {
-			m.out.WriteString(render(v))
+			m.out.WriteString(display(v))
 		}
 		if st == exitDenied || st == exitUnknown || st == exitType {
 			return st, true
@@ -1914,6 +1914,26 @@ func fromResult(res parent.Result) value {
 		return value{kind: valRows, rows: res.Rows, cols: append([]string(nil), res.Cols...)}
 	}
 	return value{kind: valBytes, b: res.Bytes}
+}
+
+// display is render for the terminal: a row table's cells go through
+// needsCell, since rows carry host data (ps, journal, config) and session
+// values (declare -p). Bytes, strings, and data stay byte-faithful, as
+// echo and cat are; a pipe or a redirect gets render, unescaped.
+func display(v value) string {
+	if v.kind != valRows {
+		return render(v)
+	}
+	cells := v
+	cells.rows = make([]parent.Row, len(v.rows))
+	for i, row := range v.rows {
+		r := make(parent.Row, len(row))
+		for k, c := range row {
+			r[k] = needsCell(c)
+		}
+		cells.rows[i] = r
+	}
+	return render(cells)
 }
 
 func render(v value) string {

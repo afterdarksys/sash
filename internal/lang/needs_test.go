@@ -322,7 +322,7 @@ func TestNeedsEscapesControlCharacters(t *testing.T) {
 		}
 	}
 	cells := map[string]string{
-		"a\tb\\c\x01\xff\u009b": `a b\\c\x01\xff\u009b`,
+		"a\tb\\c\x01\xff\u009b": `a b\c\x01\xff\u009b`,
 		"a\u202eb":              `a\u202eb`,
 		"a\u200bb\u200db":       `a\u200bb\u200db`,
 		"a\u2028b\u2029c":       `a\u2028b\u2029c`,

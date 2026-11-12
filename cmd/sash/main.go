@@ -38,7 +38,7 @@ func main() {
 		var err error
 		g, p, err = session.Open(os.NewFile(3, "grant"), os.NewFile(4, "fleet"), os.NewFile(5, "emergency"), os.NewFile(6, "verb"), time.Now())
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
+			fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 			os.Exit(2)
 		}
 	}
@@ -58,7 +58,7 @@ func main() {
 	}
 	src, err := readSource(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		os.Exit(langExit(2))
 	}
 	got := lang.Run(src, g, p, lang.Options{State: st})
@@ -126,7 +126,7 @@ func runNeeds(args []string) int {
 	}
 	src, err := readSource(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2
 	}
 	got := lang.Needs(src, lang.NeedsOptions{Policy: policy})

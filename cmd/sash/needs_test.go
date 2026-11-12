@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,14 @@ func TestBinaryNeeds(t *testing.T) {
 	}
 	if stdout, _, code := run("-c", "echo RAN"); code != 0 || stdout != "RAN\n" {
 		t.Fatalf("plain run: code %d stdout %q", code, stdout)
+	}
+	// A file name that cannot be opened is printed escaped: its ESC, BEL,
+	// and RLO do not reach the terminal.
+	bad := filepath.Join(t.TempDir(), "a\x1b]0;pwn\x07\u202eb")
+	for _, args := range [][]string{{bad}, {"--needs", bad}} {
+		_, stderr, code := run(args...)
+		if code != 2 || strings.ContainsAny(stderr, "\x1b\x07\u202e") || !strings.Contains(stderr, `a\x1b]0;pwn\x07\u202eb`) {
+			t.Fatalf("%q: code %d stderr %q", args, code, stderr)
+		}
 	}
 }

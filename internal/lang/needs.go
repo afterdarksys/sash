@@ -829,7 +829,7 @@ func needsKind(key string) string {
 // single-quoted.
 func needsPolicyFlag(key, v string) string {
 	flag := needsFlag[key]
-	if flag == "" || strings.HasPrefix(v, "-") || needsCell(v) != v {
+	if flag == "" || strings.HasPrefix(v, "-") || needsCell(v) != v || strings.ContainsRune(v, '\\') {
 		return ""
 	}
 	return flag + " " + needsQuote(v)
@@ -863,6 +863,32 @@ func safeText(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// SafeText is safeText for callers outside lang: a message that carries
+// text from a script, a file name, or the host, made safe for a terminal.
+func SafeText(s string) string { return safeText(s) }
+
+// escapeAhead reports whether a backslash followed by rest would read as
+// an escape in needsCell's output.
+func escapeAhead(rest string) bool {
+	if rest == "" {
+		return false
+	}
+	r, size := utf8.DecodeRuneInString(rest)
+	if r == '\\' || (r == utf8.RuneError && size == 1) || unsafeRune(r) {
+		return true
+	}
+	n := map[byte]int{'x': 2, 'u': 4, 'U': 8}[rest[0]]
+	if n == 0 || len(rest) < 1+n {
+		return false
+	}
+	for _, c := range []byte(rest[1 : 1+n]) {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", rune(c)) {
+			return false
+		}
+	}
+	return true
+}
+
 // unsafeRune is a rune that must not reach a terminal as is: a control
 // character, a format character (bidi overrides, zero-width), U+2028,
 // U+2029, or anything else unicode.IsPrint rejects.
@@ -873,8 +899,14 @@ func unsafeRune(r rune) bool {
 // needsCell makes s safe to print: a tab becomes a space, and a control
 // character (below 0x20, 0x7f, C1 0x80-0x9f), a format character (bidi
 // overrides, zero-width), U+2028 and U+2029, anything else not printable,
-// a backslash, and a byte that is not UTF-8 are escaped. why prints its
-// cells through it too.
+// and a byte that is not UTF-8 are escaped. why prints its cells through
+// it too.
+//
+// A backslash stays one backslash (C:\dir, a\b) unless what follows would
+// read as an escape: another backslash, xHH, uHHHH, UHHHHHHHH, or a rune
+// that is itself escaped. Then it is doubled. Reading left to right, \\
+// is a backslash, those forms are the escaped rune, and any other
+// backslash is itself, so the printed text decodes to s one way only.
 func needsCell(s string) string {
 	s = strings.ReplaceAll(s, "\t", " ")
 	var b strings.Builder
@@ -886,7 +918,11 @@ func needsCell(s string) string {
 		case r < 0x20 || r == 0x7f:
 			fmt.Fprintf(&b, `\x%02x`, r)
 		case r == '\\':
-			b.WriteString(`\\`)
+			if escapeAhead(s[i+1:]) {
+				b.WriteString(`\\`)
+			} else {
+				b.WriteByte('\\')
+			}
 		case unsafeRune(r):
 			if r > 0xffff {
 				fmt.Fprintf(&b, `\U%08x`, r)
