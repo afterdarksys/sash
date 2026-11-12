@@ -71,10 +71,14 @@ func (m *machine) runLog(st expStage) (value, int) {
 	return value{kind: valBytes}, 0
 }
 
-// oneLine keeps a log line one line: control bytes become spaces.
+// oneLine keeps a check or log line one line and inert: every rune
+// needsCell would escape (control, format, line separators, anything not
+// printable) becomes a space, and a byte that is not UTF-8 becomes U+FFFD.
+// It does not escape, so a log line that later leaves through safeText is
+// not escaped twice.
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 {
+		if unsafeRune(r) {
 			return ' '
 		}
 		return r

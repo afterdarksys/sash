@@ -48,3 +48,21 @@ func TestErrorsEscapeScriptText(t *testing.T) {
 		escapeCheck(t, "preview parse", pv.Smile, p.bad, p.want)
 	}
 }
+
+// check and log print a script's names and fields: an escape sequence,
+// a bidi override, or a zero-width character becomes a space, as a
+// newline does.
+func TestCheckAndLogEscape(t *testing.T) {
+	g := grant.Grant{}
+	spaced := []string{"a [31mb", "a ]0;pwn b", "a b", "a b c"}
+	for i, p := range escapePayloads {
+		out := Run("check '"+p.lit+"' [ true ]", g, &countParent{}, Options{})
+		escapeCheck(t, "check", out.Stdout, p.bad, "ok "+spaced[i]+"\n")
+		out = Run("log info '"+p.lit+"'", g, &countParent{}, Options{})
+		escapeCheck(t, "log", out.Stderr, p.bad, "info "+spaced[i]+"\n")
+	}
+	out := Run("check 'a\nb' [ true ]", g, &countParent{}, Options{})
+	if out.Stdout != "ok a b\n" {
+		t.Fatalf("newline %q", out.Stdout)
+	}
+}
