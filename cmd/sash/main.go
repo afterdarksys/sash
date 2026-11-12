@@ -2,7 +2,8 @@
 // A terminal with no script is the live prompt. Non-tty stdin is
 // still one script. A hand start, without --session, has an empty grant:
 // toolkit verbs are denied and filters still run. --needs reads a script
-// and prints what it would ask for; it runs nothing.
+// and prints what it would ask for; it runs nothing. --lint reads a script
+// and prints advisory findings; it runs nothing either.
 package main
 
 import (
@@ -28,6 +29,9 @@ func (closedParent) Do(parent.Verb) (parent.Result, error) {
 
 func main() {
 	args := os.Args[1:]
+	if flagMode(args, "--lint") {
+		os.Exit(runLint(args))
+	}
 	if needsMode(args) {
 		os.Exit(runNeeds(args))
 	}
@@ -90,19 +94,48 @@ func readSource(args []string) (string, error) {
 	return "", errors.New(usage)
 }
 
-const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]"
+const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]"
 
 // needsMode is true when --needs is among the leading flags.
-func needsMode(args []string) bool {
+func needsMode(args []string) bool { return flagMode(args, "--needs") }
+
+// flagMode is true when flag is among the leading flags.
+func flagMode(args []string, flag string) bool {
 	for _, a := range args {
 		if !strings.HasPrefix(a, "--") {
 			return false
 		}
-		if a == "--needs" {
+		if a == flag {
 			return true
 		}
 	}
 	return false
+}
+
+// runLint prints the script's lint findings. It calls no parent and takes
+// no grant, so every other flag (--needs, --session, --plan, --policy) is
+// refused, and so is anything after the source.
+func runLint(args []string) int {
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		if args[0] != "--lint" {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		args = args[1:]
+	}
+	if len(args) == 0 && line.IsTerm(os.Stdin) {
+		fmt.Fprintln(os.Stderr, "usage: sash --lint needs a script")
+		return 2
+	}
+	src, err := readSource(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
+		return 2
+	}
+	got := lang.Lint(src)
+	fmt.Fprint(os.Stdout, got.Stdout)
+	fmt.Fprint(os.Stderr, got.Stderr)
+	return got.Status
 }
 
 // runNeeds prints the script's grant manifest. It calls no parent and

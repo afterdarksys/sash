@@ -15,6 +15,7 @@ package lang
 // It does not cover a need behind a use file; that row says so.
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -174,39 +175,10 @@ func Needs(src string, opt NeedsOptions) Outcome {
 	fail := func(msg string) Outcome {
 		return Outcome{Status: exitType, Stderr: safeText(msg) + "\n"}
 	}
-	text, prob := expandHistory(src, nil)
-	if prob == nil && len(text) > expandMax {
-		prob = braceProb()
-	}
-	if prob == nil {
-		text, prob = expandBraces(text)
-	}
-	if prob == nil && len(text) > expandMax {
-		prob = braceProb()
-	}
-	if prob != nil {
-		return fail(prob.Msg)
-	}
-	n := &needsRun{fns: map[string]*Fn{}, rows: map[string]*needRow{}, flags: map[string]bool{}}
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			n.nl = append(n.nl, i)
-		}
-	}
-	// A run lists globs before it parses, against the starting prefix,
-	// which a script does not have: a relative glob is never resolved.
-	if _, prob := mapWordsAt(text, func(at int, word string) (string, *ExpandProblem) {
-		return word, n.glob(at, word)
-	}); prob != nil {
-		return fail(prob.Msg)
-	}
-	prog, err := parse(text)
+	n, _, _, err := needsParse(src, nil)
 	if err != nil {
 		return fail(err.Error())
 	}
-	whyFns(prog, n.fns)
-	n.moves = needsFnMoves(prog)
-	n.prog(prog, needBase{"": true})
 	rows := n.sorted()
 	out := Outcome{}
 	for _, r := range rows {
@@ -220,6 +192,51 @@ func Needs(src string, opt NeedsOptions) Outcome {
 		out.Stdout = needsTable(rows)
 	}
 	return out
+}
+
+// needsParse expands src as a run does (history, braces, the expansion
+// cap), checks its globs, parses it, and walks it for needs. lint parses
+// through it too, so both see the same text, errors, and rows. comments,
+// when not nil, gets the comments of the expanded text.
+func needsParse(src string, comments *[]comment) (*needsRun, string, *Program, error) {
+	text, prob := expandHistory(src, nil)
+	if prob == nil && len(text) > expandMax {
+		prob = braceProb()
+	}
+	if prob == nil {
+		text, prob = expandBraces(text)
+	}
+	if prob == nil && len(text) > expandMax {
+		prob = braceProb()
+	}
+	if prob != nil {
+		return nil, "", nil, errors.New(prob.Msg)
+	}
+	n := &needsRun{fns: map[string]*Fn{}, rows: map[string]*needRow{}, flags: map[string]bool{}}
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			n.nl = append(n.nl, i)
+		}
+	}
+	// A run lists globs before it parses, against the starting prefix,
+	// which a script does not have: a relative glob is never resolved.
+	if _, prob := mapWordsAt(text, func(at int, word string) (string, *ExpandProblem) {
+		return word, n.glob(at, word)
+	}); prob != nil {
+		return nil, "", nil, errors.New(prob.Msg)
+	}
+	toks, err := lexComments(text, comments)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	prog, err := parseTokens(toks)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	whyFns(prog, n.fns)
+	n.moves = needsFnMoves(prog)
+	n.prog(prog, needBase{"": true})
+	return n, text, prog, nil
 }
 
 func (n *needsRun) glob(at int, word string) *ExpandProblem {

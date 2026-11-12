@@ -61,7 +61,18 @@ func emit(out *[]token, k kind, w Word, at, n int) {
 	*out = append(*out, token{kind: k, word: w, pos: at, end: at + n})
 }
 
-func lex(src string) ([]token, error) {
+// comment is a # comment the lexer dropped: its offset and its text from
+// the # to the end of the line. lint reads #lint:allow from it.
+type comment struct {
+	pos  int
+	text string
+}
+
+func lex(src string) ([]token, error) { return lexComments(src, nil) }
+
+// lexComments is lex, and appends each dropped comment to comments when
+// it is not nil. The tokens are the same either way.
+func lexComments(src string, comments *[]comment) ([]token, error) {
 	// A token is at least one byte and usually a few: one guess saves
 	// the regrowth that dominated Preview on a long line.
 	out := make([]token, 0, len(src)/4+1)
@@ -98,8 +109,12 @@ func lex(src string) ([]token, error) {
 				i += n
 				continue
 			}
+			start := i
 			for i < len(src) && src[i] != '\n' {
 				i++
+			}
+			if comments != nil {
+				*comments = append(*comments, comment{pos: start, text: src[start:i]})
 			}
 			continue
 		case ';':

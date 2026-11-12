@@ -46,11 +46,13 @@ Static, conservative, advisory. Lint parses the way `Needs` does (history, brace
 | `constant-check` | warning | `check` or `if` whose `[ ]` reads no name and calls no function other than pure ones on literals | `while [ true ]` with a `break` in its body |
 | `retry-on-mutation` | warning | a `retry` body that reaches a stage keyed in `mutating` (`eval.go`), a `template_file` without `--check`, or a `>` redirect, including through fns called by literal name (depth 8) | mutations in a nested `try` with a catch |
 | `secret-to-sink` | error | a secret-tainted name reaching `echo`, `log`, a `check` name or condition, an `if`/`while`/`filter` condition, `template`/`template_file`, a verb argument, a redirect path, a fn argument, or `exit`/`return` words | — |
-| `silent-catch` | warning | `try { }` with no catch (`runTry` discards the failure and its stderr), or an empty catch block | a catch with any statement |
+| `silent-catch` | warning | an empty catch block (a bare `try` with no catch is a parse error since section 0, so that trigger is gone) | a catch with any statement |
 | `incomplete-needs` | warning; error for `command_from_value` | each `Needs` row with a note, from the `needsRun` rows (not by parsing text) | literal needs |
 | `shadowed-secret` | warning | a `declare -s` name also bound by `let`, plain `declare`, `for`, `catch`, a fn parameter, or `with x =` | a second `declare -s` of the same name |
 
 **Taint.** Lint's taint is flow-insensitive: a name bound by `declare -s`, or bound from any word, expression, or pipe that references a tainted name, is tainted everywhere in the file, iterated to a fixpoint. Run-time taint (`secretVal`, `evalCtx.tainted`, `machine.sawSecret`, `decide`) stays the only enforcement. Lint reports, at the desk, the lines a run would print as `***` or refuse with exit 2. It must over-report; a missed sink is a lint bug.
+
+**Sinks as built.** Beyond the table, lint also reports a secret that a run refuses or prints as `***`: a `for` source (`type for secret`), a secret built into a word (`let x = "a$tok"`), `declare -p` of a secret name, a `use` path, a `with prefix`, and a `retry` or `timeout` word. In a value pipe (`let`, `declare`, `with`), a secret through `echo` and the data filters only taints the name; any other stage it reaches is a sink. `TestLintCleanScriptCannotSinkASecret` and `FuzzLintNeverMissesASecret` check lint against the run: whenever a run shows `***` or refuses for a secret, lint reports `secret-to-sink`.
 
 **Output and exit.** Columns `line`, `rule`, `severity`, `what`, sorted by line then rule, through `tabwriter` like `needsTable`, every cell through `needsCell`. `what` never prints a tainted literal. Exit 0 for none or info only, 1 for any warning or error, 2 for usage or parse errors with nothing on stdout, matching `--needs`.
 

@@ -8,6 +8,8 @@ import (
 // Program is a script: the prompt, sash -c, and sash file share this tree.
 type Program struct {
 	Stmts []Stmt
+	// Pos is the source offset where each statement starts, for lint.
+	Pos []int
 }
 
 // Stmt is one statement.
@@ -184,23 +186,26 @@ func parseTokens(toks []token) (*Program, error) {
 
 func (p *parser) program() (*Program, error) {
 	var stmts []Stmt
+	var pos []int
 	p.skipSep()
 	for {
 		k := p.peek().kind
 		if k == kEOF || k == kRBrace {
 			break
 		}
+		at := p.peek().pos
 		s, err := p.stmt()
 		if err != nil {
 			return nil, err
 		}
 		stmts = append(stmts, s)
+		pos = append(pos, at)
 		if !p.atSep() && p.peek().kind != kEOF && p.peek().kind != kRBrace {
 			return nil, fmt.Errorf("parse: expected separator")
 		}
 		p.skipSep()
 	}
-	return &Program{Stmts: stmts}, nil
+	return &Program{Stmts: stmts, Pos: pos}, nil
 }
 
 func (p *parser) atSep() bool {
@@ -341,11 +346,12 @@ func (p *parser) iff() (Stmt, error) {
 	if p.peek().kind == kWord && plain(p.peek().word) == "else" {
 		p.i++
 		if p.peek().kind == kWord && plain(p.peek().word) == "if" {
+			at := p.peek().pos
 			inner, err := p.iff()
 			if err != nil {
 				return nil, err
 			}
-			elseP = &Program{Stmts: []Stmt{inner}}
+			elseP = &Program{Stmts: []Stmt{inner}, Pos: []int{at}}
 		} else {
 			body, err := p.block()
 			if err != nil {
