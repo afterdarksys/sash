@@ -6,11 +6,14 @@ cd "$ROOT_DIR"
 
 usage() {
     cat <<'EOF'
-Usage: ./build.sh [build|install|clean]
+Usage: ./build.sh [build|install|clean|test]
 
-  build    Build bin/sash (default).
+  build    Build bin/sash (default). Add SASH_TAGS=sashwasm for wasm modules.
   install  Install sash using go install (respects GOBIN and GOPATH).
   clean    Remove the local build output.
+  test     gofmt, vet, test, and -race, without and with the sashwasm tag,
+           then govulncheck when it is installed (it is not installed for
+           you).
 EOF
 }
 
@@ -22,7 +25,25 @@ fi
 case "${1:-build}" in
     build)
         mkdir -p bin
-        go build -o bin/sash ./cmd/sash
+        go build -tags "${SASH_TAGS:-}" -o bin/sash ./cmd/sash
+        ;;
+    test)
+        unformatted="$(gofmt -l cmd internal)"
+        if [[ -n "$unformatted" ]]; then
+            echo "gofmt: $unformatted" >&2
+            exit 1
+        fi
+        for tags in "" sashwasm; do
+            go vet -tags "$tags" ./...
+            go test -tags "$tags" ./...
+            go test -tags "$tags" -race ./internal/lang ./internal/line
+        done
+        if command -v govulncheck >/dev/null; then
+            govulncheck ./...
+            govulncheck -tags sashwasm ./...
+        else
+            echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest" >&2
+        fi
         ;;
     install)
         go install ./cmd/sash
