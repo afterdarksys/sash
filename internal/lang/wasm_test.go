@@ -96,6 +96,7 @@ func TestWasmCheckModule(t *testing.T) {
 		"echo": "", "table": "", "overflow": "wasm_compile", "bigtable": "wasm_limits",
 		"tablemax": "wasm_limits", "wasi": "wasm_import", "locals": "wasm_limits", "locals2": "wasm_limits", "locals3": "wasm_limits",
 		"params": "wasm_limits", "paramslocals": "wasm_limits", "manyparams": "wasm_limits",
+		"deep": "", "frame": "wasm_limits", "deep49k": "wasm_limits", "results2": "wasm_limits", "simd": "wasm_limits",
 		"manyfuncs": "wasm_limits", "tablenomax": "wasm_limits", "memnomax": "wasm_limits",
 		"tablegrow": "", "badcode": "", "grow": "", "huge": "", "data": "", "loop": "", "noabi": "",
 	} {
@@ -125,7 +126,7 @@ func TestWasmCheckModule(t *testing.T) {
 
 func FuzzWasmSections(f *testing.F) {
 	for _, n := range []string{"echo", "data", "wasi", "table", "bigtable", "tablemax", "overflow", "huge", "loop", "grow", "noabi",
-		"locals", "locals2", "locals3", "tablegrow", "tablenomax", "memnomax", "badcode", "params", "paramslocals", "manyparams"} {
+		"locals", "locals2", "locals3", "tablegrow", "tablenomax", "memnomax", "badcode", "params", "paramslocals", "manyparams", "deep", "frame", "deep49k", "results2", "simd"} {
 		f.Add(wasmFile(f, n))
 	}
 	f.Add([]byte("\x00asm\x01\x00\x00\x00\x04\x05\x01\x70\x01\xff\xff"))

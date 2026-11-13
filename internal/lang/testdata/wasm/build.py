@@ -122,6 +122,24 @@ modules = {
     # 101 functions of 1,000 params: 101,000, past the module cap.
     "manyparams": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)] + [("p%d" % k, 3, i64(0)) for k in range(101)],
                          types=section(1, vec([functype([I32], [I32]), functype([I32, I32], [I64]), functype([I32] * 4, [I32]), P1000]))),
+    # Recursion at the frame caps: 2 params and 1,022 locals (1,024), then
+    # pushes to fill the 2,048-slot frame budget, then a call to itself,
+    # until wazero's 2,000-frame ceiling traps it.
+    "deep": module([("sash_alloc", 0, ALLOC),
+                    ("deep", 1, i32(0) * 1017 + lget(0) + lget(1) + b"\x10\x01" + b"\x0f")],
+                   locals={1: [(1022, I64)]}),
+    # The same with one more push than the frame budget allows.
+    "frame": module([("sash_alloc", 0, ALLOC),
+                     ("deep", 1, i32(0) * 1019 + lget(0) + lget(1) + b"\x10\x01" + b"\x0f")],
+                    locals={1: [(1022, I64)]}),
+    # The old run-time bomb: 49,000 locals and a call to itself.
+    "deep49k": module([("sash_alloc", 0, ALLOC), ("deep", 1, lget(0) + lget(1) + b"\x10\x01")],
+                      locals={1: [(49_000, I64)]}),
+    # A type with two results: refused, a call could stack more than one.
+    "results2": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)],
+                       types=section(1, vec([functype([I32], [I32]), functype([I32, I32], [I64]), functype([I32] * 4, [I32]), functype([], [I32, I32])]))),
+    # A v128 local: SIMD is off, wazero refuses it.
+    "simd": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)], locals={1: [(1, 0x7B)]}),
     # 300 KiB of data: past the 256 KiB module cap.
     "big": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)], data=vec([seg(4096, b"x" * (300 << 10))])),
     # Three functions of 40,000 locals: each under the per-function cap,

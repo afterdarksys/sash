@@ -265,11 +265,28 @@ func wasmSections(b []byte, f func(id byte, body []byte) error) error {
 // module could otherwise declare a million functions or 100M locals (43 GB
 // and 4m39s). The caps keep one compile near 40 MB and 50 ms, far above
 // what small compiled helper modules declare.
+//
+// Run time is bounded by the frame, not the compile: the interpreter keeps
+// params, locals, and the operand stack of every active call on one
+// []uint64 grown by append, and stops at a fixed ceiling of 2,000 frames
+// (callStackCeiling, not configurable). Measured: about 38-46 bytes
+// allocated per stack slot per frame over a recursion to the ceiling (49,000
+// locals: 4.4 GB and 2.3 s, past the 1 s deadline; 1,024 locals: 78 MB in
+// 23 ms; 2,048 pushed values: 191 MB). So a function's frame, params plus
+// locals plus the deepest operand stack its body can build, is capped at
+// 2,048 slots: about 190 MB allocated and 32 MB live at the ceiling. Every
+// instruction that grows the stack is at least two bytes and grows it by
+// one slot, with results capped at one per type and no v128 anywhere (a
+// v128 is two slots), so a body of n bytes stacks at most n/2.
+// debug.SetMemoryLimit is not used as a backstop: it is process-wide and a
+// soft GC target, not a cap, so these caps are the defence.
 const (
-	wasmParamsMax      = 1000 // params, and results, per function type
+	wasmParamsMax      = 1000 // params per function type
+	wasmResultsMax     = 1    // results per function type
 	wasmFuncMax        = 10000
-	wasmLocalsPerFunc  = 50000
-	wasmLocalsPerMod   = 100000
+	wasmLocalsPerFunc  = 1024 // params and locals of one function
+	wasmFrameSlots     = 2048 // params, locals, and body/2 of one function
+	wasmLocalsPerMod   = 32768
 	wasmMemoryMaxPages = wasmMemoryPagesCap
 )
 
@@ -318,17 +335,22 @@ func wasmCheckModule(b []byte) error {
 			return nil
 		}
 		// vecLen reads a vector of one-byte value types: at most
-		// wasmParamsMax, and all present.
-		vecLen := func() (uint64, error) {
+		// max, all present, and none v128. wazero takes a v128 local
+		// even with SIMD off, and a v128 is two stack slots, which
+		// would double the frame the caps below count.
+		vecLen := func(max uint64) (uint64, error) {
 			v, a := uleb(p)
 			if a == 0 {
 				return 0, errWasmBad
 			}
-			if v > wasmParamsMax {
+			if v > max {
 				return 0, limits
 			}
 			if v > uint64(len(p)-a) {
 				return 0, errWasmBad
+			}
+			if bytes.IndexByte(p[a:a+int(v)], 0x7B) >= 0 {
+				return 0, limits
 			}
 			p = p[a+int(v):]
 			return v, nil
@@ -343,11 +365,11 @@ func wasmCheckModule(b []byte) error {
 					return errWasmBad
 				}
 				p = p[1:]
-				params, err := vecLen()
+				params, err := vecLen(wasmParamsMax)
 				if err != nil {
 					return err
 				}
-				if _, err := vecLen(); err != nil {
+				if _, err := vecLen(wasmResultsMax); err != nil {
 					return err
 				}
 				typeParams = append(typeParams, params)
@@ -410,11 +432,17 @@ func wasmCheckModule(b []byte) error {
 					if e == 0 || len(q) < e+1 {
 						return errWasmBad
 					}
+					if q[e] == 0x7B { // v128, as in vecLen
+						return limits
+					}
 					q = q[e+1:] // the count, then the value type
 					if v > wasmLocalsPerFunc || mine+v > wasmLocalsPerFunc {
 						return limits
 					}
 					mine += v
+				}
+				if mine+(size+1)/2 > wasmFrameSlots {
+					return limits
 				}
 				if locals+mine > wasmLocalsPerMod {
 					return limits

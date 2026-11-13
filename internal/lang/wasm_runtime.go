@@ -20,12 +20,13 @@ const wasmMemoryPages = wasmMemoryPagesCap
 
 // newWasmRuntime is the interpreter runtime: no compiler (no generated
 // native code), memory capped, calls aborted when their context ends, and
-// the core 2.0 features (no threads). It instantiates nothing: no WASI and
+// the core 2.0 features (no threads) without SIMD: a v128 takes two stack
+// slots, which the frame bound in wasm.go does not allow for. It instantiates nothing: no WASI and
 // no host module, so a module's imports can never resolve.
 func newWasmRuntime(ctx context.Context) wazero.Runtime {
 	cfg := wazero.NewRuntimeConfigInterpreter().
 		WithMemoryLimitPages(wasmMemoryPages).
 		WithCloseOnContextDone(true).
-		WithCoreFeatures(api.CoreFeaturesV2)
+		WithCoreFeatures(api.CoreFeaturesV2 &^ api.CoreFeatureSIMD)
 	return wazero.NewRuntimeWithConfig(ctx, cfg)
 }

@@ -365,3 +365,26 @@ func TestWasmCompileAllocBudget(t *testing.T) {
 		t.Logf("%d bytes: %d MB", len(m), got>>20)
 	}
 }
+
+// Recursion at the frame caps to wazero's 2,000-frame ceiling allocates
+// under 256 MB and traps within the deadline; the old 49,000-locals bomb
+// and a frame one slot over are refused at load; SIMD is off.
+func TestWasmRunAllocBudget(t *testing.T) {
+	var ms0, ms1 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&ms0)
+	start := time.Now()
+	out, _ := runWasmSrc(t, load(t, "deep")+"echo [ m::deep(1) ]")
+	took := time.Since(start)
+	runtime.ReadMemStats(&ms1)
+	alloc := ms1.TotalAlloc - ms0.TotalAlloc
+	if out.Status != exitType || !strings.Contains(out.Stderr, "wasm_trap") || alloc > 256<<20 || took > wasmCallMax+500*time.Millisecond {
+		t.Fatalf("%+v: %d MB in %v", out, alloc>>20, took)
+	}
+	t.Logf("deep recursion at the caps: %d MB in %v", alloc>>20, took)
+	for name, want := range map[string]string{"frame": "wasm_limits", "deep49k": "wasm_limits", "results2": "wasm_limits", "simd": "wasm_limits"} {
+		if out, _ := runWasmSrc(t, load(t, name)+"echo ran"); out.Status != exitType || !strings.Contains(out.Stderr, want) {
+			t.Errorf("%s: %+v", name, out)
+		}
+	}
+}
