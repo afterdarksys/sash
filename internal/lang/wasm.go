@@ -8,7 +8,7 @@ package lang
 // wasm_unsupported.
 //
 // Threats: a module is bytes pinned by hash, read only through file.read
-// at machine.do, at most 4 MiB, and checked before it is compiled. It
+// at machine.do, at most 256 KiB, and checked before it is compiled. It
 // runs in wazero's interpreter (no generated native code) with no imports
 // at all: no WASI, no host functions, so it reaches no clock, randomness,
 // filesystem, network, or verb, and any module that imports anything is
@@ -42,8 +42,12 @@ func parentVerbRead(full string) parent.Verb {
 const wasmMemoryPagesCap = 256
 
 const (
-	wasmCallMax   = time.Second
-	wasmModuleMax = 4 << 20
+	wasmCallMax = time.Second
+	// wasmModuleMax caps a module at 256 KiB, so the worst compile stays
+	// under about 256 MB: wazero's interpreter allocates up to about 633
+	// bytes per module byte (nested ifs; loops 588, pushes 246, br_table
+	// 37), 158 MB at this cap, plus up to 23 MB for locals at their cap.
+	wasmModuleMax = 256 << 10
 	wasmResultMax = 8 << 20
 	noteWasm      = "wasm"
 )
@@ -252,7 +256,9 @@ func wasmSections(b []byte, f func(id byte, body []byte) error) error {
 	return nil
 }
 
-// Per-entry costs measured in wazero v1.12.0's interpreter (i9, darwin):
+// Per-entry costs measured in wazero v1.12.0's interpreter (i9, darwin);
+// a function's params count as its locals (a 3M-param type allocated
+// 20.7 GB):
 // a function costs about 256 bytes and 0.5 us to compile (500,000 took
 // 128 MB and 263 ms), and a declared local about 400 bytes (one function
 // with 50,000 locals took 20 MB and 21 ms; 100 such took 322 MB). A 4 MiB
@@ -260,6 +266,7 @@ func wasmSections(b []byte, f func(id byte, body []byte) error) error {
 // and 4m39s). The caps keep one compile near 40 MB and 50 ms, far above
 // what small compiled helper modules declare.
 const (
+	wasmParamsMax      = 1000 // params, and results, per function type
 	wasmFuncMax        = 10000
 	wasmLocalsPerFunc  = 50000
 	wasmLocalsPerMod   = 100000
@@ -274,10 +281,12 @@ const (
 func wasmCheckModule(b []byte) error {
 	limits := errors.New("wasm_limits")
 	var locals uint64
+	var typeParams []uint64 // params per type index
+	var funcTypes []uint64  // type index per function
 	return wasmSections(b, func(id byte, body []byte) error {
 		count, n := uleb(body)
 		switch id {
-		case 2, 3, 4, 5, 10:
+		case 1, 2, 3, 4, 5, 10:
 			if n == 0 {
 				return errWasmBad
 			}
@@ -308,7 +317,41 @@ func wasmCheckModule(b []byte) error {
 			}
 			return nil
 		}
+		// vecLen reads a vector of one-byte value types: at most
+		// wasmParamsMax, and all present.
+		vecLen := func() (uint64, error) {
+			v, a := uleb(p)
+			if a == 0 {
+				return 0, errWasmBad
+			}
+			if v > wasmParamsMax {
+				return 0, limits
+			}
+			if v > uint64(len(p)-a) {
+				return 0, errWasmBad
+			}
+			p = p[a+int(v):]
+			return v, nil
+		}
 		switch id {
+		case 1:
+			if count > wasmFuncMax {
+				return limits
+			}
+			for k := uint64(0); k < count; k++ {
+				if len(p) < 1 || p[0] != 0x60 {
+					return errWasmBad
+				}
+				p = p[1:]
+				params, err := vecLen()
+				if err != nil {
+					return err
+				}
+				if _, err := vecLen(); err != nil {
+					return err
+				}
+				typeParams = append(typeParams, params)
+			}
 		case 2:
 			if count > 0 {
 				return errors.New("wasm_import")
@@ -316,6 +359,14 @@ func wasmCheckModule(b []byte) error {
 		case 3:
 			if count > wasmFuncMax {
 				return limits
+			}
+			for k := uint64(0); k < count; k++ {
+				ti, a := uleb(p)
+				if a == 0 || ti >= uint64(len(typeParams)) {
+					return errWasmBad
+				}
+				p = p[a:]
+				funcTypes = append(funcTypes, ti)
 			}
 		case 4:
 			for k := uint64(0); k < count; k++ {
@@ -349,7 +400,11 @@ func wasmCheckModule(b []byte) error {
 					return errWasmBad
 				}
 				q := fn[c:]
-				var mine uint64
+				// A function's params are locals too.
+				if k >= uint64(len(funcTypes)) {
+					return errWasmBad
+				}
+				mine := typeParams[funcTypes[k]]
 				for d := uint64(0); d < decls; d++ {
 					v, e := uleb(q)
 					if e == 0 || len(q) < e+1 {

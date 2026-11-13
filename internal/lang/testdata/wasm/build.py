@@ -51,13 +51,15 @@ def lget(i): return b"\x20" + uleb(i)
 
 # Types: 0 (i32)->i32 sash_alloc, 1 (i32,i32)->i64 a call, 2 wasi fd_write.
 TYPES = section(1, vec([functype([I32], [I32]), functype([I32, I32], [I64]), functype([I32] * 4, [I32])]))
+P1000 = functype([I64] * 1000, [I64])  # type 3 where a module adds it
+P1001 = functype([I64] * 1001, [I64])
 MEMORY = section(5, vec([b"\x01" + uleb(1) + uleb(256)]))  # min 1 page, max 256 (required)
 ALLOC = i32(1024)  # a fixed buffer: the tests pass small arguments
 PACK = lget(0) + b"\xad" + i64(32) + b"\x86" + lget(1) + b"\xad" + b"\x84"  # ptr<<32 | len
 
-def module(funcs, imports=b"", nimports=0, data=b"", tables=b"", memory=None, locals=None):
+def module(funcs, imports=b"", nimports=0, data=b"", tables=b"", memory=None, locals=None, types=None):
     """funcs: list of (export name, type index, code)."""
-    out = b"\x00asm\x01\x00\x00\x00" + TYPES
+    out = b"\x00asm\x01\x00\x00\x00" + (TYPES if types is None else types)
     if imports:
         out += section(2, imports)
     out += section(3, vec([uleb(t) for _, t, _ in funcs]))
@@ -109,6 +111,19 @@ modules = {
     # 50,001 locals over two declarations in one function: past the
     # per-function cap.
     "locals2": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)], locals={1: [(25_000, I64), (25_001, I32)]}),
+    # A type with 1,001 params: past the per-type cap.
+    "params": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK), ("p", 3, i64(0))],
+                     types=section(1, vec([functype([I32], [I32]), functype([I32, I32], [I64]), functype([I32] * 4, [I32]), P1001]))),
+    # 1,000 params plus 49,001 locals in one function: params count as
+    # locals, so 50,001 is past the per-function cap.
+    "paramslocals": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK), ("p", 3, i64(0))],
+                           types=section(1, vec([functype([I32], [I32]), functype([I32, I32], [I64]), functype([I32] * 4, [I32]), P1000])),
+                           locals={2: [(49_001, I64)]}),
+    # 101 functions of 1,000 params: 101,000, past the module cap.
+    "manyparams": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)] + [("p%d" % k, 3, i64(0)) for k in range(101)],
+                         types=section(1, vec([functype([I32], [I32]), functype([I32, I32], [I64]), functype([I32] * 4, [I32]), P1000]))),
+    # 300 KiB of data: past the 256 KiB module cap.
+    "big": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK)], data=vec([seg(4096, b"x" * (300 << 10))])),
     # Three functions of 40,000 locals: each under the per-function cap,
     # 120,000 in all, past the module cap.
     "locals3": module([("sash_alloc", 0, ALLOC), ("echo", 1, PACK), ("e2", 1, PACK), ("e3", 1, PACK)],

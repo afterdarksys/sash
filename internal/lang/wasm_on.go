@@ -70,6 +70,10 @@ func wasmCompile(body []byte, h [32]byte) (any, error) {
 	}
 	c, err := wasmCompileTimed(body)
 	if err != nil {
+		// A deadline is not a property of the bytes: it is not remembered.
+		if errors.Is(err, errWasmDeadline) {
+			return nil, err
+		}
 		return nil, wasmRemember(h, err)
 	}
 	if len(c.ImportedFunctions()) > 0 || len(c.ImportedMemories()) > 0 {
@@ -90,7 +94,7 @@ func wasmCompile(body []byte, h [32]byte) (any, error) {
 	return c, nil
 }
 
-// wasmCompileMax bounds compiling one module (at most 4 MiB). wazero's
+// wasmCompileMax bounds compiling one module (at most 256 KiB). wazero's
 // CompileModule takes a context but does not check it while decoding,
 // validating, or compiling for the interpreter, so the compile runs on its
 // own goroutine and is abandoned at the deadline: that goroutine runs on
@@ -133,9 +137,14 @@ func wasmCompileTimed(body []byte) (wazero.CompiledModule, error) {
 				}
 			}
 		}()
-		return nil, errors.New("wasm_compile")
+		return nil, errWasmDeadline
 	}
 }
+
+// errWasmDeadline is a compile that ran out of time. It reads as
+// wasm_compile but, unlike a decode or validation failure, is never
+// cached.
+var errWasmDeadline = errors.New("wasm_compile")
 
 func sig(f api.FunctionDefinition, params, results []api.ValueType) bool {
 	eq := func(a, b []api.ValueType) bool {

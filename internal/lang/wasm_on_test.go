@@ -4,6 +4,7 @@ package lang
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -274,4 +275,93 @@ func mustRead(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// A module past 256 KiB is refused before it is hashed or compiled.
+func TestWasmModuleSizeCap(t *testing.T) {
+	out, _ := runWasmSrc(t, load(t, "big")+"echo ran")
+	if out.Status != exitType || !strings.Contains(out.Stderr, "wasm_too_large") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// A compile that ran out of time is not remembered: the same module loads
+// once a compile can finish.
+func TestWasmDeadlineNotCached(t *testing.T) {
+	oldHook, oldMax := wasmCompileHook, wasmCompileMax
+	defer func() { wasmCompileHook, wasmCompileMax = oldHook, oldMax }()
+	h := sha256.Sum256(mustRead(t, "loop"))
+	forget := func() {
+		wasmMu.Lock()
+		defer wasmMu.Unlock()
+		delete(wasmCompiled, h)
+		delete(wasmFailed, h)
+	}
+	forget()
+	defer forget()
+	release := make(chan struct{})
+	wasmCompileHook = func() { <-release }
+	wasmCompileMax = 30 * time.Millisecond
+	if out, _ := runWasmSrc(t, load(t, "loop")+"echo ran"); !strings.Contains(out.Stderr, "wasm_compile") {
+		t.Fatalf("no deadline: %+v", out)
+	}
+	close(release)
+	for i := 0; wasmCompiling.Load() && i < 200; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	wasmCompileHook, wasmCompileMax = nil, oldMax
+	if out, _ := runWasmSrc(t, load(t, "loop")+"echo ran"); out.Status != 0 || out.Stdout != "ran\n" {
+		t.Fatalf("the deadline was cached: %+v", out)
+	}
+}
+
+// The worst compile measured (nested ifs, about 633 bytes allocated per
+// module byte) at the 256 KiB cap stays under 256 MB.
+func TestWasmCompileAllocBudget(t *testing.T) {
+	uleb := func(n uint64) []byte {
+		var out []byte
+		for {
+			b := byte(n & 0x7f)
+			n >>= 7
+			if n == 0 {
+				return append(out, b)
+			}
+			out = append(out, b|0x80)
+		}
+	}
+	sec := func(id byte, body []byte) []byte {
+		return append(append([]byte{id}, uleb(uint64(len(body)))...), body...)
+	}
+	k := (wasmModuleMax - 64) / 5
+	body := []byte{0}
+	for i := 0; i < k; i++ {
+		body = append(body, 0x41, 0, 0x04, 0x40)
+	}
+	for i := 0; i < k; i++ {
+		body = append(body, 0x0b)
+	}
+	body = append(body, 0x0b)
+	m := []byte("\x00asm\x01\x00\x00\x00")
+	m = append(m, sec(1, []byte{1, 0x60, 0, 0})...)
+	m = append(m, sec(3, []byte{1, 0})...)
+	m = append(m, sec(10, append(append([]byte{1}, uleb(uint64(len(body)))...), body...))...)
+	if len(m) > wasmModuleMax {
+		t.Fatalf("%d bytes", len(m))
+	}
+	var ms0, ms1 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&ms0)
+	c, err := wasmRuntime().CompileModule(context.Background(), m)
+	runtime.ReadMemStats(&ms1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ms1.TotalAlloc - ms0.TotalAlloc; got > 256<<20 {
+		t.Fatalf("compile allocated %d MB", got>>20)
+	} else {
+		t.Logf("%d bytes: %d MB", len(m), got>>20)
+	}
 }
