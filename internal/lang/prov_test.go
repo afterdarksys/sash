@@ -276,3 +276,35 @@ func TestOriginHidesSecretSources(t *testing.T) {
 		t.Fatalf("unrelated hidden: %q", o.Stdout)
 	}
 }
+
+// A secret whose provenance overflowed still hides the source it came
+// from: past the 15 kept origins of the union.
+func TestOriginSecretPastTheCap(t *testing.T) {
+	var b strings.Builder
+	var refs []string
+	for i := 0; i < 20; i++ {
+		b.WriteString("let a" + itoa(i) + " = (cat /var/log/f" + itoa(i) + ")\n")
+		refs = append(refs, "$a"+itoa(i))
+	}
+	b.WriteString("let all = \"" + strings.Join(refs, "") + "\"\nlet raw = (cat /var/log/zztoken)\ndeclare -s tok = [ $all + $raw ]\n")
+	st := NewState()
+	if out := Run(b.String(), provGrant(), provParent{}, Options{State: st}); out.Status != 0 {
+		t.Fatalf("%+v", out)
+	}
+	h := sha256.Sum256([]byte("body /var/log/zztoken\n"))
+	if o := Run("origin raw", provGrant(), provParent{}, Options{State: st}); strings.Contains(o.Stdout, hex.EncodeToString(h[:])) || !strings.Contains(o.Stdout, "***") {
+		t.Fatalf("%q", o.Stdout)
+	}
+	// Without overflow the exact walk is enough: an unrelated origin
+	// read before keeps its hash.
+	st = NewState()
+	Run("let u = (cat /var/log/u)\nlet a = (cat /var/log/a)\nlet raw = (cat /var/log/zztoken)\ndeclare -s tok = [ $a + $raw ]", provGrant(), provParent{}, Options{State: st})
+	hu := sha256.Sum256([]byte("body /var/log/u\n"))
+	ha := sha256.Sum256([]byte("body /var/log/a\n"))
+	if o := Run("origin u", provGrant(), provParent{}, Options{State: st}); !strings.Contains(o.Stdout, hex.EncodeToString(hu[:])) {
+		t.Fatalf("unrelated hidden: %q", o.Stdout)
+	}
+	if o := Run("origin a", provGrant(), provParent{}, Options{State: st}); strings.Contains(o.Stdout, hex.EncodeToString(ha[:])) {
+		t.Fatalf("a part of the secret shown: %q", o.Stdout)
+	}
+}

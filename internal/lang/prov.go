@@ -137,10 +137,13 @@ func (s *State) addOrigin(o origin) uint32 {
 	return uint32(len(s.origins) - 1)
 }
 
-// readProv adds name's provenance to the current statement's.
+// readProv adds name's provenance to the current statement's, and
+// remembers the name, so binding a secret can mark each name's own
+// lineage rather than the capped union.
 func (m *machine) readProv(name string) {
 	if v, ok := m.vars[name]; ok && len(v.prov) > 0 {
 		m.prov = unionProv(m.prov, v.prov)
+		m.readNames = append(m.readNames, name)
 	}
 }
 
@@ -170,12 +173,32 @@ func (m *machine) markSecret(v value) {
 	if st.secretOrigin == nil {
 		st.secretOrigin, st.secretHash, st.secretText = map[uint32]bool{}, map[[32]byte]bool{}, map[string]bool{}
 	}
-	for _, id := range v.prov {
-		if id == provOverflow || int(id) >= len(st.origins) {
-			continue
+	// The secret's own provenance is capped at 16, so it also marks the
+	// full provenance of every name the binding statement read. If the
+	// secret's or any of those overflowed, the lost origins cannot be
+	// named, so every origin so far is marked: over-hiding, never a leak.
+	overflow := false
+	mark := func(prov []uint32) {
+		for _, id := range prov {
+			if id == provOverflow || int(id) >= len(st.origins) {
+				overflow = true
+				continue
+			}
+			st.secretOrigin[id] = true
+			st.secretHash[st.origins[id].hash] = true
 		}
-		st.secretOrigin[id] = true
-		st.secretHash[st.origins[id].hash] = true
+	}
+	mark(v.prov)
+	for _, name := range m.readNames {
+		if rv, ok := m.vars[name]; ok {
+			mark(rv.prov)
+		}
+	}
+	if overflow {
+		for id := range st.origins {
+			st.secretOrigin[uint32(id)] = true
+			st.secretHash[st.origins[id].hash] = true
+		}
 	}
 	var add func(d any)
 	add = func(d any) {

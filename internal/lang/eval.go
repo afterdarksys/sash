@@ -203,11 +203,12 @@ type machine struct {
 	scoped map[string]int
 	// prov gathers the current statement's provenance; nl, at, and
 	// provSrc place an origin (prov.go).
-	prov    []uint32
-	provTop bool
-	nl      []int
-	at      int
-	provSrc string
+	prov      []uint32
+	readNames []string
+	provTop   bool
+	nl        []int
+	at        int
+	provSrc   string
 	// tape is Options.Tape; secretPipe is set while a declare -s value
 	// runs, so its door calls are recorded as secret.
 	tape       *Tape
@@ -463,13 +464,14 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		// Each statement gathers its own provenance, then folds it into
 		// the enclosing one (a fn body into its call). At the top level
 		// nothing encloses it, so it is dropped.
-		outer := m.prov
-		m.prov = nil
+		outer, outerNames := m.prov, m.readNames
+		m.prov, m.readNames = nil, nil
 		st, stop := m.runStmt(s)
 		if top {
-			m.prov = nil
+			m.prov, m.readNames = nil, nil
 		} else {
 			m.prov = unionProv(outer, m.prov)
+			m.readNames = append(outerNames, m.readNames...)
 		}
 		status = st
 		if stop {
