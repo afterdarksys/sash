@@ -38,6 +38,10 @@ type State struct {
 	// definition, set, declare, check) happens inside Run, which bumps it
 	// once when it returns, or in a setter below, which bumps it too.
 	gen uint64
+	// origins is the provenance table (prov.go), at most provPerState;
+	// fnSrc places each fn body's lines.
+	origins []origin
+	fnSrc   map[*Fn]fnSource
 	// secrets memoizes SecretCount for one generation.
 	secrets    int
 	secretsGen uint64
@@ -356,7 +360,9 @@ func (s *State) typed(name string, v value) (value, error) {
 		if !ok {
 			return value{}, fmt.Errorf("type %s number", name)
 		}
-		return fromDatum(n), nil
+		out := fromDatum(n)
+		out.prov = v.prov
+		return out, nil
 	case "list":
 		if _, ok := d.([]any); !ok {
 			return value{}, fmt.Errorf("type %s list", name)

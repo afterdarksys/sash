@@ -283,3 +283,12 @@ func TestQuotePathRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+// origin is in the compiled-in table, so Tab offers it.
+func TestTabOffersOrigin(t *testing.T) {
+	e := New(readGrant(), nil)
+	e.Feed([]byte("origi\t"))
+	if e.line != "origin " {
+		t.Fatalf("%q", e.line)
+	}
+}

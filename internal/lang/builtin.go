@@ -100,6 +100,7 @@ var builtins = []builtinRow{
 	{"timeout", "keyword", "", "timeout D { }: checked before each statement and verb", true},
 	{"check", "builtin", "", "check \"name\" [ expr ]: ok or FAIL, kept for checks", true},
 	{"checks", "builtin", "", "the check rows so far", true},
+	{"origin", "builtin", "", "origin name: where a name's value came from", true},
 	{"log", "builtin", "", "log level msg [ {fields} ]: one line on stderr", true},
 	{"with", "keyword", "", "with set -e, loopmax N, prefix P, x = v { ... }: restored after", true},
 	{"else", "keyword", "", "the other branch of if", false},

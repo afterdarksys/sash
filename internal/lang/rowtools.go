@@ -263,6 +263,7 @@ func (m *machine) perRow(st expStage, rows []parent.Row, cols []string) (value, 
 			if name == "it" {
 				return it, true
 			}
+			m.readProv(name)
 			v, ok := m.vars[name]
 			if !ok {
 				return nil, false

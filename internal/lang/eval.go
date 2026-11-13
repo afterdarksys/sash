@@ -137,6 +137,8 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
 	}
+	m.nl = provNewlines(expanded)
+	m.provTop = true
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
@@ -167,6 +169,10 @@ type value struct {
 	// rows, so count and the other aggregates can follow.
 	groups [][]parent.Row
 	gcol   string
+	// prov is where the value came from (prov.go); escaped marks rows
+	// whose cells are already through needsCell (origin).
+	prov    []uint32
+	escaped bool
 }
 
 type machine struct {
@@ -195,6 +201,13 @@ type machine struct {
 	// scope restores its name on the way out, so declare -r there would be
 	// undone; it is refused.
 	scoped map[string]int
+	// prov gathers the current statement's provenance; nl, at, and
+	// provSrc place an origin (prov.go).
+	prov    []uint32
+	provTop bool
+	nl      []int
+	at      int
+	provSrc string
 	// tape is Options.Tape; secretPipe is set while a declare -s value
 	// runs, so its door calls are recorded as secret.
 	tape       *Tape
@@ -371,10 +384,17 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 			return parent.Result{}, errTimeout
 		}
 	}
+	var res parent.Result
+	var err error
 	if m.tape != nil {
-		return m.tapeDo(v)
+		res, err = m.tapeDo(v)
+	} else {
+		res, err = m.p.Do(v)
 	}
-	return m.p.Do(v)
+	if err == nil {
+		m.noteOrigin(v, res)
+	}
+	return res, err
 }
 
 // doFailed writes why a door call failed and returns the status: a
@@ -417,6 +437,9 @@ func (m *machine) prefix() string {
 }
 
 func (m *machine) runProg(prog *Program) (int, bool) {
+	top := m.provTop
+	m.provTop = false
+	defer func() { m.provTop = top }()
 	status := 0
 	if m.tape != nil {
 		// Every secret bound so far joins the tape's set, which never
@@ -430,11 +453,24 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 				m.tape.at = prog.Pos[i]
 			}
 		}
+		if i < len(prog.Pos) {
+			m.at = prog.Pos[i]
+		}
 		if m.pastDeadline() {
 			m.err.WriteString("timeout\n")
 			return exitType, true
 		}
+		// Each statement gathers its own provenance, then folds it into
+		// the enclosing one (a fn body into its call). At the top level
+		// nothing encloses it, so it is dropped.
+		outer := m.prov
+		m.prov = nil
 		st, stop := m.runStmt(s)
+		if top {
+			m.prov = nil
+		} else {
+			m.prov = unionProv(outer, m.prov)
+		}
 		status = st
 		if stop {
 			return status, true
@@ -491,6 +527,12 @@ func (m *machine) defFn(fn *Fn) (int, bool) {
 		return exitType, true
 	}
 	m.fns[fn.Name] = fn
+	// A body's lines are in the text that defined it (a use file, or an
+	// earlier prompt line), so an origin inside it is placed there.
+	if m.st.fnSrc == nil {
+		m.st.fnSrc = map[*Fn]fnSource{}
+	}
+	m.st.fnSrc[fn] = fnSource{src: m.provSrc, nl: m.nl}
 	return 0, false
 }
 
@@ -597,6 +639,7 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 			restore()
 			return fail(err)
 		}
+		conv.prov = v.prov
 		m.vars[d.Name] = conv
 	}
 	if strings.Contains(d.Flags, "s") {
@@ -606,7 +649,7 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 			return fail(fmt.Errorf("usage declare -s: needs a value"))
 		}
 		if dv := toDatum(v); !isSecret(dv) {
-			m.vars[d.Name] = value{kind: valData, d: secretVal{dv}}
+			m.vars[d.Name] = value{kind: valData, d: secretVal{dv}, prov: v.prov}
 		}
 	}
 	if strings.Contains(d.Flags, "r") {
@@ -738,7 +781,14 @@ func (m *machine) runUse(u *Use) (int, bool) {
 			return fail(exitType, "use: only fn and declare -r name = value")
 		}
 	}
-	for _, s := range prog.Stmts {
+	// What the file defines is placed in the file: its path and lines.
+	src, nl, at := m.provSrc, m.nl, m.at
+	m.provSrc, m.nl = full, provNewlines(string(res.Bytes))
+	defer func() { m.provSrc, m.nl, m.at = src, nl, at }()
+	for i, s := range prog.Stmts {
+		if i < len(prog.Pos) {
+			m.at = prog.Pos[i]
+		}
 		if st, stop := m.runStmt(s); stop {
 			return st, true
 		}
@@ -747,7 +797,7 @@ func (m *machine) runUse(u *Use) (int, bool) {
 }
 
 func (m *machine) bindLet(name string, v value) (int, bool) {
-	if err := m.st.assign(name, v); err != nil {
+	if err := m.st.assign(name, m.withProv(v)); err != nil {
 		m.err.WriteString(err.Error() + "\n")
 		return exitType, true
 	}
@@ -884,13 +934,13 @@ func (m *machine) runFor(s *For) (int, bool) {
 		// Two names take index and element, or key and value.
 		if s.Name2 == "" {
 			if isMap {
-				m.vars[s.Name] = it.a
+				m.vars[s.Name] = m.withProv(it.a)
 			} else {
-				m.vars[s.Name] = it.b
+				m.vars[s.Name] = m.withProv(it.b)
 			}
 		} else {
-			m.vars[s.Name] = it.a
-			m.vars[s.Name2] = it.b
+			m.vars[s.Name] = m.withProv(it.a)
+			m.vars[s.Name2] = m.withProv(it.b)
 		}
 		st, stop, brk := m.loopBody(&s.Body, &iter)
 		status = st
@@ -1112,7 +1162,7 @@ func (m *machine) runTry(t *Try) (int, bool) {
 			key = strings.TrimPrefix(first, "declined ")
 		}
 		e.set("key", key)
-		m.vars[t.Name] = value{kind: valData, d: e}
+		m.vars[t.Name] = m.withProv(value{kind: valData, d: e})
 	}
 	st, stop = m.runProg(t.Catch)
 	if saved != nil {
@@ -1166,7 +1216,9 @@ func (m *machine) runPipe(pipe Pipeline) (int, bool, value) {
 }
 
 type expStage struct {
-	argv    []string
+	argv []string
+	// argProv is each word's provenance, for a fn's parameters.
+	argProv [][]uint32
 	inPath  string
 	outPath string
 	here    []byte
@@ -1216,9 +1268,14 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		m.sawSecret = false
 		var rowX Expr
 		var argv []string
+		var argProv [][]uint32
 		var err error
 		name := plainFirst(st)
 		last := len(st.Argv) - 1
+		// origin takes a name, not a value: origin x, never origin $x.
+		if name == "origin" && (len(st.Argv) != 2 || plain(st.Argv[1]) == "") {
+			return nil, &problem{exitType, "usage origin name"}, refusal{}
+		}
 		if (name == "filter" || name == "each" || name == "check" || name == "log") && last >= 1 && exprOf(st.Argv[last]) != nil {
 			// The [ ] keeps its value: per row for filter and each, a
 			// datum for check and log.
@@ -1227,7 +1284,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 				return nil, &problem{exitType, err.Error()}, refusal{}
 			}
 			argv = append(argv, exprMark)
-		} else if argv, err = m.expandArgv(st.Argv); err != nil {
+		} else if argv, argProv, err = m.expandArgvProv(st.Argv); err != nil {
 			return nil, &problem{exitType, err.Error()}, refusal{}
 		}
 		type redirText struct {
@@ -1307,6 +1364,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
+			argProv: argProv,
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -1405,6 +1463,11 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 	case "checks":
 		if len(argv) != 1 {
 			return classified{}, &problem{exitType, "usage checks"}
+		}
+		return classified{in: inNone, out: inRows}, nil
+	case "origin":
+		if len(argv) != 2 {
+			return classified{}, &problem{exitType, "usage origin name"}
 		}
 		return classified{in: inNone, out: inRows}, nil
 	case "log":
@@ -1590,7 +1653,7 @@ func stageShape(st expStage) (int, int) {
 		return inBytes, inRows
 	case "template_file", "check", "log":
 		return inNone, inBytes
-	case "checks":
+	case "checks", "origin":
 		return inNone, inRows
 	case "template":
 		return inAny, inBytes
@@ -1792,12 +1855,21 @@ func (m *machine) callFn(st expStage) (int, bool) {
 	}
 	saved := m.saveVars(fn.Params)
 	for i, name := range fn.Params {
-		m.vars[name] = value{kind: valStr, s: st.argv[i+1]}
+		p := value{kind: valStr, s: st.argv[i+1]}
+		if i+1 < len(st.argProv) {
+			p.prov = st.argProv[i+1]
+		}
+		m.vars[name] = p
 	}
 	// A loop outside the call is not the call's: break there is usage.
 	loops := m.loopDepth
 	m.loopDepth = 0
 	m.retVal = nil
+	if fs, ok := m.st.fnSrc[fn]; ok {
+		src, nl, at := m.provSrc, m.nl, m.at
+		m.provSrc, m.nl = fs.src, fs.nl
+		defer func() { m.provSrc, m.nl, m.at = src, nl, at }()
+	}
 	status, stop := m.runProg(&fn.Body)
 	m.loopDepth = loops
 	if stop && m.ctl == ctlReturn {
@@ -1848,6 +1920,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return m.runCheck(st)
 	case "checks":
 		return value{kind: valRows, rows: append([]parent.Row(nil), m.st.checks...), cols: []string{"check", "result"}}, 0
+	case "origin":
+		return m.runOrigin(st.argv[1])
 	case "log":
 		return m.runLog(st)
 	case "template":
@@ -1974,6 +2048,30 @@ func (m *machine) runHead(argv []string, in value) (value, int) {
 	return value{kind: valBytes, b: []byte(headLines(asBytes(in), n))}, 0
 }
 
+// expandArgvProv is expandArgv plus the provenance each word read; the
+// statement's provenance gathers all of it as well.
+func (m *machine) expandArgvProv(words []Word) ([]string, [][]uint32, error) {
+	out := make([]string, len(words))
+	var prov [][]uint32
+	for i, w := range words {
+		outer := m.prov
+		m.prov = nil
+		s, err := m.expand(w)
+		if len(m.prov) > 0 {
+			if prov == nil {
+				prov = make([][]uint32, len(words))
+			}
+			prov[i] = m.prov
+		}
+		m.prov = unionProv(outer, m.prov)
+		if err != nil {
+			return nil, nil, err
+		}
+		out[i] = s
+	}
+	return out, prov, nil
+}
+
 func (m *machine) expandArgv(words []Word) ([]string, error) {
 	out := make([]string, len(words))
 	for i, w := range words {
@@ -2030,6 +2128,7 @@ func (m *machine) expand(w Word) (string, error) {
 // fields. A missing key is null.
 func (m *machine) ref(lit string) (any, error) {
 	name, steps := pathSteps(lit)
+	m.readProv(name)
 	v, ok := m.vars[name]
 	if !ok {
 		return nil, fmt.Errorf("type value")
@@ -2061,6 +2160,7 @@ func (m *machine) evalX(x Expr) (any, error) {
 
 func (m *machine) evalXRaw(x Expr) (any, error) {
 	return evalExprPinned(x, m.st.nounset, m.uuidPin(), func(name string) (any, bool) {
+		m.readProv(name)
 		v, ok := m.vars[name]
 		if !ok {
 			return nil, false
@@ -2089,7 +2189,7 @@ func fromResult(res parent.Result) value {
 // values (declare -p). Bytes, strings, and data stay byte-faithful, as
 // echo and cat are; a pipe or a redirect gets render, unescaped.
 func display(v value) string {
-	if v.kind != valRows {
+	if v.kind != valRows || v.escaped {
 		return render(v)
 	}
 	cells := v
@@ -2370,7 +2470,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log"} {
+		"retry", "timeout", "check", "checks", "log", "origin"} {
 		reservedNames[n] = true
 	}
 }
