@@ -195,8 +195,10 @@ type machine struct {
 	// scope restores its name on the way out, so declare -r there would be
 	// undone; it is refused.
 	scoped map[string]int
-	// tape is Options.Tape.
-	tape *Tape
+	// tape is Options.Tape; secretPipe is set while a declare -s value
+	// runs, so its door calls are recorded as secret.
+	tape       *Tape
+	secretPipe bool
 	// confirm is Options.Confirm; declined is set when a verb was declined
 	// in the current retry attempt, so retry does not ask again.
 	confirm  func(string) (bool, bool)
@@ -332,7 +334,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		}
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
-			m.tape.plan(v, m.sawSecret, m.secretTexts())
+			m.tape.plan(v, m.sawSecret || m.secretPipe, m.secretTexts())
 			if m.tape.err != nil {
 				m.ctl = ctlHalt
 				return parent.Result{}, m.tape.err
@@ -416,9 +418,17 @@ func (m *machine) prefix() string {
 
 func (m *machine) runProg(prog *Program) (int, bool) {
 	status := 0
+	if m.tape != nil {
+		// Every secret bound so far joins the tape's set, which never
+		// shrinks: a secret bound and then reassigned is still redacted.
+		defer func() { m.tape.see(m.secretTexts()) }()
+	}
 	for i, s := range prog.Stmts {
-		if m.tape != nil && i < len(prog.Pos) {
-			m.tape.at = prog.Pos[i]
+		if m.tape != nil {
+			m.tape.see(m.secretTexts())
+			if i < len(prog.Pos) {
+				m.tape.at = prog.Pos[i]
+			}
 		}
 		if m.pastDeadline() {
 			m.err.WriteString("timeout\n")
@@ -571,7 +581,13 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 		}
 	}
 	if d.Value != nil {
-		if st, stop := m.runLet(d.Value); stop {
+		// A declare -s value pipe is secret from its first byte: a tape
+		// records its responses as *** before the name is even bound.
+		secretPipe := m.secretPipe
+		m.secretPipe = secretPipe || strings.Contains(d.Flags, "s")
+		st, stop := m.runLet(d.Value)
+		m.secretPipe = secretPipe
+		if stop {
 			restore()
 			return st, true
 		}

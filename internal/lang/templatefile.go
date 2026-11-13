@@ -190,7 +190,7 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 	if err != nil {
 		return fail(err.Error())
 	}
-	out, err := renderTemplate(tpl, vars, m.st.loopMax)
+	out, err := renderTemplatePinned(tpl, vars, m.st.loopMax, m.uuidPin())
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -222,7 +222,7 @@ func (m *machine) runTemplate(st expStage, in value) (value, int) {
 		m.err.WriteString("template: " + err.Error() + "\n")
 		return value{}, exitType
 	}
-	out, err := renderTemplate(tpl, toDatum(in), m.st.loopMax)
+	out, err := renderTemplatePinned(tpl, toDatum(in), m.st.loopMax, m.uuidPin())
 	if err != nil {
 		if errors.Is(err, errSecretFault) {
 			m.secretFault()

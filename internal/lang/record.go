@@ -46,7 +46,18 @@ const (
 	// recMaxEvent caps one event line, as proto.MaxFrame caps a frame (a
 	// test keeps them equal).
 	recMaxEvent = 8 << 20
-	redacted3   = "***"
+	// The caps below bound a whole recording, at record time
+	// (it is buffered in memory until Finish) and at replay load: 64 MiB
+	// is eight full frames, far past a test or debug run, and a million
+	// events allows a long loop's clock readings without letting a
+	// recording grow without bound.
+	redacted3 = "***"
+)
+
+// The whole-recording caps are variables so tests can lower them.
+var (
+	recMaxTotal  = 64 << 20
+	recMaxEvents = 1_000_000
 )
 
 type recHeader struct {
@@ -89,12 +100,29 @@ type recEvent struct {
 	Prev string   `json:"prev"`
 }
 
+// pending is one recorded event held in memory until Finish, unredacted,
+// so it can be redacted against every secret the whole run bound.
+type pending struct {
+	kind    string
+	line    int
+	v       *parent.Verb
+	tainted bool
+	res     parent.Result
+	err     error
+	hasResp bool
+	value   string
+}
+
 // Tape is one recording, being written (record) or read back (replay).
 type Tape struct {
 	replay bool
-	// record
-	w    io.Writer
-	prev string
+	// record: nothing reaches w until Finish
+	w        io.Writer
+	header   recHeader
+	pend     []pending
+	size     int64
+	secrets  map[string]bool
+	finished bool
 	// replay
 	events []recEvent
 	pos    int
@@ -126,19 +154,14 @@ func sha(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// NewRecorder writes the header for script to w and returns a recording
-// tape. The recording expires at expires.
+// NewRecorder returns a recording tape for script that expires at
+// expires. Nothing is written to w until Finish: every event is held in
+// memory, so it can be redacted against every secret the run ever bound,
+// even one bound after the event (declare -s tok = (cat ...)). A run
+// that never reaches Finish writes nothing.
 func NewRecorder(w io.Writer, script string, expires time.Time) (*Tape, error) {
-	t := &Tape{w: w, diverged: -1}
-	line, err := json.Marshal(recHeader{V: recFormat, ScriptSHA256: sha([]byte(script)), SashVersion: Version, Modules: map[string]string{}, Expires: expires.Unix()})
-	if err != nil {
-		return nil, err
-	}
-	if _, err := w.Write(append(line, '\n')); err != nil {
-		return nil, err
-	}
-	t.prev = sha(line)
-	return t, nil
+	return &Tape{w: w, diverged: -1, secrets: map[string]bool{},
+		header: recHeader{V: recFormat, ScriptSHA256: sha([]byte(script)), SashVersion: Version, Modules: map[string]string{}, Expires: expires.Unix()}}, nil
 }
 
 // LoadReplay reads a recording for script and checks it before any
@@ -165,8 +188,13 @@ func LoadReplay(r io.Reader, script string, now time.Time) (*Tape, error) {
 	}
 	t := &Tape{replay: true, diverged: -1}
 	prev := sha(headLine)
+	total := len(headLine)
 	for sc.Scan() {
 		line := sc.Bytes()
+		total += len(line) + 1
+		if total > recMaxTotal || len(t.events) >= recMaxEvents {
+			return nil, &TapeError{"replay_too_large", len(t.events) + 1}
+		}
 		var ev recEvent
 		d := json.NewDecoder(bytes.NewReader(line))
 		d.DisallowUnknownFields()
@@ -180,6 +208,9 @@ func LoadReplay(r io.Reader, script string, now time.Time) (*Tape, error) {
 		t.events = append(t.events, ev)
 	}
 	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, &TapeError{"replay_too_large", len(t.events) + 1}
+		}
 		return nil, &TapeError{"replay_bad_format", len(t.events) + 1}
 	}
 	return t, nil
@@ -200,13 +231,112 @@ func (t *Tape) line() int { return sort.SearchInts(t.nl, t.at) + 1 }
 // Err is the tape's failure, or nil. Run turns a divergence into exit 2.
 func (t *Tape) Err() error { return t.err }
 
-// Finish is the end of a replay: an event the run never asked for is a
-// divergence too.
+// Finish ends the tape. On replay, an event the run never asked for is a
+// divergence. On record, every event is redacted against every secret
+// text the run bound, chained, and written in one go; on any error
+// nothing is written.
 func (t *Tape) Finish() error {
-	if t.err == nil && t.replay && t.pos < len(t.events) {
-		t.diverge(t.events[t.pos].Seq)
+	if t.replay {
+		if t.err == nil && t.pos < len(t.events) {
+			t.diverge(t.events[t.pos].Seq)
+		}
+		return t.err
+	}
+	if t.finished {
+		return t.err
+	}
+	t.finished = true
+	if t.err != nil {
+		return t.err
+	}
+	secrets := make([]string, 0, len(t.secrets))
+	for s := range t.secrets {
+		secrets = append(secrets, s)
+	}
+	sort.Strings(secrets)
+	var buf bytes.Buffer
+	head, err := json.Marshal(t.header)
+	if err != nil {
+		t.err = &TapeError{"record_failed", 0}
+		return t.err
+	}
+	buf.Write(head)
+	buf.WriteByte('\n')
+	prev := sha(head)
+	for i, p := range t.pend {
+		ev := recEvent{Seq: i + 1, Line: p.line, Kind: p.kind, Prev: prev}
+		if p.v != nil {
+			ev.Req = reqOf(*p.v, p.tainted, secrets)
+		}
+		if p.hasResp {
+			ev.Resp = respOf(p.res, p.err, secrets, p.tainted)
+		}
+		if p.kind == "now" || p.kind == "sleep" || p.kind == "uuid" {
+			ev.Resp = &recResp{Value: p.value}
+			if holdsAny(p.value, secrets) {
+				ev.Resp = &recResp{Value: redacted3}
+			}
+		}
+		line, err := json.Marshal(ev)
+		if err != nil || len(line) > recMaxEvent || buf.Len()+len(line)+1 > recMaxTotal {
+			t.err = &TapeError{"record_too_large", i + 1}
+			return t.err
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+		prev = sha(line)
+	}
+	if _, err := t.w.Write(buf.Bytes()); err != nil {
+		t.err = &TapeError{"record_failed", len(t.pend)}
 	}
 	return t.err
+}
+
+// see adds secret texts to the run's set. It only grows: a secret later
+// unset or reassigned is still redacted everywhere.
+func (t *Tape) see(texts []string) {
+	if t.replay {
+		return
+	}
+	for _, s := range texts {
+		t.secrets[s] = true
+	}
+}
+
+// add holds one event, within the size caps.
+func (t *Tape) add(p pending) {
+	if t.err != nil {
+		return
+	}
+	n := int64(64 + len(p.value))
+	if p.v != nil {
+		n += int64(len(p.v.Path) + len(p.v.Body))
+		for _, a := range p.v.Argv {
+			n += int64(len(a))
+		}
+	}
+	n += int64(len(p.res.Bytes))
+	for _, r := range p.res.Rows {
+		for k, v := range r {
+			n += int64(len(k) + len(v))
+		}
+	}
+	t.size += n
+	if len(t.pend) >= recMaxEvents || t.size > int64(recMaxTotal) {
+		t.err = &TapeError{"record_too_large", len(t.pend) + 1}
+		return
+	}
+	p.line = t.line()
+	t.pend = append(t.pend, p)
+}
+
+func holdsAny(s string, secrets []string) bool {
+	for _, sec := range secrets {
+		if sec != "" && strings.Contains(s, sec) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Tape) diverge(seq int) {
@@ -214,27 +344,6 @@ func (t *Tape) diverge(seq int) {
 		t.diverged = seq
 		t.err = &TapeError{"replay_diverged", seq}
 	}
-}
-
-// write records one event (record mode).
-func (t *Tape) write(ev recEvent) {
-	if t.err != nil {
-		return
-	}
-	t.seq++
-	ev.Seq, ev.Line, ev.Prev = t.seq, t.line(), t.prev
-	line, err := json.Marshal(ev)
-	if err == nil && len(line) > recMaxEvent {
-		err = errors.New("record_too_large")
-	}
-	if err == nil {
-		_, err = t.w.Write(append(line, '\n'))
-	}
-	if err != nil {
-		t.err = &TapeError{"record_failed", t.seq}
-		return
-	}
-	t.prev = sha(line)
 }
 
 // next takes the next event (replay mode) if it is kind, else diverges.
@@ -258,14 +367,7 @@ func (t *Tape) next(kind string) (recEvent, bool) {
 // reqOf is the recorded form of a request: argv, path, and a body hash,
 // or "***" and lengths when it is tainted or holds a secret's text.
 func reqOf(v parent.Verb, tainted bool, secrets []string) *recReq {
-	holds := func(s string) bool {
-		for _, sec := range secrets {
-			if sec != "" && strings.Contains(s, sec) {
-				return true
-			}
-		}
-		return false
-	}
+	holds := func(s string) bool { return holdsAny(s, secrets) }
 	if !tainted {
 		tainted = holds(v.Path) || holds(string(v.Body))
 		for _, a := range v.Argv {
@@ -289,7 +391,7 @@ func reqOf(v parent.Verb, tainted bool, secrets []string) *recReq {
 
 // respOf is the recorded form of a result, "***" and its length when it
 // holds a secret's text.
-func respOf(res parent.Result, err error, secrets []string) *recResp {
+func respOf(res parent.Result, err error, secrets []string, tainted bool) *recResp {
 	r := &recResp{Kind: "bytes", Exit: res.Exit}
 	if res.Kind == parent.KindRows {
 		r.Kind = "rows"
@@ -303,10 +405,8 @@ func respOf(res parent.Result, err error, secrets []string) *recResp {
 			text += "\x00" + k + "\x00" + v
 		}
 	}
-	for _, sec := range secrets {
-		if sec != "" && strings.Contains(text, sec) {
-			return &recResp{Kind: r.Kind, Exit: r.Exit, Redacted: true, Len: len(text)}
-		}
+	if tainted || holdsAny(text, secrets) {
+		return &recResp{Kind: r.Kind, Exit: r.Exit, Redacted: true, Len: len(text)}
 	}
 	r.Cols, r.Rows, r.Bytes = res.Cols, res.Rows, res.Bytes
 	return r
@@ -315,12 +415,13 @@ func respOf(res parent.Result, err error, secrets []string) *recResp {
 // call is one door call under the tape: recorded through p, or answered
 // from the recording.
 func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []string) (parent.Result, error) {
-	req := reqOf(v, tainted, secrets)
 	if !t.replay {
 		res, err := p.Do(v)
-		t.write(recEvent{Kind: "call", Req: req, Resp: respOf(res, err, secrets)})
+		vv := v
+		t.add(pending{kind: "call", v: &vv, tainted: tainted, res: res, err: err, hasResp: true})
 		return res, err
 	}
+	req := reqOf(v, tainted, secrets)
 	ev, ok := t.next("call")
 	if !ok {
 		return parent.Result{}, t.err
@@ -351,11 +452,12 @@ func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []stri
 
 // plan records a plan-mode stop, or checks it on replay.
 func (t *Tape) plan(v parent.Verb, tainted bool, secrets []string) {
-	req := reqOf(v, tainted, secrets)
 	if !t.replay {
-		t.write(recEvent{Kind: "plan", Req: req})
+		vv := v
+		t.add(pending{kind: "plan", v: &vv, tainted: tainted})
 		return
 	}
+	req := reqOf(v, tainted, secrets)
 	if ev, ok := t.next("plan"); ok {
 		want, _ := json.Marshal(ev.Req)
 		got, _ := json.Marshal(req)
@@ -370,7 +472,7 @@ func (t *Tape) plan(v parent.Verb, tainted bool, secrets []string) {
 func (t *Tape) value(kind string, read func() string) string {
 	if !t.replay {
 		v := read()
-		t.write(recEvent{Kind: kind, Resp: &recResp{Value: v}})
+		t.add(pending{kind: kind, value: v})
 		return v
 	}
 	ev, ok := t.next(kind)
@@ -383,7 +485,7 @@ func (t *Tape) value(kind string, read func() string) string {
 // fault records that a secret ended the line here, or checks it on replay.
 func (t *Tape) fault() {
 	if !t.replay {
-		t.write(recEvent{Kind: "fault"})
+		t.add(pending{kind: "fault"})
 		return
 	}
 	t.next("fault")
@@ -463,15 +565,37 @@ func (m *machine) secretFault() {
 	}
 }
 
-// secretTexts are the text of every bound secret, for redaction.
+// secretTexts are the text of every bound secret, for redaction: the
+// whole value and each leaf and key in it, so a response holding one
+// element of a secret list is caught too.
 func (m *machine) secretTexts() []string {
 	var out []string
+	var leaves func(d any)
+	leaves = func(d any) {
+		switch x := d.(type) {
+		case []any:
+			for _, it := range x {
+				leaves(it)
+			}
+		case *omap:
+			for _, k := range x.keys {
+				out = append(out, k)
+				leaves(x.m[k])
+			}
+		case nil:
+		default:
+			if s := textOf(x); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
 	for _, v := range m.vars {
 		if v.kind == valData {
 			if inner, ok := unsecret(v.d); ok {
 				if s := textOf(inner); s != "" {
 					out = append(out, s)
 				}
+				leaves(inner)
 			}
 		}
 	}
@@ -480,7 +604,7 @@ func (m *machine) secretTexts() []string {
 
 // tapeDo is machine.do's call through the tape.
 func (m *machine) tapeDo(v parent.Verb) (parent.Result, error) {
-	res, err := m.tape.call(m.p, v, m.sawSecret, m.secretTexts())
+	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe, m.secretTexts())
 	if m.tape.err != nil {
 		m.ctl = ctlHalt
 		return parent.Result{}, m.tape.err

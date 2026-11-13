@@ -29,6 +29,10 @@ func (h *hostParent) Do(v parent.Verb) (parent.Result, error) {
 		return parent.Result{Kind: parent.KindRows, Cols: []string{"user", "cmd"}, Rows: []parent.Row{{"user": "root", "cmd": "sshd"}, {"user": "ryan", "cmd": "vim"}}}, nil
 	case len(v.Argv) > 0 && v.Argv[0] == "ls":
 		return parent.Result{Kind: parent.KindRows, Rows: []parent.Row{{"name": "a.log", "type": "file"}, {"name": "b.log", "type": "file"}}}, nil
+	case v.Path == "/srv/token":
+		return parent.Result{Kind: parent.KindBytes, Bytes: []byte("hunter2-SECRET\n")}, nil
+	case v.Path == "/var/log/u":
+		return parent.Result{Kind: parent.KindBytes, Bytes: []byte("id {{ uuid() }}\n")}, nil
 	case v.Path == "/var/log/s.yaml":
 		return parent.Result{Kind: parent.KindBytes, Bytes: []byte("a: 1\n")}, nil
 	case v.Key == "file.read":
@@ -46,7 +50,7 @@ func (h *hostParent) Do(v parent.Verb) (parent.Result, error) {
 }
 
 func recGrant() grant.Grant {
-	return grant.Grant{V: "sash/1", Entitlements: []string{"ps", "file.read", "file.write", "unit.status", "unit.restart"}, FileRead: []string{"/var/log", "/tmp"}, FileWrite: []string{"/tmp"}}
+	return grant.Grant{V: "sash/1", Entitlements: []string{"ps", "file.read", "file.write", "unit.status", "unit.restart"}, FileRead: []string{"/var/log", "/tmp", "/srv"}, FileWrite: []string{"/tmp"}}
 }
 
 var recNow = time.Unix(1_800_000_000, 0)
@@ -83,8 +87,11 @@ func record(t *testing.T, src string) ([]byte, Outcome) {
 		t.Fatal(err)
 	}
 	out := Run(src, recGrant(), &hostParent{}, Options{Tape: tape, State: NewState()})
-	if tape.Err() != nil {
-		t.Fatalf("record %q: %v", src, tape.Err())
+	if buf.Len() != 0 {
+		t.Fatalf("record %q: wrote before Finish", src)
+	}
+	if err := tape.Finish(); err != nil {
+		t.Fatalf("record %q: %v", src, err)
 	}
 	return buf.Bytes(), out
 }
@@ -339,6 +346,9 @@ func TestReplayRefusesBrokenRecordings(t *testing.T) {
 	}
 	clocks(t)
 	Run(src, recGrant(), &hostParent{}, Options{Tape: tape})
+	if err := tape.Finish(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := replay(t, buf.Bytes(), src); !errors.As(err, &te) || te.Code != "replay_expired" {
 		t.Fatalf("expired: %v", err)
 	}
@@ -363,5 +373,129 @@ func TestSetRecordRefused(t *testing.T) {
 func TestRecordEventCapIsTheFrameCap(t *testing.T) {
 	if recMaxEvent != proto.MaxFrame {
 		t.Fatalf("recMaxEvent %d proto.MaxFrame %d", recMaxEvent, proto.MaxFrame)
+	}
+}
+
+// secretFree fails when the recording, raw or decoded, holds the secret,
+// its base64, or its hex hash.
+func secretFree(t *testing.T, name string, rec []byte, secret string) {
+	t.Helper()
+	h := sha256.Sum256([]byte(secret))
+	for _, bad := range []string{secret, base64.StdEncoding.EncodeToString([]byte(secret)), hex.EncodeToString(h[:])} {
+		if bytes.Contains(rec, []byte(bad)) {
+			t.Errorf("%s: recording holds %q", name, bad)
+		}
+	}
+	for _, l := range recLines(rec)[1:] {
+		var ev recEvent
+		if err := json.Unmarshal(l, &ev); err != nil {
+			t.Fatal(err)
+		}
+		all := ""
+		if ev.Req != nil {
+			all += strings.Join(ev.Req.Argv, " ") + ev.Req.Path
+		}
+		if ev.Resp != nil {
+			all += string(ev.Resp.Bytes) + ev.Resp.Error + ev.Resp.Value + strings.Join(ev.Resp.Cols, " ")
+			for _, r := range ev.Resp.Rows {
+				for k, v := range r {
+					all += k + v
+				}
+			}
+		}
+		if strings.Contains(all, secret) {
+			t.Errorf("%s: event holds the secret: %s", name, l)
+		}
+	}
+}
+
+// A secret's own source is never recorded: the response that produced it
+// is redacted even though it came before the name was bound, however it
+// was bound, wherever, and after it is reassigned.
+func TestRecordRedactsTheSecretsSource(t *testing.T) {
+	const secret = "hunter2-SECRET"
+	many := strings.Repeat("ps\ncat /srv/token\n", 50)
+	for name, src := range map[string]string{
+		"declare -s from a pipe":   "declare -s tok = (cat /srv/token)\necho done",
+		"let then declare -s":      "let raw = (cat /srv/token)\ndeclare -s tok = $raw",
+		"reassigned, then read":    "declare -s tok = (cat /srv/token)\nlet tok = plain\ncat /srv/token",
+		"bound after many events":  many + "let raw = (cat /srv/token)\ndeclare -s tok = $raw",
+		"bound inside a fn":        "cat /srv/token\nfn f() { let raw = (cat /srv/token); declare -s s = $raw }\nf\ncat /srv/token",
+		"an element of a secret":   "declare -s toks = [ [\"hunter2-SECRET\", \"x\"] ]\ncat /srv/token",
+		"a key of a secret map":    "declare -s m = [ {\"hunter2-SECRET\": 1} ]\ncat /srv/token",
+		"declare -s value through": "declare -s tok = (cat /srv/token | head 1)",
+	} {
+		rec, _ := record(t, src)
+		secretFree(t, name, rec, secret)
+		if !bytes.Contains(rec, []byte(`"redacted":true`)) {
+			t.Errorf("%s: nothing redacted:\n%s", name, rec)
+		}
+		if _, err := replay(t, rec, src); err != nil {
+			t.Errorf("%s: replay %v", name, err)
+		}
+	}
+}
+
+// A run that never reaches Finish writes nothing.
+func TestRecordWritesNothingBeforeFinish(t *testing.T) {
+	clocks(t)
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, "ps", recNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	Run("ps\ncat /srv/token", recGrant(), &hostParent{}, Options{Tape: tape})
+	if buf.Len() != 0 {
+		t.Fatalf("wrote %d bytes before Finish", buf.Len())
+	}
+}
+
+// Both caps fail closed: record_too_large stops the run and writes
+// nothing; replay_too_large refuses before any event.
+func TestRecordAndReplayCaps(t *testing.T) {
+	src := "for i in [ 1..40 ] { ps }"
+	rec, _ := record(t, src)
+	oldEvents, oldTotal := recMaxEvents, recMaxTotal
+	defer func() { recMaxEvents, recMaxTotal = oldEvents, oldTotal }()
+	recMaxEvents = 10
+	var te *TapeError
+	if _, err := replay(t, rec, src); !errors.As(err, &te) || te.Code != "replay_too_large" {
+		t.Fatalf("replay events: %v", err)
+	}
+	clocks(t)
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, src, recNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Run(src, recGrant(), &hostParent{}, Options{Tape: tape})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "record_too_large") || strings.Count(out.Stdout, "sshd") > 10 {
+		t.Fatalf("record events: %+v", out)
+	}
+	if err := tape.Finish(); !errors.As(err, &te) || te.Code != "record_too_large" || buf.Len() != 0 {
+		t.Fatalf("finish: %v wrote %d", err, buf.Len())
+	}
+	recMaxEvents = oldEvents
+	recMaxTotal = 2000
+	if _, err := replay(t, rec, src); !errors.As(err, &te) || te.Code != "replay_too_large" {
+		t.Fatalf("replay bytes: %v", err)
+	}
+}
+
+// uuid() inside a template is pinned too: the rendered file body, and so
+// its hash in the request, is the same on replay.
+func TestRecordPinsTemplateUUID(t *testing.T) {
+	for _, src := range []string{
+		"template_file /var/log/s.yaml /var/log/u /tmp/o",
+		"cat /var/log/s.yaml | from yaml | template /var/log/u",
+	} {
+		rec, out1 := record(t, src)
+		if !bytes.Contains(rec, []byte(`"kind":"uuid"`)) {
+			t.Fatalf("%q: no uuid event:\n%s", src, rec)
+		}
+		out2, err := replay(t, rec, src)
+		if err != nil || out1.Stdout != out2.Stdout {
+			t.Fatalf("%q: %v\n%+v\n%+v", src, err, out1, out2)
+		}
 	}
 }

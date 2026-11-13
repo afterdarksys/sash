@@ -181,26 +181,55 @@ func runTape(args []string) int {
 	return replay(src, recPath, g)
 }
 
+// lazyFile creates its file on the first write: a new file only, 0600,
+// never overwriting. The tape writes once, at Finish, so a run that is
+// killed before it leaves no file.
+type lazyFile struct {
+	path string
+	f    *os.File
+}
+
+func (l *lazyFile) Write(b []byte) (int, error) {
+	if l.f == nil {
+		f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return 0, err
+		}
+		l.f = f
+	}
+	return l.f.Write(b)
+}
+
+func (l *lazyFile) Close() error {
+	if l.f == nil {
+		return nil
+	}
+	return l.f.Close()
+}
+
 func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Duration) int {
-	// A new file only, 0600: never overwrite, never widen.
-	f, err := os.OpenFile(recPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
+	if _, err := os.Lstat(recPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintln(os.Stderr, "record_exists")
 		return 2
 	}
-	tape, err := lang.NewRecorder(f, src, time.Now().Add(expires))
+	out := &lazyFile{path: recPath}
+	tape, err := lang.NewRecorder(out, src, time.Now().Add(expires))
 	if err != nil {
-		f.Close()
 		fmt.Fprintln(os.Stderr, "record_failed")
 		return 2
 	}
 	got := lang.Run(src, g, p, lang.Options{Tape: tape})
-	if err := f.Close(); err != nil {
-		fmt.Fprintln(os.Stderr, "record_failed")
-		return 2
-	}
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
+	ferr := tape.Finish()
+	cerr := out.Close()
+	if ferr != nil || cerr != nil {
+		if ferr == nil {
+			ferr = cerr
+		}
+		fmt.Fprintln(os.Stderr, lang.SafeText(ferr.Error()))
+		return 2
+	}
 	return langExit(got.Status)
 }
 

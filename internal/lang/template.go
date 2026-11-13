@@ -381,6 +381,12 @@ func (r *trender) render(nodes []tnode) error {
 
 // renderTemplate renders src with vars, a map.
 func renderTemplate(src string, vars any, loopMax int) (string, error) {
+	return renderTemplatePinned(src, vars, loopMax, nil)
+}
+
+// renderTemplatePinned is renderTemplate with uuid() answered by pin when
+// set, so a recording pins a template's uuids as it does the script's.
+func renderTemplatePinned(src string, vars any, loopMax int, pin func() (string, error)) (string, error) {
 	nodes, err := parseTemplate(src)
 	if err != nil {
 		return "", err
@@ -393,7 +399,7 @@ func renderTemplate(src string, vars any, loopMax int) (string, error) {
 	for _, k := range o.keys {
 		top[k] = o.m[k]
 	}
-	r := &trender{c: &evalCtx{budget: dataMaxBytes, strict: true}, scope: []map[string]any{top}, loopMax: loopMax}
+	r := &trender{c: &evalCtx{budget: dataMaxBytes, strict: true, uuid: pin}, scope: []map[string]any{top}, loopMax: loopMax}
 	if err := r.render(nodes); err != nil {
 		return "", err
 	}
