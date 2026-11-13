@@ -206,40 +206,104 @@ func wasmLoadChecks(body []byte, want string) ([32]byte, error) {
 	return h, nil
 }
 
-// wasmImportCount reads the module's import section and returns how many
-// imports it declares, or -1 when the bytes are not a module this can
-// read. It is a second check beside wazero's own listing: any import of
-// any kind (function, table, memory, global) is refused.
-func wasmImportCount(b []byte) int {
+// wasmTableMax caps every table's min and max. wazero has no table
+// limit (only a memory one) and allocates a table's min entries on every
+// instantiation, about 8 bytes each: a min of 100M was 763 MB per call.
+// 10,000 entries is 80 KB, well past the indirect-call tables of real
+// compiled modules (Rust and C emit tens to a few thousand).
+const wasmTableMax = 10000
+
+var errWasmBad = errors.New("wasm_compile")
+
+// wasmSections walks a module's sections, handing f each id and body. All
+// size math is in uint64 against what is left, a LEB128 is at most 10
+// bytes, and the index strictly increases, so it ends on any input.
+func wasmSections(b []byte, f func(id byte, body []byte) error) error {
 	if len(b) < 8 || !bytes.Equal(b[:4], []byte{0, 'a', 's', 'm'}) {
-		return -1
+		return errWasmBad
 	}
 	i := 8
 	for i < len(b) {
+		start := i
 		id := b[i]
 		i++
 		size, n := uleb(b[i:])
-		if n == 0 || i+n+int(size) > len(b) {
-			return -1
+		if n == 0 {
+			return errWasmBad
 		}
 		i += n
-		if id == 2 {
-			count, m := uleb(b[i:])
-			if m == 0 {
-				return -1
-			}
-			return int(count)
+		if size > uint64(len(b)-i) {
+			return errWasmBad
 		}
+		body := b[i : i+int(size)]
 		i += int(size)
+		if i <= start {
+			return errWasmBad
+		}
+		if err := f(id, body); err != nil {
+			return err
+		}
 	}
-	return 0
+	return nil
 }
 
+// wasmCheckModule is what sash refuses before wazero sees the bytes: any
+// import of any kind (function, table, memory, global), and any table
+// whose min or max passes wasmTableMax.
+func wasmCheckModule(b []byte) error {
+	return wasmSections(b, func(id byte, body []byte) error {
+		switch id {
+		case 2:
+			count, n := uleb(body)
+			if n == 0 {
+				return errWasmBad
+			}
+			if count > 0 {
+				return errors.New("wasm_import")
+			}
+		case 4:
+			count, n := uleb(body)
+			if n == 0 {
+				return errWasmBad
+			}
+			p := body[n:]
+			for k := uint64(0); k < count; k++ {
+				// reftype, then limits: 0x00 min, or 0x01 min max.
+				if len(p) < 2 {
+					return errWasmBad
+				}
+				flag := p[1]
+				p = p[2:]
+				if flag > 1 {
+					return errWasmBad
+				}
+				for l := 0; l <= int(flag); l++ {
+					v, m := uleb(p)
+					if m == 0 {
+						return errWasmBad
+					}
+					if v > wasmTableMax {
+						return errors.New("wasm_limits")
+					}
+					p = p[m:]
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// uleb reads an unsigned LEB128 of at most 10 bytes that fits in 64 bits;
+// n is 0 when it does not.
 func uleb(b []byte) (uint64, int) {
 	var v uint64
 	for i := 0; i < len(b) && i < 10; i++ {
-		v |= uint64(b[i]&0x7f) << (7 * uint(i))
-		if b[i]&0x80 == 0 {
+		c := b[i]
+		if i == 9 && c > 1 {
+			return 0, 0
+		}
+		v |= uint64(c&0x7f) << (7 * uint(i))
+		if c&0x80 == 0 {
 			return v, i + 1
 		}
 	}

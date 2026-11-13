@@ -39,15 +39,12 @@ func wasmCompile(body []byte, h [32]byte) (any, error) {
 	if c, ok := wasmCompiled[h]; ok {
 		return c, nil
 	}
-	if n := wasmImportCount(body); n != 0 {
-		if n < 0 {
-			return nil, errors.New("wasm_compile")
-		}
-		return nil, errors.New("wasm_import")
+	if err := wasmCheckModule(body); err != nil {
+		return nil, err
 	}
-	c, err := wasmRuntime().CompileModule(context.Background(), body)
+	c, err := wasmCompileTimed(body)
 	if err != nil {
-		return nil, errors.New("wasm_compile")
+		return nil, err
 	}
 	if len(c.ImportedFunctions()) > 0 || len(c.ImportedMemories()) > 0 {
 		if cerr := c.Close(context.Background()); cerr != nil {
@@ -65,6 +62,45 @@ func wasmCompile(body []byte, h [32]byte) (any, error) {
 	}
 	wasmCompiled[h] = c
 	return c, nil
+}
+
+// wasmCompileMax bounds compiling one module (at most 4 MiB). wazero's
+// CompileModule takes a context but does not check it while decoding,
+// validating, or compiling for the interpreter, so the compile runs on its
+// own goroutine and is abandoned at the deadline: that goroutine runs on
+// until the compile ends (bounded by the module size), then closes what it
+// built, which nothing uses.
+var wasmCompileMax = 2 * time.Second
+
+func wasmCompileTimed(body []byte) (wazero.CompiledModule, error) {
+	type result struct {
+		c   wazero.CompiledModule
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, err := wasmRuntime().CompileModule(context.Background(), body)
+		done <- result{c, err}
+	}()
+	t := time.NewTimer(wasmCompileMax)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return nil, errors.New("wasm_compile")
+		}
+		return r.c, nil
+	case <-t.C:
+		// Abandoned: whatever the compile builds is closed when it ends.
+		go func() {
+			if r := <-done; r.err == nil {
+				if err := r.c.Close(context.Background()); err != nil {
+					return
+				}
+			}
+		}()
+		return nil, errors.New("wasm_compile")
+	}
 }
 
 func sig(f api.FunctionDefinition, params, results []api.ValueType) bool {

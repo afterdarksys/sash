@@ -153,3 +153,33 @@ func TestWasmRecordReplay(t *testing.T) {
 		t.Fatalf("%v %+v %+v", err, out1, out2)
 	}
 }
+
+// Tables and section sizes are checked before compile; a table within
+// the cap loads and runs.
+func TestWasmTablesAndSizes(t *testing.T) {
+	for name, want := range map[string]string{"bigtable": "wasm_limits", "tablemax": "wasm_limits", "overflow": "wasm_compile"} {
+		out, _ := runWasmSrc(t, load(t, name)+"echo ran")
+		if out.Status != exitType || !strings.Contains(out.Stderr, want) || strings.Contains(out.Stdout, "ran") {
+			t.Errorf("%s: %+v", name, out)
+		}
+	}
+	if out, _ := runWasmSrc(t, load(t, "table")+"echo [ m::echo(7) ]"); out.Status != 0 || out.Stdout != "[\n  7\n]\n" && out.Stdout != "[7]\n" {
+		t.Fatalf("table: %+v", out)
+	}
+}
+
+// Compiling stops at its deadline: wazero does not check the context
+// while compiling, so the compile is abandoned.
+func TestWasmCompileDeadline(t *testing.T) {
+	old := wasmCompileMax
+	defer func() { wasmCompileMax = old }()
+	wasmCompileMax = time.Nanosecond
+	b, err := os.ReadFile(filepath.Join("testdata", "wasm", "data.wasm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := wasmCompileTimed(b); err == nil || err.Error() != "wasm_compile" || time.Since(start) > time.Second {
+		t.Fatalf("%v after %v", err, time.Since(start))
+	}
+}
