@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // watchSignals restores the terminal on SIGTERM or SIGHUP, then hands the
@@ -37,10 +38,22 @@ func reraise(sig os.Signal, restoreErr error) {
 		}
 	}
 	signal.Reset(sig)
+	code := 1
 	if s, ok := sig.(syscall.Signal); ok {
-		if err := syscall.Kill(os.Getpid(), s); err == nil {
-			return
+		code = 128 + int(s)
+		if err := killFn(os.Getpid(), s); err == nil {
+			// An ignored signal (SIGHUP under nohup) returns here; give
+			// it a moment to land, then end as a shell would report it.
+			time.Sleep(signalGrace)
 		}
 	}
-	os.Exit(1)
+	exitFn(code)
 }
+
+// signalGrace is how long reraise waits for the re-raised signal before
+// its backstop exit; killFn and exitFn are replaced in tests.
+var (
+	signalGrace = 100 * time.Millisecond
+	killFn      = syscall.Kill
+	exitFn      = os.Exit
+)

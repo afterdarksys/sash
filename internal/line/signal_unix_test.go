@@ -45,3 +45,20 @@ func TestSignalRestoresTerminal(t *testing.T) {
 		}
 	}
 }
+
+// Under nohup SIGHUP is ignored, so the re-raised signal does nothing:
+// reraise then exits 128+signal itself instead of running on. The test
+// makes the kill land nowhere, as an ignored signal does.
+func TestReraiseBackstopWhenIgnored(t *testing.T) {
+	oldExit, oldKill, oldGrace := exitFn, killFn, signalGrace
+	defer func() { exitFn, killFn, signalGrace = oldExit, oldKill, oldGrace }()
+	signalGrace = 10 * time.Millisecond
+	killed := 0
+	killFn = func(int, syscall.Signal) error { killed++; return nil }
+	code := -1
+	exitFn = func(c int) { code = c }
+	reraise(syscall.SIGHUP, nil)
+	if killed != 1 || code != 128+int(syscall.SIGHUP) {
+		t.Fatalf("killed %d exit %d", killed, code)
+	}
+}
