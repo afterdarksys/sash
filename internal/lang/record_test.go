@@ -422,7 +422,7 @@ func TestRecordRedactsTheSecretsSource(t *testing.T) {
 		"bound after many events":  many + "let raw = (cat /srv/token)\ndeclare -s tok = $raw",
 		"bound inside a fn":        "cat /srv/token\nfn f() { let raw = (cat /srv/token); declare -s s = $raw }\nf\ncat /srv/token",
 		"an element of a secret":   "declare -s toks = [ [\"hunter2-SECRET\", \"x\"] ]\ncat /srv/token",
-		"a key of a secret map":    "declare -s m = [ {\"hunter2-SECRET\": 1} ]\ncat /srv/token",
+		"a value in a secret map":  "declare -s m = [ {\"k\": \"hunter2-SECRET\"} ]\ncat /srv/token",
 		"declare -s value through": "declare -s tok = (cat /srv/token | head 1)",
 	} {
 		rec, _ := record(t, src)
@@ -496,6 +496,71 @@ func TestRecordPinsTemplateUUID(t *testing.T) {
 		out2, err := replay(t, rec, src)
 		if err != nil || out1.Stdout != out2.Stdout {
 			t.Fatalf("%q: %v\n%+v\n%+v", src, err, out1, out2)
+		}
+	}
+}
+
+// The re-review repro, and a request redacted only because of a secret
+// bound later: replay matches a redacted event on what it kept.
+func TestReplayMatchesLateRedaction(t *testing.T) {
+	for _, src := range []string{
+		"let raw = (cat /srv/token)\ndeclare -s m = [ {\"k\": $raw} ]\nunit restart nginx",
+		"cat /var/log/late-secret\ndeclare -s p = /var/log/late-secret\nunit restart nginx",
+	} {
+		rec, out1 := record(t, src)
+		if !bytes.Contains(rec, []byte(`"redacted":true`)) {
+			t.Fatalf("%q: nothing redacted:\n%s", src, rec)
+		}
+		if out, err := replay(t, rec, src); err != nil || out.Status != out1.Status {
+			t.Fatalf("%q: replay %v %+v\n%s", src, err, out, rec)
+		}
+		secretFree(t, src, rec, "late-secret")
+	}
+	// The short key "k" is structure, and "ok" is not redacted by it.
+	rec, _ := record(t, "declare -s m = [ {\"k\": \"longsecret\"} ]\nretry 3 { unit restart nginx }")
+	if bytes.Contains(rec, []byte(`"redacted":true`)) || !bytes.Contains(rec, []byte(`"bytes":"b2sK"`)) {
+		t.Fatalf("over-redacted:\n%s", rec)
+	}
+}
+
+// A redacted event must still match on key, kind, and every length: a
+// different verb or size diverges.
+func TestRedactedEventStillMatchesKeyAndLengths(t *testing.T) {
+	src := "cat /var/log/late-secret\ndeclare -s p = /var/log/late-secret\nunit restart nginx"
+	rec, _ := record(t, src)
+	lines := recLines(rec)
+	at := -1
+	for i, l := range lines[1:] {
+		if bytes.Contains(l, []byte(`"redacted":true`)) && bytes.Contains(l, []byte(`"kind":"call"`)) {
+			at = i + 1
+			break
+		}
+	}
+	if at < 0 {
+		t.Fatalf("no redacted call:\n%s", rec)
+	}
+	for name, f := range map[string]func(map[string]any){
+		"key":      func(ev map[string]any) { ev["req"].(map[string]any)["key"] = "file.write" },
+		"path_len": func(ev map[string]any) { ev["req"].(map[string]any)["path_len"] = 3 },
+		"argv_len": func(ev map[string]any) { ev["req"].(map[string]any)["argv_len"] = 3 },
+		"body_len": func(ev map[string]any) { ev["req"].(map[string]any)["body_len"] = 5 },
+		"kind":     func(ev map[string]any) { ev["kind"] = "plan" },
+		"unredact": func(ev map[string]any) { delete(ev["req"].(map[string]any), "redacted") },
+	} {
+		ls := append([][]byte(nil), lines...)
+		ls[at] = edit(t, ls[at], f)
+		if _, err := replay(t, rechain(t, ls), src); diverged(err) != at {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A secret shorter than four runes is redacted where a whole field
+// equals it, not inside other text.
+func TestShortSecretRule(t *testing.T) {
+	for s, want := range map[string]bool{"ok": true, "ok\n": true, "okay": false, "not ok": false, "abcd-x": true} {
+		if got := holdsAny(s, []string{"ok", "abcd"}); got != want {
+			t.Errorf("%q: %v", s, got)
 		}
 	}
 }

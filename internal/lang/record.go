@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/afterdarksys/sash/internal/parent"
 )
@@ -330,9 +331,27 @@ func (t *Tape) add(p pending) {
 	t.pend = append(t.pend, p)
 }
 
+// secretMinRunes is the shortest secret text redacted where it appears
+// inside other text. A shorter one is redacted only when a whole field
+// equals it (ignoring one trailing newline): matching "ok" or "1" inside
+// every response would redact most of a recording and break its replay,
+// and a secret that short is guessable anyway. Four keeps a four-digit
+// PIN or a short word caught inside text.
+const secretMinRunes = 4
+
+// holdsAny reports whether field s holds any secret text: as a substring
+// for a text of secretMinRunes or more, or as the whole field for a
+// shorter one.
 func holdsAny(s string, secrets []string) bool {
+	whole := strings.TrimSuffix(strings.TrimSuffix(s, "\n"), "\r")
 	for _, sec := range secrets {
-		if sec != "" && strings.Contains(s, sec) {
+		switch {
+		case sec == "":
+		case utf8.RuneCountInString(sec) >= secretMinRunes:
+			if strings.Contains(s, sec) {
+				return true
+			}
+		case s == sec || whole == sec:
 			return true
 		}
 	}
@@ -399,17 +418,39 @@ func respOf(res parent.Result, err error, secrets []string, tainted bool) *recRe
 	if err != nil {
 		r.Error = err.Error()
 	}
-	text := string(res.Bytes) + "\x00" + strings.Join(res.Cols, "\x00") + "\x00" + r.Error
+	fields := append([]string{string(res.Bytes), r.Error}, res.Cols...)
+	n := len(res.Bytes) + len(r.Error)
 	for _, row := range res.Rows {
 		for k, v := range row {
-			text += "\x00" + k + "\x00" + v
+			fields = append(fields, k, v)
+			n += len(k) + len(v)
 		}
 	}
-	if tainted || holdsAny(text, secrets) {
-		return &recResp{Kind: r.Kind, Exit: r.Exit, Redacted: true, Len: len(text)}
+	if !tainted {
+		for _, f := range fields {
+			tainted = tainted || holdsAny(f, secrets)
+		}
+	}
+	if tainted {
+		return &recResp{Kind: r.Kind, Exit: r.Exit, Redacted: true, Len: n}
 	}
 	r.Cols, r.Rows, r.Bytes = res.Cols, res.Rows, res.Bytes
 	return r
+}
+
+// reqMatches compares a replayed request with the recorded one. The
+// recorder redacts against secrets bound later in the run, which replay
+// does not know yet, so a redacted event is compared on what it kept:
+// the key and every length (the kind is checked by next). An unredacted
+// event must match exactly: argv, path, and body hash.
+func reqMatches(rec *recReq, v parent.Verb) bool {
+	if rec == nil {
+		return false
+	}
+	want := reqOf(v, rec.Redacted, nil)
+	a, errA := json.Marshal(rec)
+	b, errB := json.Marshal(want)
+	return errA == nil && errB == nil && bytes.Equal(a, b)
 }
 
 // call is one door call under the tape: recorded through p, or answered
@@ -421,14 +462,11 @@ func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []stri
 		t.add(pending{kind: "call", v: &vv, tainted: tainted, res: res, err: err, hasResp: true})
 		return res, err
 	}
-	req := reqOf(v, tainted, secrets)
 	ev, ok := t.next("call")
 	if !ok {
 		return parent.Result{}, t.err
 	}
-	want, _ := json.Marshal(ev.Req)
-	got, _ := json.Marshal(req)
-	if !bytes.Equal(want, got) {
+	if !reqMatches(ev.Req, v) {
 		t.diverge(ev.Seq)
 		return parent.Result{}, t.err
 	}
@@ -457,13 +495,8 @@ func (t *Tape) plan(v parent.Verb, tainted bool, secrets []string) {
 		t.add(pending{kind: "plan", v: &vv, tainted: tainted})
 		return
 	}
-	req := reqOf(v, tainted, secrets)
-	if ev, ok := t.next("plan"); ok {
-		want, _ := json.Marshal(ev.Req)
-		got, _ := json.Marshal(req)
-		if !bytes.Equal(want, got) {
-			t.diverge(ev.Seq)
-		}
+	if ev, ok := t.next("plan"); ok && !reqMatches(ev.Req, v) {
+		t.diverge(ev.Seq)
 	}
 }
 
@@ -566,8 +599,8 @@ func (m *machine) secretFault() {
 }
 
 // secretTexts are the text of every bound secret, for redaction: the
-// whole value and each leaf and key in it, so a response holding one
-// element of a secret list is caught too.
+// whole value and each leaf value in it (not map keys), so a response
+// holding one element of a secret list is caught too.
 func (m *machine) secretTexts() []string {
 	var out []string
 	var leaves func(d any)
@@ -578,8 +611,8 @@ func (m *machine) secretTexts() []string {
 				leaves(it)
 			}
 		case *omap:
+			// Keys are structure, not secret values.
 			for _, k := range x.keys {
-				out = append(out, k)
 				leaves(x.m[k])
 			}
 		case nil:

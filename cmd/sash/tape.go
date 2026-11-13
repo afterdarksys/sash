@@ -15,12 +15,15 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -181,30 +184,66 @@ func runTape(args []string) int {
 	return replay(src, recPath, g)
 }
 
-// lazyFile creates its file on the first write: a new file only, 0600,
-// never overwriting. The tape writes once, at Finish, so a run that is
-// killed before it leaves no file.
-type lazyFile struct {
-	path string
-	f    *os.File
+// atomicFile publishes the recording in one step. Its one Write goes to
+// a new temp file in the same directory (O_EXCL, 0600), is synced, and is
+// then hard-linked to the final name, which link refuses if it exists;
+// the temp name is removed after. A kill at any point leaves at most the
+// temp file, never a truncated recording at the final path. The tape
+// writes once, at Finish, so a run killed before then leaves nothing.
+type atomicFile struct {
+	path    string
+	written bool
+	// beforeLink runs after the sync and before the link; tests use it.
+	beforeLink func(tmp string) error
 }
 
-func (l *lazyFile) Write(b []byte) (int, error) {
-	if l.f == nil {
-		f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
+func (a *atomicFile) Write(b []byte) (int, error) {
+	if a.written {
+		return 0, errors.New("record: one write only")
+	}
+	a.written = true
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return 0, err
+	}
+	tmp := filepath.Join(filepath.Dir(a.path), "."+filepath.Base(a.path)+".tmp-"+hex.EncodeToString(rnd[:]))
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	fail := func(err error) (int, error) {
+		if cerr := f.Close(); cerr != nil && !errors.Is(cerr, os.ErrClosed) {
+			err = errors.Join(err, cerr)
+		}
+		if rerr := os.Remove(tmp); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
+		return 0, err
+	}
+	if _, err := f.Write(b); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		return fail(err)
+	}
+	if a.beforeLink != nil {
+		if err := a.beforeLink(tmp); err != nil {
 			return 0, err
 		}
-		l.f = f
 	}
-	return l.f.Write(b)
-}
-
-func (l *lazyFile) Close() error {
-	if l.f == nil {
-		return nil
+	if err := os.Link(tmp, a.path); err != nil {
+		if rerr := os.Remove(tmp); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
+		return 0, err
 	}
-	return l.f.Close()
+	if err := os.Remove(tmp); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Duration) int {
@@ -212,7 +251,7 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 		fmt.Fprintln(os.Stderr, "record_exists")
 		return 2
 	}
-	out := &lazyFile{path: recPath}
+	out := &atomicFile{path: recPath}
 	tape, err := lang.NewRecorder(out, src, time.Now().Add(expires))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "record_failed")
@@ -221,13 +260,8 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 	got := lang.Run(src, g, p, lang.Options{Tape: tape})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
-	ferr := tape.Finish()
-	cerr := out.Close()
-	if ferr != nil || cerr != nil {
-		if ferr == nil {
-			ferr = cerr
-		}
-		fmt.Fprintln(os.Stderr, lang.SafeText(ferr.Error()))
+	if err := tape.Finish(); err != nil {
+		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2
 	}
 	return langExit(got.Status)
