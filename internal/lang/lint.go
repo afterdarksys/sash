@@ -184,6 +184,10 @@ func exprRefs(x Expr, out map[string]bool) {
 		for _, a := range x.args {
 			exprRefs(a, out)
 		}
+	case exprWasmCall:
+		for _, a := range x.args {
+			exprRefs(a, out)
+		}
 	}
 }
 
@@ -354,7 +358,7 @@ func ownWords(s Stmt, w func(Word), x func(Expr)) {
 // literal, a bare reference, and a list or map of those cannot.
 func exprMayFail(x Expr) bool {
 	switch x := x.(type) {
-	case exprIndex, exprCall, exprBinary, exprUnary, exprRange:
+	case exprIndex, exprCall, exprBinary, exprUnary, exprRange, exprWasmCall:
 		return true
 	case exprList:
 		for _, it := range x.items {
@@ -399,6 +403,63 @@ func (l *linter) faults(s Stmt) string {
 				if name, steps := pathSteps(p.Lit); len(steps) > 0 && l.tainted[name] {
 					note(name)
 				}
+			}
+		}
+	}, expr)
+	return found
+}
+
+// containsWasm reports a module call anywhere in x.
+func containsWasm(x Expr) bool {
+	switch x := x.(type) {
+	case exprWasmCall:
+		return true
+	case exprList:
+		for _, it := range x.items {
+			if containsWasm(it) {
+				return true
+			}
+		}
+	case exprMap:
+		for _, v := range x.vals {
+			if containsWasm(v) {
+				return true
+			}
+		}
+	case exprUnary:
+		return containsWasm(x.x)
+	case exprBinary:
+		return containsWasm(x.l) || containsWasm(x.r)
+	case exprIndex:
+		return containsWasm(x.x) || containsWasm(x.key)
+	case exprRange:
+		return containsWasm(x.lo) || containsWasm(x.hi)
+	case exprCall:
+		for _, a := range x.args {
+			if containsWasm(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// wasmSink is a secret read by an expression that calls a module: a run
+// refuses it (wasm_secret, exit 2). It over-reports: any secret in the
+// expression counts, wherever it sits.
+func (l *linter) wasmSink(s Stmt) string {
+	found := ""
+	expr := func(x Expr) {
+		if containsWasm(x) {
+			if name := l.anyTainted(refsOf(func(o map[string]bool) { exprRefs(x, o) })); name != "" && found == "" {
+				found = name
+			}
+		}
+	}
+	ownWords(s, func(w Word) {
+		for _, p := range w.Parts {
+			if p.X != nil {
+				expr(p.X)
 			}
 		}
 	}, expr)
@@ -634,6 +695,9 @@ func (l *linter) sinks(p *Program) {
 				}
 			}
 		})
+		if name := l.wasmSink(s); name != "" {
+			l.add(at, "secret-to-sink", "secret "+name+" reaches a wasm call")
+		}
 		if name := l.faults(s); name != "" {
 			l.add(at, "secret-fault", "secret "+name+" is in an evaluation that may fail and end the line")
 		}
@@ -792,6 +856,11 @@ func lintConstant(x Expr) bool {
 			for _, a := range x.args {
 				walk(a)
 			}
+		case exprWasmCall:
+			// A module call is pure: no clock, randomness, or imports.
+			for _, a := range x.args {
+				walk(a)
+			}
 		case exprList:
 			for _, it := range x.items {
 				walk(it)
@@ -927,7 +996,7 @@ func (l *linter) fnMutates(name string, depth int) string {
 // needs is incomplete-needs, from the Needs rows themselves.
 func (l *linter) needs() {
 	for _, r := range l.n.sorted() {
-		if r.note == "" {
+		if r.note == "" || r.note == noteWasm {
 			continue
 		}
 		sev := lintWarning

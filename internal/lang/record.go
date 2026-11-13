@@ -187,7 +187,7 @@ func LoadReplay(r io.Reader, script string, now time.Time) (*Tape, error) {
 	if now.Unix() >= h.Expires {
 		return nil, &TapeError{"replay_expired", -1}
 	}
-	t := &Tape{replay: true, diverged: -1}
+	t := &Tape{replay: true, diverged: -1, header: h}
 	prev := sha(headLine)
 	total := len(headLine)
 	for sc.Scan() {
@@ -513,6 +513,22 @@ func (t *Tape) value(kind string, read func() string) string {
 		return ""
 	}
 	return ev.Resp.Value
+}
+
+// module records a loaded wasm module's hash in the header, or, on
+// replay, checks the header names the same module with the same hash.
+func (t *Tape) module(name, hash string) error {
+	if !t.replay {
+		t.header.Modules[name] = hash
+		return nil
+	}
+	if t.header.Modules[name] != hash {
+		if t.err == nil {
+			t.err = &TapeError{"replay_module", -1}
+		}
+		return t.err
+	}
+	return nil
 }
 
 // fault records that a secret ended the line here, or checks it on replay.

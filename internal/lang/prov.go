@@ -253,6 +253,13 @@ func (s *State) hideHash(id uint32) bool {
 	return s.secretOrigin[id] || s.secretHash[s.origins[id].hash]
 }
 
+func (m *machine) provSrcName() string {
+	if m.provSrc == "" {
+		return "script"
+	}
+	return m.provSrc
+}
+
 func (m *machine) provLine() int { return sort.SearchInts(m.nl, m.at) + 1 }
 
 // noteOrigin records a door call that answered: its key, target, place,
@@ -269,10 +276,7 @@ func (m *machine) noteOrigin(v parent.Verb, res parent.Result) {
 		target = target[:provTarget]
 	}
 	h := responseHash(res)
-	src := m.provSrc
-	if src == "" {
-		src = "script"
-	}
+	src := m.provSrcName()
 	if target != "" {
 		target = needsCell(target)
 	}

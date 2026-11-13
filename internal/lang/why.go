@@ -61,6 +61,16 @@ func Why(src string, g grant.Grant, opt Options) Outcome {
 			rows = append(rows, whyRow(cmd, "file.read", "yes", "granted", "loads fn and declare -r only"))
 		}
 	}
+	for _, w := range collectWasms(prog) {
+		cmd := "wasm " + w.Name + " = " + text[w.Path.Pos:w.Path.End]
+		if d := m.whyKey(cmd, "file.read"); d != nil {
+			rows = append(rows, *d)
+		} else if m.useDenied(&Use{Path: w.Path}) != "" {
+			rows = append(rows, whyRow(cmd, "file.read", "no", "outside_roots", "roots: "+strings.Join(m.g.FileRead, " ")))
+		} else {
+			rows = append(rows, whyRow(cmd, "file.read", "yes", "granted", "reads the module; its calls run in process"))
+		}
+	}
 	for _, pipe := range pipes {
 		for _, st := range pipe.Stages {
 			rows = append(rows, m.whyStage(text, st)...)

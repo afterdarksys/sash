@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -477,6 +478,9 @@ func (p *exprParser) primary() (Expr, error) {
 		return exprRef{t.s}, nil
 	case "id":
 		p.i++
+		if x, ok, err := p.wasmCall(t); ok || err != nil {
+			return x, err
+		}
 		if p.isOp("(") {
 			return p.call(t.s)
 		}
@@ -624,7 +628,8 @@ func evalExpr(x Expr, lookup func(string) (any, bool)) (any, error) {
 func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, error) {
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
-		if c.tainted {
+		// A secret refused at a wasm call is that refusal, not a fault.
+		if c.tainted && !errors.Is(err, errWasmSecret) {
 			return nil, errSecretFault
 		}
 		return nil, err
@@ -636,16 +641,17 @@ func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, erro
 }
 
 func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
-	return evalExprPinned(x, strict, nil, lookup)
+	return evalExprPinned(x, strict, nil, nil, lookup)
 }
 
 // evalExprPinned is evalExprStrict with uuid() answered by pin when it is
 // set (a recording or a replay).
-func evalExprPinned(x Expr, strict bool, pin func() (string, error), lookup func(string) (any, bool)) (any, error) {
-	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin}
+func evalExprPinned(x Expr, strict bool, pin func() (string, error), wasm func(string, string, []any, *evalCtx) (any, error), lookup func(string) (any, bool)) (any, error) {
+	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin, wasm: wasm}
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
-		if c.tainted {
+		// A secret refused at a wasm call is that refusal, not a fault.
+		if c.tainted && !errors.Is(err, errWasmSecret) {
 			return nil, errSecretFault
 		}
 		return nil, err
@@ -681,6 +687,8 @@ type evalCtx struct {
 	tainted bool
 	// uuid, when set, answers uuid() (a recording pins each value).
 	uuid func() (string, error)
+	// wasm, when set, runs a module call (wasm.go); nil refuses it.
+	wasm func(mod, fn string, args []any, c *evalCtx) (any, error)
 }
 
 // taintLookup unwraps a secret for computing and marks the evaluation.
@@ -781,6 +789,8 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 		return evalRange(x, lookup, c)
 	case exprCall:
 		return evalCall(x, lookup, c)
+	case exprWasmCall:
+		return evalWasmCall(x, lookup, c)
 	case exprBinary:
 		l, err := evalNode(x.l, lookup, c)
 		if err != nil {

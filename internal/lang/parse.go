@@ -286,6 +286,8 @@ func (p *parser) stmt() (Stmt, error) {
 			}
 			t.Body = *body
 			return t, nil
+		case "wasm":
+			return p.parseWasm()
 		case "use":
 			p.i++
 			if p.peek().kind != kWord {

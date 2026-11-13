@@ -507,6 +507,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runDeclare(s)
 	case *Use:
 		return m.runUse(s)
+	case *Wasm:
+		return m.runWasm(s)
 	case *With:
 		return m.runWith(s)
 	case *Retry:
@@ -2162,7 +2164,7 @@ func (m *machine) evalX(x Expr) (any, error) {
 }
 
 func (m *machine) evalXRaw(x Expr) (any, error) {
-	return evalExprPinned(x, m.st.nounset, m.uuidPin(), func(name string) (any, bool) {
+	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), func(name string) (any, bool) {
 		m.readProv(name)
 		v, ok := m.vars[name]
 		if !ok {

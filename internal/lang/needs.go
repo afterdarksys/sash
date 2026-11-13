@@ -182,7 +182,7 @@ func Needs(src string, opt NeedsOptions) Outcome {
 	rows := n.sorted()
 	out := Outcome{}
 	for _, r := range rows {
-		if r.note != "" {
+		if r.note != "" && r.note != noteWasm {
 			out.Status = 1
 		}
 	}
@@ -405,6 +405,16 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 		return b
 	case *Use:
 		n.use(s, b)
+		return b
+	case *Wasm:
+		// One file.read need, noted wasm: a module calls no verb, so it
+		// adds nothing else and the manifest stays complete.
+		p := plain(s.Path)
+		if full, ok := b.resolve(p); ok {
+			n.add("file.read", full, noteWasm, s.Path.Pos, needsPolicyFlag("file.read", path.Dir(full)))
+		} else {
+			n.add("file.read", p, noteRelative, s.Path.Pos, "")
+		}
 		return b
 	case *Fn:
 		// A body runs under its caller's prefix, which may be any.

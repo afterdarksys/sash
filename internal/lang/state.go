@@ -41,7 +41,9 @@ type State struct {
 	// origins is the provenance table (prov.go), at most provPerState;
 	// fnSrc places each fn body's lines.
 	origins []origin
-	fnSrc   map[*Fn]fnSource
+	// wasmMods are the loaded wasm modules by name (wasm.go).
+	wasmMods map[string]*wasmModule
+	fnSrc    map[*Fn]fnSource
 	// secretOrigin, secretHash, and secretText only grow: the origins,
 	// response hashes, and texts of every secret bound (prov.go).
 	secretOrigin map[uint32]bool

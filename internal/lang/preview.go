@@ -150,6 +150,11 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 			denial = d
 		}
 	}
+	for _, w := range collectWasms(prog) {
+		if d := m.useDenied(&Use{Path: w.Path}); d != "" && denial == "" {
+			denial = d
+		}
+	}
 	known := ""
 	for _, sp := range out.Spans {
 		if sp.Face == FaceDenied && sp.Key != "" {
@@ -207,6 +212,17 @@ func refusedSpan(pipe Pipeline, at refusal) (Span, bool) {
 		return Span{}, false
 	}
 	return Span{Start: w.Pos, End: w.End, Face: FaceOutOfRoot}, true
+}
+
+// collectWasms finds wasm statements at any depth.
+func collectWasms(prog *Program) []*Wasm {
+	var out []*Wasm
+	needsEachStmt(prog, func(s Stmt) {
+		if w, ok := s.(*Wasm); ok {
+			out = append(out, w)
+		}
+	})
+	return out
 }
 
 // collectUses finds use statements at any depth.
