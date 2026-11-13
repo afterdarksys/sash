@@ -44,7 +44,7 @@ var logLevels = map[string]bool{"debug": true, "info": true, "warn": true, "erro
 // an optional [ {map} ] in key order. Nothing goes to stdout.
 func (m *machine) runLog(st expStage) (value, int) {
 	var b strings.Builder
-	b.WriteString(nowFn().UTC().Format(time.RFC3339))
+	b.WriteString(m.now().UTC().Format(time.RFC3339))
 	b.WriteString(" " + st.argv[1] + " " + oneLine(st.argv[2]))
 	if st.x != nil {
 		d, err := m.evalX(st.x)

@@ -109,7 +109,10 @@ func encFn(f func(string) string) func([]any, *evalCtx) (any, error) {
 }
 
 // fnUUID is a version 4 UUID from crypto/rand.
-func fnUUID(_ []any, _ *evalCtx) (any, error) {
+func fnUUID(_ []any, c *evalCtx) (any, error) {
+	if c != nil && c.uuid != nil {
+		return c.uuid()
+	}
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return nil, fmt.Errorf("uuid")

@@ -3,7 +3,8 @@
 // still one script. A hand start, without --session, has an empty grant:
 // toolkit verbs are denied and filters still run. --needs reads a script
 // and prints what it would ask for; it runs nothing. --lint reads a script
-// and prints advisory findings; it runs nothing either.
+// and prints advisory findings; it runs nothing either. --record and
+// --replay run a script offline against a fixture or a recording (tape.go).
 package main
 
 import (
@@ -31,6 +32,9 @@ func main() {
 	args := os.Args[1:]
 	if flagMode(args, "--lint") {
 		os.Exit(runLint(args))
+	}
+	if tapeMode(args) {
+		os.Exit(runTape(args))
 	}
 	if needsMode(args) {
 		os.Exit(runNeeds(args))

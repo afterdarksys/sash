@@ -87,6 +87,9 @@ type Options struct {
 	// stops the line. Only the editor's Loop sets it; nil is no terminal,
 	// and confirm then fails closed.
 	Confirm func(prompt string) (yes, interrupted bool)
+	// Tape records or replays the run's door calls, clock, sleeps, and
+	// uuids (record.go). nil is neither.
+	Tape *Tape
 	// State carries names, functions, and set options from line to line.
 	// nil is a fresh State: a script, or sash -c.
 	State *State
@@ -98,6 +101,22 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if opt.State != nil {
 		defer func() { opt.State.gen++ }()
 	}
+	if opt.Tape != nil {
+		out := runTaped(src, g, p, opt)
+		if err := opt.Tape.Err(); err != nil {
+			return Outcome{Status: exitType, Stdout: out.Stdout, Stderr: out.Stderr + err.Error() + "\n", Prefix: out.Prefix}
+		}
+		return out
+	}
+	return runPlain(src, g, p, opt)
+}
+
+// runTaped is Run under a tape: Expand's glob listing goes through it too.
+func runTaped(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
+	return runPlain(src, g, tapeParent{t: opt.Tape, p: p}, opt)
+}
+
+func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	expanded, prob := Expand(src, g, p, opt)
 	if prob != nil {
 		return Outcome{Status: prob.Status, Stderr: prob.Msg + "\n", Prefix: opt.Prefix}
@@ -106,9 +125,18 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if err != nil {
 		return Outcome{Status: exitType, Stderr: safeText(err.Error()) + "\n", Prefix: opt.Prefix}
 	}
+	if tp, ok := p.(tapeParent); ok {
+		// The machine calls the tape itself, under do, with the stage's
+		// taint; Expand has had its listing through tapeParent.
+		p = tp.p
+	}
 	m := newMachine(g, p, opt.State)
 	m.trace = opt.Trace
 	m.confirm = opt.Confirm
+	if opt.Tape != nil {
+		m.tape = opt.Tape
+		m.tape.begin(expanded)
+	}
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
@@ -167,6 +195,8 @@ type machine struct {
 	// scope restores its name on the way out, so declare -r there would be
 	// undone; it is refused.
 	scoped map[string]int
+	// tape is Options.Tape.
+	tape *Tape
 	// confirm is Options.Confirm; declined is set when a verb was declined
 	// in the current retry attempt, so retry does not ask again.
 	confirm  func(string) (bool, bool)
@@ -190,7 +220,7 @@ var (
 )
 
 func (m *machine) pastDeadline() bool {
-	return !m.deadline.IsZero() && nowFn().After(m.deadline)
+	return !m.deadline.IsZero() && m.now().After(m.deadline)
 }
 
 // duration reads a retry delay or a timeout: a Go duration in (0, max].
@@ -213,7 +243,7 @@ func (m *machine) runTimeout(t *Timeout) (int, bool) {
 		return exitType, true
 	}
 	prev := m.deadline
-	end := nowFn().Add(d)
+	end := m.now().Add(d)
 	if prev.IsZero() || end.Before(prev) {
 		m.deadline = end
 	}
@@ -253,12 +283,12 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 			m.err.WriteString(all[:mark])
 			wait := delay
 			if !m.deadline.IsZero() {
-				if left := m.deadline.Sub(nowFn()); left < wait {
+				if left := m.deadline.Sub(m.now()); left < wait {
 					wait = left
 				}
 			}
 			if wait > 0 {
-				sleepFn(wait)
+				m.sleep(wait)
 			}
 		}
 		m.declined = false
@@ -301,6 +331,13 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 			what = fmt.Sprintf("write %s (%d bytes)", v.Path, len(v.Body))
 		}
 		m.err.WriteString("plan: would " + what + "\n")
+		if m.tape != nil {
+			m.tape.plan(v, m.sawSecret, m.secretTexts())
+			if m.tape.err != nil {
+				m.ctl = ctlHalt
+				return parent.Result{}, m.tape.err
+			}
+		}
 		return parent.Result{Kind: parent.KindBytes}, nil
 	}
 	// Confirm sits after verbmax, the deadline, and plan, so plan mode
@@ -332,6 +369,9 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 			return parent.Result{}, errTimeout
 		}
 	}
+	if m.tape != nil {
+		return m.tapeDo(v)
+	}
 	return m.p.Do(v)
 }
 
@@ -339,7 +379,12 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 // decline is 126 declined <key>, which try catches with key set; a
 // timeout or a missing terminal is 2; anything else is the parent's.
 func (m *machine) doFailed(key string, err error) int {
+	var te *TapeError
 	switch {
+	case errors.As(err, &te):
+		// Run reports the tape's error once, at the end.
+		m.ctl = ctlHalt
+		return exitType
 	case errors.Is(err, errDeclined):
 		m.err.WriteString("declined " + key + "\n")
 		return exitDenied
@@ -371,7 +416,10 @@ func (m *machine) prefix() string {
 
 func (m *machine) runProg(prog *Program) (int, bool) {
 	status := 0
-	for _, s := range prog.Stmts {
+	for i, s := range prog.Stmts {
+		if m.tape != nil && i < len(prog.Pos) {
+			m.tape.at = prog.Pos[i]
+		}
 		if m.pastDeadline() {
 			m.err.WriteString("timeout\n")
 			return exitType, true
@@ -1989,13 +2037,14 @@ func (m *machine) ref(lit string) (any, error) {
 func (m *machine) evalX(x Expr) (any, error) {
 	d, err := m.evalXRaw(x)
 	if errors.Is(err, errSecretFault) {
+		m.secretFault()
 		m.ctl = ctlHalt
 	}
 	return d, err
 }
 
 func (m *machine) evalXRaw(x Expr) (any, error) {
-	return evalExprStrict(x, m.st.nounset, func(name string) (any, bool) {
+	return evalExprPinned(x, m.st.nounset, m.uuidPin(), func(name string) (any, bool) {
 		v, ok := m.vars[name]
 		if !ok {
 			return nil, false

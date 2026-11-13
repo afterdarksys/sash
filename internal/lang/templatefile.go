@@ -225,6 +225,7 @@ func (m *machine) runTemplate(st expStage, in value) (value, int) {
 	out, err := renderTemplate(tpl, toDatum(in), m.st.loopMax)
 	if err != nil {
 		if errors.Is(err, errSecretFault) {
+			m.secretFault()
 			m.ctl = ctlHalt
 		}
 		m.err.WriteString(err.Error() + "\n")

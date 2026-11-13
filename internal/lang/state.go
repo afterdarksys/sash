@@ -309,6 +309,11 @@ func (s *State) runSet(argv []string) (value, error) {
 }
 
 func (s *State) setLong(name string, on bool) error {
+	if name == "record" {
+		// In-session recording needs file.write with a mode (jobs §2);
+		// offline recording is sash --record.
+		return fmt.Errorf("record needs file.write mode")
+	}
 	if name == "pipefail" {
 		if !on {
 			return fmt.Errorf("usage set: pipefail is always on")

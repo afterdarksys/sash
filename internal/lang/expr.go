@@ -636,7 +636,13 @@ func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, erro
 }
 
 func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
-	c := &evalCtx{budget: dataMaxBytes, strict: strict}
+	return evalExprPinned(x, strict, nil, lookup)
+}
+
+// evalExprPinned is evalExprStrict with uuid() answered by pin when it is
+// set (a recording or a replay).
+func evalExprPinned(x Expr, strict bool, pin func() (string, error), lookup func(string) (any, bool)) (any, error) {
+	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin}
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
 		if c.tainted {
@@ -673,6 +679,8 @@ type evalCtx struct {
 	budget  int
 	strict  bool
 	tainted bool
+	// uuid, when set, answers uuid() (a recording pins each value).
+	uuid func() (string, error)
 }
 
 // taintLookup unwraps a secret for computing and marks the evaluation.
