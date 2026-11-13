@@ -144,10 +144,90 @@ func (m *machine) readProv(name string) {
 	}
 }
 
-// withProv is v carrying the current statement's provenance too.
+// withProv is v carrying the current statement's provenance too. A
+// secret being bound marks its origins secret.
 func (m *machine) withProv(v value) value {
 	v.prov = unionProv(v.prov, m.prov)
+	m.markSecret(v)
 	return v
+}
+
+// markSecret records, when v is a secret, that every origin in its
+// provenance produced secret bytes, the hashes of those responses, and
+// the secret's texts. The sets only grow: origin then hides the hash of
+// any of those origins, of any other response with the same hash (a
+// second read of the same file), and of any later response holding one
+// of the texts.
+func (m *machine) markSecret(v value) {
+	if v.kind != valData {
+		return
+	}
+	inner, ok := unsecret(v.d)
+	if !ok {
+		return
+	}
+	st := m.st
+	if st.secretOrigin == nil {
+		st.secretOrigin, st.secretHash, st.secretText = map[uint32]bool{}, map[[32]byte]bool{}, map[string]bool{}
+	}
+	for _, id := range v.prov {
+		if id == provOverflow || int(id) >= len(st.origins) {
+			continue
+		}
+		st.secretOrigin[id] = true
+		st.secretHash[st.origins[id].hash] = true
+	}
+	var add func(d any)
+	add = func(d any) {
+		switch x := d.(type) {
+		case []any:
+			for _, it := range x {
+				add(it)
+			}
+		case *omap:
+			for _, k := range x.keys {
+				add(x.m[k])
+			}
+		case nil:
+		default:
+			if s := textOf(x); s != "" {
+				st.secretText[s] = true
+			}
+		}
+	}
+	if s := textOf(inner); s != "" {
+		st.secretText[s] = true
+	}
+	add(inner)
+}
+
+// respHoldsSecret reports whether a response holds a secret text bound so
+// far, by the recording's rule: a text of four runes or more anywhere in
+// a field, a shorter one as a whole field.
+func (s *State) respHoldsSecret(res parent.Result) bool {
+	if len(s.secretText) == 0 {
+		return false
+	}
+	texts := make([]string, 0, len(s.secretText))
+	for t := range s.secretText {
+		texts = append(texts, t)
+	}
+	if holdsAny(string(res.Bytes), texts) {
+		return true
+	}
+	for _, r := range res.Rows {
+		for _, v := range r {
+			if holdsAny(v, texts) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hideHash reports whether origin id's hash must print ***.
+func (s *State) hideHash(id uint32) bool {
+	return s.secretOrigin[id] || s.secretHash[s.origins[id].hash]
 }
 
 func (m *machine) provLine() int { return sort.SearchInts(m.nl, m.at) + 1 }
@@ -174,6 +254,14 @@ func (m *machine) noteOrigin(v parent.Verb, res parent.Result) {
 		target = needsCell(target)
 	}
 	id := m.st.addOrigin(origin{src: src, line: m.provLine(), key: v.Key, target: target, hash: h})
+	// A response holding a secret already bound is secret from the start;
+	// the bytes are not kept, so this is checked here, once.
+	if id != provOverflow && (m.st.secretHash[h] || m.st.respHoldsSecret(res)) {
+		if m.st.secretOrigin == nil {
+			m.st.secretOrigin, m.st.secretHash, m.st.secretText = map[uint32]bool{}, map[[32]byte]bool{}, map[string]bool{}
+		}
+		m.st.secretOrigin[id] = true
+	}
 	m.prov = addProv(m.prov, id)
 }
 
@@ -237,7 +325,7 @@ func (m *machine) runOrigin(name string) (value, int) {
 		}
 		o := m.st.origins[id]
 		hash := hex.EncodeToString(o.hash[:])
-		if secret {
+		if secret || m.st.hideHash(id) {
 			hash = redacted3
 		}
 		rows = append(rows, parent.Row{"origin": needsCell(o.src), "key": needsCell(o.key), "target": o.target, "line": strconv.Itoa(o.line), "hash": hash})

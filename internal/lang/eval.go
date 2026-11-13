@@ -650,6 +650,7 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 		}
 		if dv := toDatum(v); !isSecret(dv) {
 			m.vars[d.Name] = value{kind: valData, d: secretVal{dv}, prov: v.prov}
+			m.markSecret(m.vars[d.Name])
 		}
 	}
 	if strings.Contains(d.Flags, "r") {

@@ -225,3 +225,54 @@ func TestOriginNotInLog(t *testing.T) {
 		t.Fatalf("%q", out.Stderr)
 	}
 }
+
+// A secret hides the hash of every origin it came from, however and
+// whenever it is bound, of any response with the same hash, and of a
+// later response holding its text; origin of the queried value need not
+// be secret itself.
+func TestOriginHidesSecretSources(t *testing.T) {
+	h := sha256.Sum256([]byte("body /var/log/token\n"))
+	leak := hex.EncodeToString(h[:])
+	for name, c := range map[string]struct{ src, of string }{
+		"late-bound":             {"let raw = (cat /var/log/token)\ndeclare -s tok = $raw", "raw"},
+		"computed from":          {"let raw = (cat /var/log/token)\ndeclare -s tok = [ trim($raw) ]\nlet n = [ len($raw) ]", "n"},
+		"a second read":          {"declare -s tok = (cat /var/log/token)\nlet other = (cat /var/log/token)", "other"},
+		"an earlier second read": {"let a = (cat /var/log/token)\nlet b = (cat /var/log/token)\ndeclare -s tok = $a", "b"},
+		"a let of a secret":      {"let raw = (cat /var/log/token)\ndeclare -s tok = $raw\nlet copy = $tok\nlet n = [ len($raw) ]", "n"},
+		"a for over a secret":    {"let raw = (cat /var/log/token)\nfor s in [ [1] ] { declare -s tok = $raw }", "raw"},
+		"inside a fn":            {"let raw = (cat /var/log/token)\nfn f(p) { declare -s tok = $raw }\nf x", "raw"},
+	} {
+		st := NewState()
+		if out := Run(c.src, provGrant(), provParent{}, Options{State: st}); out.Status != 0 {
+			t.Errorf("%s: %+v", name, out)
+			continue
+		}
+		o := Run("origin "+c.of, provGrant(), provParent{}, Options{State: st})
+		if strings.Contains(o.Stdout, leak) || !strings.Contains(o.Stdout, "***") {
+			t.Errorf("%s: %q", name, o.Stdout)
+		}
+	}
+	// A later response holding a bound secret's text is hidden too.
+	st := NewState()
+	Run("declare -s tok = /var/log/zzsecret\nlet other = (cat /var/log/zzsecret)", provGrant(), provParent{}, Options{State: st})
+	o := Run("origin other", provGrant(), provParent{}, Options{State: st})
+	if !strings.Contains(o.Stdout, "***") {
+		t.Fatalf("text: %q", o.Stdout)
+	}
+	// Queried before the secret exists, hidden once it does.
+	st = NewState()
+	Run("let raw = (cat /var/log/token)", provGrant(), provParent{}, Options{State: st})
+	if o := Run("origin raw", provGrant(), provParent{}, Options{State: st}); !strings.Contains(o.Stdout, leak) {
+		t.Fatalf("before: %q", o.Stdout)
+	}
+	Run("declare -s tok = $raw", provGrant(), provParent{}, Options{State: st})
+	if o := Run("origin raw", provGrant(), provParent{}, Options{State: st}); strings.Contains(o.Stdout, leak) {
+		t.Fatalf("after: %q", o.Stdout)
+	}
+	// Unrelated origins keep their hash.
+	Run("let a = (cat /var/log/a)", provGrant(), provParent{}, Options{State: st})
+	ha := sha256.Sum256([]byte("body /var/log/a\n"))
+	if o := Run("origin a", provGrant(), provParent{}, Options{State: st}); !strings.Contains(o.Stdout, hex.EncodeToString(ha[:])) {
+		t.Fatalf("unrelated hidden: %q", o.Stdout)
+	}
+}

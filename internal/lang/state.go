@@ -42,6 +42,11 @@ type State struct {
 	// fnSrc places each fn body's lines.
 	origins []origin
 	fnSrc   map[*Fn]fnSource
+	// secretOrigin, secretHash, and secretText only grow: the origins,
+	// response hashes, and texts of every secret bound (prov.go).
+	secretOrigin map[uint32]bool
+	secretHash   map[[32]byte]bool
+	secretText   map[string]bool
 	// secrets memoizes SecretCount for one generation.
 	secrets    int
 	secretsGen uint64
