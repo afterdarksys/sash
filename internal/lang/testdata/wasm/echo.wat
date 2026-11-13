@@ -1,5 +1,5 @@
 (module
-  (memory (export "memory") 1)
+  (memory (export "memory") 1 256)
   (func (export "sash_alloc") (param i32) (result i32) i32.const 1024)
   ;; Returns its input: ptr<<32 | len.
   (func (export "echo") (param i32 i32) (result i64)

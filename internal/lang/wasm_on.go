@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -22,7 +23,26 @@ var (
 	wasmRT       wazero.Runtime
 	wasmMu       sync.Mutex
 	wasmCompiled = map[[32]byte]wazero.CompiledModule{}
+	// wasmFailed remembers modules refused by hash, so the same bytes
+	// are refused again at once and a loop cannot make sash recompile
+	// them. Busy is not remembered. At most wasmFailedMax entries.
+	wasmFailed = map[[32]byte]error{}
+	// wasmCompiling is set while a compile runs, abandoned ones included:
+	// at most one compile in flight per process.
+	wasmCompiling atomic.Bool
+	// wasmCompileHook runs on the compile goroutine before compiling;
+	// tests use it to make a compile slow.
+	wasmCompileHook func()
 )
+
+const wasmFailedMax = 1024
+
+func wasmRemember(h [32]byte, err error) error {
+	if len(wasmFailed) < wasmFailedMax {
+		wasmFailed[h] = err
+	}
+	return err
+}
 
 func wasmRuntime() wazero.Runtime {
 	wasmOnce.Do(func() { wasmRT = newWasmRuntime(context.Background()) })
@@ -39,18 +59,24 @@ func wasmCompile(body []byte, h [32]byte) (any, error) {
 	if c, ok := wasmCompiled[h]; ok {
 		return c, nil
 	}
-	if err := wasmCheckModule(body); err != nil {
+	if err, ok := wasmFailed[h]; ok {
 		return nil, err
+	}
+	if err := wasmCheckModule(body); err != nil {
+		return nil, wasmRemember(h, err)
+	}
+	if wasmCompiling.Load() {
+		return nil, errors.New("wasm_busy")
 	}
 	c, err := wasmCompileTimed(body)
 	if err != nil {
-		return nil, err
+		return nil, wasmRemember(h, err)
 	}
 	if len(c.ImportedFunctions()) > 0 || len(c.ImportedMemories()) > 0 {
 		if cerr := c.Close(context.Background()); cerr != nil {
 			return nil, errors.Join(errors.New("wasm_import"), cerr)
 		}
-		return nil, errors.New("wasm_import")
+		return nil, wasmRemember(h, errors.New("wasm_import"))
 	}
 	alloc, ok := c.ExportedFunctions()["sash_alloc"]
 	_, hasMem := c.ExportedMemories()["memory"]
@@ -58,7 +84,7 @@ func wasmCompile(body []byte, h [32]byte) (any, error) {
 		if cerr := c.Close(context.Background()); cerr != nil {
 			return nil, errors.Join(errors.New("wasm_abi"), cerr)
 		}
-		return nil, errors.New("wasm_abi")
+		return nil, wasmRemember(h, errors.New("wasm_abi"))
 	}
 	wasmCompiled[h] = c
 	return c, nil
@@ -78,8 +104,16 @@ func wasmCompileTimed(body []byte) (wazero.CompiledModule, error) {
 		err error
 	}
 	done := make(chan result, 1)
+	wasmCompiling.Store(true)
+	hook := wasmCompileHook
 	go func() {
+		if hook != nil {
+			hook()
+		}
 		c, err := wasmRuntime().CompileModule(context.Background(), body)
+		// Clear before handing the result over, so the next compile does
+		// not see this one as still in flight.
+		wasmCompiling.Store(false)
 		done <- result{c, err}
 	}()
 	t := time.NewTimer(wasmCompileMax)

@@ -36,6 +36,11 @@ func parentVerbRead(full string) parent.Verb {
 	return parent.Verb{Key: "file.read", Argv: []string{"cat", full}, Path: full}
 }
 
+// wasmMemoryPagesCap is the memory cap: 256 pages, 16 MiB per instance.
+// A module must declare a max at or under it, and the runtime enforces it
+// too.
+const wasmMemoryPagesCap = 256
+
 const (
 	wasmCallMax   = time.Second
 	wasmModuleMax = 4 << 20
@@ -247,46 +252,119 @@ func wasmSections(b []byte, f func(id byte, body []byte) error) error {
 	return nil
 }
 
+// Per-entry costs measured in wazero v1.12.0's interpreter (i9, darwin):
+// a function costs about 256 bytes and 0.5 us to compile (500,000 took
+// 128 MB and 263 ms), and a declared local about 400 bytes (one function
+// with 50,000 locals took 20 MB and 21 ms; 100 such took 322 MB). A 4 MiB
+// module could otherwise declare a million functions or 100M locals (43 GB
+// and 4m39s). The caps keep one compile near 40 MB and 50 ms, far above
+// what small compiled helper modules declare.
+const (
+	wasmFuncMax        = 10000
+	wasmLocalsPerFunc  = 50000
+	wasmLocalsPerMod   = 100000
+	wasmMemoryMaxPages = wasmMemoryPagesCap
+)
+
 // wasmCheckModule is what sash refuses before wazero sees the bytes: any
-// import of any kind (function, table, memory, global), and any table
-// whose min or max passes wasmTableMax.
+// import of any kind (function, table, memory, global); a table or memory
+// without a declared max, or past its cap (tables 10,000 entries, memory
+// 256 pages), so table.grow and memory.grow stop there; more than 10,000
+// functions; and more locals than the caps, summed with overflow checks.
 func wasmCheckModule(b []byte) error {
+	limits := errors.New("wasm_limits")
+	var locals uint64
 	return wasmSections(b, func(id byte, body []byte) error {
+		count, n := uleb(body)
 		switch id {
-		case 2:
-			count, n := uleb(body)
+		case 2, 3, 4, 5, 10:
 			if n == 0 {
 				return errWasmBad
 			}
+		}
+		p := body[n:]
+		// limitsMax reads limits that must be 0x01 min max with
+		// min <= max <= cap.
+		limitsMax := func(cap uint64) error {
+			if len(p) < 1 || p[0] != 0x01 {
+				if len(p) >= 1 && p[0] == 0x00 {
+					return limits
+				}
+				return errWasmBad
+			}
+			p = p[1:]
+			min, a := uleb(p)
+			if a == 0 {
+				return errWasmBad
+			}
+			p = p[a:]
+			max, c := uleb(p)
+			if c == 0 {
+				return errWasmBad
+			}
+			p = p[c:]
+			if max > cap || min > max {
+				return limits
+			}
+			return nil
+		}
+		switch id {
+		case 2:
 			if count > 0 {
 				return errors.New("wasm_import")
 			}
-		case 4:
-			count, n := uleb(body)
-			if n == 0 {
-				return errWasmBad
+		case 3:
+			if count > wasmFuncMax {
+				return limits
 			}
-			p := body[n:]
+		case 4:
 			for k := uint64(0); k < count; k++ {
-				// reftype, then limits: 0x00 min, or 0x01 min max.
-				if len(p) < 2 {
+				if len(p) < 1 {
 					return errWasmBad
 				}
-				flag := p[1]
-				p = p[2:]
-				if flag > 1 {
+				p = p[1:] // reftype
+				if err := limitsMax(wasmTableMax); err != nil {
+					return err
+				}
+			}
+		case 5:
+			for k := uint64(0); k < count; k++ {
+				if err := limitsMax(wasmMemoryMaxPages); err != nil {
+					return err
+				}
+			}
+		case 10:
+			if count > wasmFuncMax {
+				return limits
+			}
+			for k := uint64(0); k < count; k++ {
+				size, a := uleb(p)
+				if a == 0 || size > uint64(len(p)-a) {
 					return errWasmBad
 				}
-				for l := 0; l <= int(flag); l++ {
-					v, m := uleb(p)
-					if m == 0 {
+				fn := p[a : a+int(size)]
+				p = p[a+int(size):]
+				decls, c := uleb(fn)
+				if c == 0 {
+					return errWasmBad
+				}
+				q := fn[c:]
+				var mine uint64
+				for d := uint64(0); d < decls; d++ {
+					v, e := uleb(q)
+					if e == 0 || len(q) < e+1 {
 						return errWasmBad
 					}
-					if v > wasmTableMax {
-						return errors.New("wasm_limits")
+					q = q[e+1:] // the count, then the value type
+					if v > wasmLocalsPerFunc || mine+v > wasmLocalsPerFunc {
+						return limits
 					}
-					p = p[m:]
+					mine += v
 				}
+				if locals+mine > wasmLocalsPerMod {
+					return limits
+				}
+				locals += mine
 			}
 		}
 		return nil

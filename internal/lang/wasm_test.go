@@ -94,7 +94,9 @@ func checkEnds(t testing.TB, b []byte) error {
 func TestWasmCheckModule(t *testing.T) {
 	for name, want := range map[string]string{
 		"echo": "", "table": "", "overflow": "wasm_compile", "bigtable": "wasm_limits",
-		"tablemax": "wasm_limits", "wasi": "wasm_import",
+		"tablemax": "wasm_limits", "wasi": "wasm_import", "locals": "wasm_limits", "locals2": "wasm_limits", "locals3": "wasm_limits",
+		"manyfuncs": "wasm_limits", "tablenomax": "wasm_limits", "memnomax": "wasm_limits",
+		"tablegrow": "", "badcode": "", "grow": "", "huge": "", "data": "", "loop": "", "noabi": "",
 	} {
 		err := checkEnds(t, wasmFile(t, name))
 		if (want == "" && err != nil) || (want != "" && (err == nil || err.Error() != want)) {
@@ -121,7 +123,8 @@ func TestWasmCheckModule(t *testing.T) {
 }
 
 func FuzzWasmSections(f *testing.F) {
-	for _, n := range []string{"echo", "data", "wasi", "table", "bigtable", "tablemax", "overflow", "huge", "loop", "grow", "noabi"} {
+	for _, n := range []string{"echo", "data", "wasi", "table", "bigtable", "tablemax", "overflow", "huge", "loop", "grow", "noabi",
+		"locals", "locals2", "tablegrow", "tablenomax", "memnomax", "badcode"} {
 		f.Add(wasmFile(f, n))
 	}
 	f.Add([]byte("\x00asm\x01\x00\x00\x00\x04\x05\x01\x70\x01\xff\xff"))

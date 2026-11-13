@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -182,4 +183,95 @@ func TestWasmCompileDeadline(t *testing.T) {
 	if _, err := wasmCompileTimed(b); err == nil || err.Error() != "wasm_compile" || time.Since(start) > time.Second {
 		t.Fatalf("%v after %v", err, time.Since(start))
 	}
+}
+
+// Locals, functions, and tables or memories without a declared max are
+// refused before compile; table.grow past a declared max fails inside
+// wazero and the module traps, without allocating the growth.
+func TestWasmCaps(t *testing.T) {
+	for name, want := range map[string]string{
+		"locals": "wasm_limits", "locals2": "wasm_limits", "manyfuncs": "wasm_limits",
+		"tablenomax": "wasm_limits", "memnomax": "wasm_limits",
+	} {
+		start := time.Now()
+		out, _ := runWasmSrc(t, load(t, name)+"echo ran")
+		if out.Status != exitType || !strings.Contains(out.Stderr, want) || strings.Contains(out.Stdout, "ran") || time.Since(start) > time.Second {
+			t.Errorf("%s: %+v in %v", name, out, time.Since(start))
+		}
+	}
+	var ms0, ms1 runtime.MemStats
+	runtime.ReadMemStats(&ms0)
+	out, _ := runWasmSrc(t, load(t, "tablegrow")+"echo [ m::grow(1) ]")
+	runtime.ReadMemStats(&ms1)
+	if out.Status != exitType || !strings.Contains(out.Stderr, "wasm_trap") || ms1.TotalAlloc-ms0.TotalAlloc > 64<<20 {
+		t.Fatalf("table.grow: %+v, allocated %d MB", out, (ms1.TotalAlloc-ms0.TotalAlloc)>>20)
+	}
+}
+
+// A refused module is remembered by hash: loading it again does not
+// compile it again.
+func TestWasmNegativeCache(t *testing.T) {
+	compiles := 0
+	old := wasmCompileHook
+	defer func() { wasmCompileHook = old }()
+	wasmCompileHook = func() { compiles++ }
+	for i := 0; i < 3; i++ {
+		out, _ := runWasmSrc(t, load(t, "badcode")+"echo ran")
+		if out.Status != exitType || !strings.Contains(out.Stderr, "wasm_compile") {
+			t.Fatalf("%d: %+v", i, out)
+		}
+	}
+	if compiles != 1 {
+		t.Fatalf("compiled %d times", compiles)
+	}
+}
+
+// One compile in flight per process, abandoned ones included: a second is
+// wasm_busy at once, not queued.
+func TestWasmBusy(t *testing.T) {
+	oldHook, oldMax := wasmCompileHook, wasmCompileMax
+	defer func() { wasmCompileHook, wasmCompileMax = oldHook, oldMax }()
+	release := make(chan struct{})
+	wasmCompileHook = func() { <-release }
+	wasmCompileMax = 50 * time.Millisecond
+	// The caches are per process and per hash: start these two modules
+	// uncompiled, and leave them so for the other tests.
+	forget := func() {
+		wasmMu.Lock()
+		defer wasmMu.Unlock()
+		for _, n := range []string{"tablegrow", "huge"} {
+			h := sha256.Sum256(mustRead(t, n))
+			delete(wasmCompiled, h)
+			delete(wasmFailed, h)
+		}
+	}
+	forget()
+	defer forget()
+	src1 := "wasm a = /srv/wasm/tablegrow.wasm sha256 " + modHash(t, "tablegrow") + "\necho ran"
+	if out, _ := runWasmSrc(t, src1); !strings.Contains(out.Stderr, "wasm_compile") {
+		t.Fatalf("slow compile not abandoned: %+v", out)
+	}
+	start := time.Now()
+	src2 := "wasm b = /srv/wasm/huge.wasm sha256 " + modHash(t, "huge") + "\necho ran"
+	if out, _ := runWasmSrc(t, src2); !strings.Contains(out.Stderr, "wasm_busy") || time.Since(start) > 40*time.Millisecond {
+		t.Fatalf("not busy: %+v after %v", out, time.Since(start))
+	}
+	close(release)
+	for i := 0; wasmCompiling.Load() && i < 200; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	wasmCompileHook = nil
+	// Busy was not remembered: the module loads once the compile is done.
+	if out, _ := runWasmSrc(t, src2); out.Status != 0 {
+		t.Fatalf("after: %+v", out)
+	}
+}
+
+func mustRead(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "wasm", name+".wasm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

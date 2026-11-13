@@ -16,7 +16,7 @@ import (
 )
 
 // wasmMemoryPages caps one instance's memory: 256 pages is 16 MiB.
-const wasmMemoryPages = 256
+const wasmMemoryPages = wasmMemoryPagesCap
 
 // newWasmRuntime is the interpreter runtime: no compiler (no generated
 // native code), memory capped, calls aborted when their context ends, and

@@ -1,5 +1,5 @@
 (module
-  (memory (export "memory") 1)
+  (memory (export "memory") 1 256)
   (func (export "sash_alloc") (param i32) (result i32) i32.const 1024)
   (func (export "bad") (param i32 i32) (result i64) i64.const 8796093022213)      ;; 2048<<32 | 5
   (func (export "nan") (param i32 i32) (result i64) i64.const 9019431321603)      ;; 2100<<32 | 3
