@@ -207,6 +207,7 @@ func (m *machine) markOriginSecret(id int) {
 	}
 	m.st.secretOrigin[uint32(id)] = true
 	m.st.secretHash[m.st.origins[id].hash] = true
+	m.sinkSecrets()
 }
 
 // holdsSecretValue reports whether any leaf of d holds a bound secret's

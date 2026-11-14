@@ -462,3 +462,65 @@ func TestParSecondInterruptReports(t *testing.T) {
 		t.Fatalf("recording: %s", buf.String())
 	}
 }
+
+// A secret a branch bound before a second interrupt abandoned it is known
+// to the session at once: the next run's template_file render of that
+// text is written 0600, and its --check diff is not listed, while the
+// branch is still running.
+func TestParAbandonedSecretKnownAtOnce(t *testing.T) {
+	slow := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(slow) }) }
+	var mu sync.Mutex
+	var writes []parent.Verb
+	files := map[string]string{
+		"/srv/ops/tok":          "swordfish-9",
+		"/srv/ops/spec.yaml":    "pw: swordfish-9\n",
+		"/srv/ops/t.tpl":        "password={{ $pw }}\n",
+		"/srv/ops/out/app.conf": "password=old\n",
+	}
+	var a *prototest.Agent
+	a = &prototest.Agent{Max: 4, Handle: func(v parent.Verb) (parent.Result, error) {
+		switch {
+		case v.Key == "unit.restart":
+			<-slow
+		case v.Key == "file.write":
+			mu.Lock()
+			writes = append(writes, v)
+			mu.Unlock()
+		case v.Key == "file.read":
+			return parent.Result{Kind: parent.KindBytes, Bytes: []byte(files[v.Path])}, nil
+		}
+		return parent.Result{Kind: parent.KindBytes}, nil
+	}}
+	c, done := muxClient(t, a)
+	defer done()
+	defer release()
+	st := NewState()
+	intr := make(chan struct{}, 2)
+	opt := Options{State: st, Interrupts: func() (<-chan struct{}, func()) { return intr, func() {} }}
+	go func() {
+		waitFor(t, "restart running", func() bool { return a.Stats().Running == 1 })
+		intr <- struct{}{}
+		waitFor(t, "cancel", func() bool { return len(a.Stats().Cancels) == 1 })
+		intr <- struct{}{}
+	}()
+	out := Run("fn b1() { declare -s s = (cat /srv/ops/tok); unit restart slow }\npar 2 { b1; echo a }", parGrant(), c, opt)
+	if out.Status != exitInterrupted || !strings.Contains(out.Stderr, "outcome unknown: unit.restart slow") {
+		t.Fatalf("%+v", out)
+	}
+	// The branch is still blocked in its restart.
+	if a.Stats().Running != 1 {
+		t.Fatal("the branch ended before the check")
+	}
+	chk := Run("template_file /srv/ops/spec.yaml /srv/ops/t.tpl /srv/ops/out/app.conf --check", parGrant(), c, opt)
+	if chk.Status != 1 || chk.Stdout != secretDiff || strings.Contains(chk.Stdout+chk.Stderr, "swordfish") {
+		t.Fatalf("--check: %+v", chk)
+	}
+	w := Run("template_file /srv/ops/spec.yaml /srv/ops/t.tpl /srv/ops/out/app.conf", parGrant(), c, opt)
+	mu.Lock()
+	defer mu.Unlock()
+	if w.Status != 0 || len(writes) != 1 || writes[0].Mode != "0600" {
+		t.Fatalf("write: %+v %+v", w, writes)
+	}
+}

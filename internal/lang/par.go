@@ -55,6 +55,54 @@ type parBranch struct {
 	// the goroutine, through the State's late queue.
 	done      bool
 	abandoned bool
+	// sink is the par's shared secret sink (below).
+	sink *secretSink
+}
+
+// secretSink is where a par's branches put every secret text and hash
+// they mark, at the moment they mark it. It is the one structure branches
+// and their par share for secrets, under its own lock; par alone merges it
+// into the session State, at the join and at a second interrupt, so a
+// secret a branch bound before it was abandoned is known to the session
+// before its next statement, never only when the branch ends.
+type secretSink struct {
+	mu    sync.Mutex
+	texts map[string]bool
+	hash  map[[32]byte]bool
+}
+
+func (s *secretSink) add(st *State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for t := range st.secretText {
+		s.texts[t] = true
+	}
+	for h := range st.secretHash {
+		s.hash[h] = true
+	}
+}
+
+// merge copies the sink into m's State. Only the par's own machine calls
+// it.
+func (m *machine) mergeSink(s *secretSink) {
+	b := &State{secretText: map[string]bool{}, secretHash: map[[32]byte]bool{}}
+	s.mu.Lock()
+	for t := range s.texts {
+		b.secretText[t] = true
+	}
+	for h := range s.hash {
+		b.secretHash[h] = true
+	}
+	s.mu.Unlock()
+	m.mergeSecrets(b)
+}
+
+// sinkSecrets hands a branch's secret sets to its par's sink. It runs on
+// the branch's goroutine, which alone writes the branch State it reads.
+func (m *machine) sinkSecrets() {
+	if m.pb != nil && m.pb.sink != nil {
+		m.pb.sink.add(m.st)
+	}
 }
 
 // lateQueue holds what branches left running by a second interrupt
@@ -311,8 +359,11 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		tapePar = m.tape.newPar()
 	}
 	machines := make([]*machine, len(branches))
+	sink := &secretSink{texts: map[string]bool{}, hash: map[[32]byte]bool{}}
+	defer m.mergeSink(sink)
 	for i, b := range branches {
 		bm := m.branchMachine(ctx, i)
+		bm.pb.sink = sink
 		if m.tape != nil {
 			bm.tape = m.tape.branchView(tapePar, i)
 		}

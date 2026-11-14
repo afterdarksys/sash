@@ -222,6 +222,7 @@ func (m *machine) markSecret(v value) {
 		st.secretText[s] = true
 	}
 	add(inner)
+	m.sinkSecrets()
 }
 
 // respHoldsSecret reports whether a response holds a secret text bound so
