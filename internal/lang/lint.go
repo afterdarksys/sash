@@ -29,16 +29,17 @@ const (
 // lintRules is every rule and its severity. incomplete-needs is an error
 // for command_from_value and a warning otherwise.
 var lintRules = map[string]string{
-	"unused-binding":    lintInfo,
-	"unreachable":       lintWarning,
-	"constant-check":    lintWarning,
-	"retry-on-mutation": lintWarning,
-	"secret-to-sink":    lintError,
-	"secret-fault":      lintWarning,
-	"silent-catch":      lintWarning,
-	"incomplete-needs":  lintWarning,
-	"shadowed-secret":   lintWarning,
-	"secret-file":       lintInfo,
+	"unused-binding":     lintInfo,
+	"unreachable":        lintWarning,
+	"constant-check":     lintWarning,
+	"retry-on-mutation":  lintWarning,
+	"secret-to-sink":     lintError,
+	"secret-fault":       lintWarning,
+	"silent-catch":       lintWarning,
+	"incomplete-needs":   lintWarning,
+	"shadowed-secret":    lintWarning,
+	"secret-file":        lintInfo,
+	"secret-after-write": lintWarning,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -675,49 +676,67 @@ func stageName(st Stage) string {
 // is information, not a sink. A secret in a template_file path is still
 // secret-to-sink. Matching is by the literal word, so it can miss a file
 // read under another spelling; the run decides by the response, not this.
+//
+// secret-after-write is the other order: a secret binding's pipe reads a
+// literal path that an earlier template_file (by offset) wrote. The run
+// cannot know at write time that the file will be a secret's source, so
+// it went out with the default mode.
 func (l *linter) secretFiles() {
 	read := map[string]bool{}
-	pipeReads := func(p *Pipeline) {
+	type readAt struct {
+		path string
+		at   int
+	}
+	var reads []readAt
+	pipeReads := func(p *Pipeline, at int) {
 		for _, st := range p.Stages {
 			if plain(st.Argv[0]) == "cat" {
 				for _, w := range st.Argv[1:] {
 					if lit := plain(w); lit != "" {
 						read[lit] = true
+						reads = append(reads, readAt{lit, at})
 					}
 				}
 			}
 			for _, r := range st.Redirs {
 				if lit := plain(r.Path); r.Kind == "<" && lit != "" {
 					read[lit] = true
+					reads = append(reads, readAt{lit, at})
 				}
 			}
 		}
 	}
-	bound := func(name string, lt *Let) {
+	bound := func(name string, lt *Let, at int) {
 		if lt != nil && lt.Pipe != nil && l.tainted[name] {
-			pipeReads(lt.Pipe)
+			pipeReads(lt.Pipe, at)
 		}
 	}
-	lintEach(l.prog, true, func(s Stmt, _ int, _ bool) {
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
 		switch s := s.(type) {
 		case *Let:
-			bound(s.Name, s)
+			bound(s.Name, s, at)
 		case *Declare:
-			bound(s.Name, s.Value)
+			bound(s.Name, s.Value, at)
 		case *With:
 			for _, lt := range s.Lets {
-				bound(lt.Name, lt)
+				bound(lt.Name, lt, at)
 			}
 		}
 	})
 	if len(read) == 0 {
 		return
 	}
+	written := map[string]int{} // out path to its first template_file
 	lintEach(l.prog, true, func(s Stmt, _ int, _ bool) {
 		lintEachPipe(s, func(pl Pipeline, _ string) {
 			for _, st := range pl.Stages {
 				if plain(st.Argv[0]) != "template_file" || len(st.Argv) != 4 {
 					continue
+				}
+				if out := plain(st.Argv[3]); out != "" {
+					if at, ok := written[out]; !ok || st.Argv[0].Pos < at {
+						written[out] = st.Argv[0].Pos
+					}
 				}
 				for _, w := range st.Argv[1:3] {
 					if lit := plain(w); read[lit] {
@@ -728,6 +747,11 @@ func (l *linter) secretFiles() {
 			}
 		})
 	})
+	for _, r := range reads {
+		if at, ok := written[r.path]; ok && at < r.at {
+			l.add(r.at, "secret-after-write", "a secret is read from "+needsCell(r.path)+", which an earlier template_file wrote with the default mode")
+		}
+	}
 }
 
 // sinks is secret-to-sink.

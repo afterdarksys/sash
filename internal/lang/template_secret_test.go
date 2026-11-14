@@ -231,3 +231,83 @@ func TestWhyTemplateFileMode(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+const bindTok = "declare -s s = (cat /srv/ops/tok)\n"
+
+func builtFiles() map[string]string {
+	f := secretTplFiles()
+	f["/srv/ops/tok"] = "hunter2-long"
+	f["/srv/ops/split.yaml"] = "a: hunter2\nb: -long\n"
+	f["/srv/ops/split.tpl"] = "pw={{ $a }}{{ $b }}\n"
+	f["/srv/ops/esc.yaml"] = "pw: \"hunter2\\x2dlong\"\n"
+	f["/srv/ops/b64.yaml"] = "pw: aHVudGVyMi1sb25n\n"
+	return f
+}
+
+// A secret's text built during the render (split across spec values, or
+// spelled with an escape the spec decodes) is written with mode 0600, and
+// the spec and template origins become secret.
+func TestTemplateFileSecretBuilt(t *testing.T) {
+	for name, c := range map[string]struct{ spec, tpl, body string }{
+		"split":  {"/srv/ops/split.yaml", "/srv/ops/split.tpl", "pw=hunter2-long\n"},
+		"escape": {"/srv/ops/esc.yaml", "/srv/ops/t.tpl", "password=hunter2-long\n"},
+	} {
+		p := &tplParent{files: builtFiles()}
+		out := Run(bindTok+"template_file "+c.spec+" "+c.tpl+" /srv/ops/out/app.conf", tplGrant(), p, Options{})
+		w := writesTo(p, "/srv/ops/out/app.conf")
+		if out.Status != 0 || len(w) != 1 || w[0].Mode != "0600" || string(w[0].Body) != c.body || strings.Contains(out.Stdout+out.Stderr, "hunter2") {
+			t.Errorf("%s: %+v %+v", name, out, w)
+		}
+		p = &tplParent{files: builtFiles()}
+		out = Run(bindTok+"template_file "+c.spec+" "+c.tpl+" /srv/ops/out/app.conf --check", tplGrant(), p, Options{})
+		if out.Status != 1 || out.Stdout != secretDiff {
+			t.Errorf("%s --check: %+v", name, out)
+		}
+	}
+	// The spec's origin is now secret: its hash prints ***.
+	p := &tplParent{files: builtFiles()}
+	st := NewState()
+	if out := Run(bindTok+"template_file /srv/ops/split.yaml /srv/ops/split.tpl /srv/ops/out/app.conf", tplGrant(), p, Options{State: st}); out.Status != 0 {
+		t.Fatalf("%+v", out)
+	}
+	hidden := 0
+	for id, o := range st.origins {
+		if o.target == "/srv/ops/split.yaml" || o.target == "/srv/ops/split.tpl" {
+			if !st.hideHash(uint32(id)) {
+				t.Errorf("origin %s not secret", o.target)
+			}
+			hidden++
+		}
+	}
+	if hidden != 2 {
+		t.Fatalf("origins %+v", st.origins)
+	}
+}
+
+// Known limit, as for recordings: an encoding of a secret (here its
+// base64) is not its text, so that render keeps the default mode.
+func TestTemplateFileSecretEncodingLimit(t *testing.T) {
+	p := &tplParent{files: builtFiles()}
+	out := Run(bindTok+"template_file /srv/ops/b64.yaml /srv/ops/t.tpl /srv/ops/out/app.conf", tplGrant(), p, Options{})
+	if w := writesTo(p, "/srv/ops/out/app.conf"); out.Status != 0 || len(w) != 1 || w[0].Mode != "" || string(w[0].Body) != "password=aHVudGVyMi1sb25n\n" {
+		t.Fatalf("%+v %+v", out, w)
+	}
+}
+
+// Lint warns when a secret is read from a file an earlier template_file
+// wrote: the run could not know, so it went out at the default mode.
+func TestLintSecretAfterWrite(t *testing.T) {
+	src := "template_file /srv/ops/plain.yaml /srv/ops/t.tpl /srv/ops/out/app.conf\ndeclare -s s = (cat /srv/ops/out/app.conf)"
+	if rows := lintRows(t, Lint(src)); !hasRule(rows, "secret-after-write", "warning") {
+		t.Fatalf("%+v", rows)
+	}
+	for name, src := range map[string]string{
+		"read first": "declare -s s = (cat /srv/ops/out/app.conf)\ntemplate_file /srv/ops/plain.yaml /srv/ops/t.tpl /srv/ops/out/app.conf",
+		"not secret": "template_file /srv/ops/plain.yaml /srv/ops/t.tpl /srv/ops/out/app.conf\nlet s = (cat /srv/ops/out/app.conf)",
+		"--check":    "template_file /srv/ops/plain.yaml /srv/ops/t.tpl /srv/ops/out/app.conf --check\ndeclare -s s = (cat /srv/ops/out/app.conf)",
+	} {
+		if rows := lintRows(t, Lint(src)); hasRule(rows, "secret-after-write", "") {
+			t.Errorf("%s: %+v", name, rows)
+		}
+	}
+}

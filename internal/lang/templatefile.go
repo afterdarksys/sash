@@ -21,6 +21,11 @@ import (
 // for the mode is exit 2. Its --check and plan diffs are not listed, an
 // error after the read ends the line like any secret fault, and the value
 // it leaves is a secret. A secret in a path is still refused in prepare.
+// The rendered output and every decoded spec value are also scanned for a
+// bound secret's text (four runes or more anywhere, shorter as a whole
+// field), which catches a secret built during the render. Not caught: an
+// encoding of a secret (base64, hex, any transform), as for recordings, and
+// a secret bound after the write (lint warns: secret-after-write).
 
 var schemaKeys = map[string]bool{"type": true, "required": true, "enum": true, "pattern": true, "default": true}
 
@@ -168,21 +173,65 @@ func classifyTemplateFile(argv []string) (classified, *problem) {
 
 // readFile reads one path the stage already bound.
 func (m *machine) readFile(p string) (string, error) {
-	s, _, err := m.readFileSecret(p)
+	s, _, _, err := m.readFileSecret(p)
 	return s, err
 }
 
-// readFileSecret is readFile, and whether the response is secret: its hash
-// is a secret origin's or it holds a bound secret's text.
-func (m *machine) readFileSecret(p string) (string, bool, error) {
+// readFileSecret is readFile, whether the response is secret (its hash is
+// a secret origin's or it holds a bound secret's text), and the origin it
+// recorded, or -1.
+func (m *machine) readFileSecret(p string) (string, bool, int, error) {
+	before := len(m.st.origins)
 	res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"cat", p}, Path: p})
 	if err != nil || res.Exit != 0 {
-		return "", false, fmt.Errorf("cannot read")
+		return "", false, -1, fmt.Errorf("cannot read")
+	}
+	id := -1
+	if len(m.st.origins) == before+1 {
+		id = before
 	}
 	if len(res.Bytes) > dataMaxBytes {
-		return "", false, fmt.Errorf("too large")
+		return "", false, id, fmt.Errorf("too large")
 	}
-	return string(res.Bytes), m.st.secretHash[responseHash(res)] || m.st.respHoldsSecret(res), nil
+	return string(res.Bytes), m.st.secretHash[responseHash(res)] || m.st.respHoldsSecret(res), id, nil
+}
+
+// markOriginSecret marks origin id, and its response hash, secret: a
+// template_file render built a secret's text from it.
+func (m *machine) markOriginSecret(id int) {
+	if id < 0 || id >= len(m.st.origins) {
+		return
+	}
+	if m.st.secretOrigin == nil {
+		m.st.secretOrigin, m.st.secretHash, m.st.secretText = map[uint32]bool{}, map[[32]byte]bool{}, map[string]bool{}
+	}
+	m.st.secretOrigin[uint32(id)] = true
+	m.st.secretHash[m.st.origins[id].hash] = true
+}
+
+// holdsSecretValue reports whether any leaf of d holds a bound secret's
+// text by the recording's rule: a decoded spec value, so an escape in the
+// spec ("hunter2\x2dlong") is caught after decoding.
+func holdsSecretValue(d any, texts []string) bool {
+	switch x := d.(type) {
+	case []any:
+		for _, it := range x {
+			if holdsSecretValue(it, texts) {
+				return true
+			}
+		}
+		return false
+	case *omap:
+		for _, k := range x.keys {
+			if holdsSecretValue(x.m[k], texts) {
+				return true
+			}
+		}
+		return false
+	case nil:
+		return false
+	}
+	return holdsAny(textOf(d), texts)
 }
 
 // secretDiff stands in for a diff that would list a secret.
@@ -202,11 +251,11 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 		m.err.WriteString(msg + "\n")
 		return value{}, exitType
 	}
-	specText, specSecret, err := m.readFileSecret(st.paths[0])
+	specText, specSecret, specID, err := m.readFileSecret(st.paths[0])
 	if err != nil {
 		return fail("template_file spec: " + err.Error())
 	}
-	tpl, tplSecret, err := m.readFileSecret(st.paths[1])
+	tpl, tplSecret, tplID, err := m.readFileSecret(st.paths[1])
 	if err != nil {
 		return fail("template_file tpl: " + err.Error())
 	}
@@ -223,13 +272,28 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 	if err != nil {
 		return fail(err.Error())
 	}
+	// A secret's text can be built during the render (split across spec
+	// values, or spelled with an escape the spec decodes), so the output
+	// and every decoded spec value are scanned too. Then the render is
+	// secret and so are the files it came from.
+	texts := make([]string, 0, len(m.st.secretText))
+	for t := range m.st.secretText {
+		texts = append(texts, t)
+	}
+	if !secret && (holdsAny(out, texts) || holdsSecretValue(vars, texts)) {
+		secret = true
+	}
+	if secret {
+		m.markOriginSecret(specID)
+		m.markOriginSecret(tplID)
+	}
 	// Plan mode diffs only a file this session may read; a write-only out
 	// is reported by the door as a write, never read.
 	readable := m.g.Has("file.read") && m.g.AllowsRead(st.paths[2])
 	if len(st.argv) == 5 || (m.st.plan && readable) {
 		// --check, or plan mode: diff the current file against the render.
 		// In plan mode the write still goes to the door, which prints it.
-		cur, curSecret, rerr := m.readFileSecret(st.paths[2])
+		cur, curSecret, _, rerr := m.readFileSecret(st.paths[2])
 		if rerr != nil {
 			cur = ""
 		}
