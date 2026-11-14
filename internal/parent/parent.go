@@ -2,7 +2,10 @@
 // The systemapi agent implements it in commit 3.
 package parent
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // Kind is the shape of a stage result.
 type Kind int
@@ -46,3 +49,19 @@ var ErrModeUnsupported = errors.New("agent too old for file.write mode")
 type Parent interface {
 	Do(v Verb) (Result, error)
 }
+
+// ContextParent is a Parent that can also run a verb under a context: when
+// ctx ends before the answer, it asks the agent to cancel the verb, then
+// still waits for the answer, because a verb the agent already started
+// runs to completion. Fake, fixture, and replay parents implement only Do.
+type ContextParent interface {
+	Parent
+	DoContext(ctx context.Context, v Verb) (Result, error)
+}
+
+// ErrCancelled is a verb the agent dropped before it started: nothing ran.
+var ErrCancelled = errors.New("cancelled")
+
+// ErrOutcomeUnknown is a verb that passed the agent's deadline: systemd or
+// the package manager may still finish it.
+var ErrOutcomeUnknown = errors.New("outcome_unknown")

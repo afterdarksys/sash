@@ -6,6 +6,7 @@ package proto
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -20,10 +21,15 @@ import (
 // MaxFrame is the largest verb body. It matches the agent's 8 MiB result cap.
 const MaxFrame = 8 << 20
 
-// Client is the sash end of the verb pipe.
+// Client is the sash end of the verb pipe. It is serial until Concurrency
+// negotiates mux (docs/plans/2026-11-14-sash-mux-pipe.md); mux.go has the
+// concurrent half.
 type Client struct {
 	RW io.ReadWriter
+	// mu is the serial path's lock, held across write and read; hello
+	// also takes it, so nothing is outstanding when hello goes out.
 	mu sync.Mutex
+	muxState
 }
 
 type request struct {
@@ -43,10 +49,22 @@ type response struct {
 	Error string       `json:"error"`
 }
 
-// Do sends one verb and waits for the parent's result.
+// Do sends one verb and waits for the parent's result. Until Concurrency
+// turns mux on, this is the serial path, byte for byte as before.
 func (c *Client) Do(v parent.Verb) (parent.Result, error) {
+	if c.muxOn.Load() {
+		return c.doMux(context.Background(), v)
+	}
 	c.mu.Lock()
+	if c.muxOn.Load() {
+		// Hello finished while this call waited for mu.
+		c.mu.Unlock()
+		return c.doMux(context.Background(), v)
+	}
 	defer c.mu.Unlock()
+	if err := c.brokenErr(); err != nil {
+		return parent.Result{}, err
+	}
 	req := request{Key: v.Key, Argv: v.Argv, Path: v.Path, Mode: v.Mode}
 	if len(v.Body) > 0 {
 		req.Body = base64.StdEncoding.EncodeToString(v.Body)
@@ -58,6 +76,11 @@ func (c *Client) Do(v parent.Verb) (parent.Result, error) {
 	if err := Read(c.RW, &resp); err != nil {
 		return parent.Result{}, err
 	}
+	return fromResponse(v, resp)
+}
+
+// fromResponse is a verb's answer as a Result, or its error.
+func fromResponse(v parent.Verb, resp response) (parent.Result, error) {
 	if resp.Error != "" {
 		// An agent older than file.write mode refuses the unknown field
 		// as a bad frame. That is never retried without the mode: the
@@ -148,19 +171,8 @@ func Write(w io.Writer, v any) error {
 // Read receives one JSON frame. A declared length above MaxFrame is an error
 // and the body is left unread.
 func Read(r io.Reader, v any) error {
-	var n [4]byte
-	if _, err := io.ReadFull(r, n[:]); err != nil {
-		if errors.Is(err, io.ErrUnexpectedEOF) {
-			return io.ErrUnexpectedEOF
-		}
-		return err
-	}
-	size := binary.BigEndian.Uint32(n[:])
-	if size > MaxFrame {
-		return errors.New("frame too large")
-	}
-	body := make([]byte, size)
-	if _, err := io.ReadFull(r, body); err != nil {
+	body, err := readBody(r)
+	if err != nil {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
