@@ -1,0 +1,81 @@
+{
+  "source": "sash 6086949 internal/proto Client, captured by a generator test run on an exported copy",
+  "steps": [
+    {
+      "op": "send",
+      "frame": "{\"key\":\"ps\",\"argv\":[\"ps\"],\"path\":\"\",\"body\":\"\"}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"kind\":\"rows\",\"rows\":[{\"cmd\":\"init\",\"pid\":\"1\",\"user\":\"root\"}],\"cols\":[\"user\",\"pid\",\"cmd\"],\"exit\":0}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"mux\":{\"v\":1,\"max\":16,\"need\":[\"mode\"]}}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"mux\":{\"v\":1,\"max\":4,\"have\":[\"mode\"]}}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"id\":1,\"key\":\"ps\",\"argv\":[\"ps\"],\"path\":\"\",\"body\":\"\"}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"id\":1,\"kind\":\"rows\",\"rows\":[{\"cmd\":\"init\",\"pid\":\"1\",\"user\":\"root\"}],\"cols\":[\"user\",\"pid\",\"cmd\"],\"exit\":0}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"id\":2,\"key\":\"file.write\",\"argv\":[\"\\u003e\",\"/srv/a\"],\"path\":\"/srv/a\",\"body\":\"eA==\",\"mode\":\"0600\"}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"id\":2,\"kind\":\"bytes\",\"exit\":0}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"id\":3,\"key\":\"unit.restart\",\"argv\":[\"unit\",\"restart\",\"nginx\"],\"path\":\"\",\"body\":\"\"}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"id\":4,\"key\":\"unit.restart\",\"argv\":[\"unit\",\"restart\",\"nginx.service\"],\"path\":\"\",\"body\":\"\"}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"cancel\":4}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"id\":4,\"error\":\"cancelled\"}"
+    },
+    {
+      "op": "release",
+      "name": "nginx"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"id\":3,\"kind\":\"bytes\",\"exit\":0}"
+    },
+    {
+      "op": "send",
+      "frame": "{\"id\":5,\"key\":\"package.install\",\"argv\":[\"package\",\"install\",\"curl\"],\"path\":\"\",\"body\":\"\"}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"id\":5,\"error\":\"outcome_unknown\"}"
+    },
+    {
+      "op": "release",
+      "name": "curl"
+    },
+    {
+      "op": "send",
+      "frame": "{\"id\":6,\"key\":\"journal\",\"argv\":[\"journal\"],\"path\":\"\",\"body\":\"\"}"
+    },
+    {
+      "op": "expect",
+      "frame": "{\"id\":6,\"error\":\"denied\"}"
+    }
+  ]
+}
