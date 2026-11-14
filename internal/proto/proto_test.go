@@ -165,13 +165,12 @@ func TestServeMode(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 	modes := make(chan string, 2)
+	done := make(chan error, 1)
 	go func() {
-		if err := Serve(b, func(v parent.Verb) (parent.Result, error) {
+		done <- Serve(b, func(v parent.Verb) (parent.Result, error) {
 			modes <- v.Mode
 			return parent.Result{}, nil
-		}); err != nil {
-			t.Error(err)
-		}
+		})
 	}()
 	c := Client{RW: a}
 	for _, want := range []string{"0600", ""} {
@@ -179,5 +178,10 @@ func TestServeMode(t *testing.T) {
 			t.Fatalf("mode %q: %v", want, err)
 		}
 	}
+	// Closing the client end ends Serve; wait for it so it never reports
+	// after the test returns. A closed pipe is the normal end here.
 	a.Close()
+	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
+		t.Error(err)
+	}
 }
