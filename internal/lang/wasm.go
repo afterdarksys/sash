@@ -530,11 +530,10 @@ func (m *machine) wasmHook() func(mod, fn string, args []any, c *evalCtx) (any, 
 		if strings.HasPrefix(fn, "sash_") {
 			return nil, fmt.Errorf("usage wasm %s::%s", mod, fn)
 		}
-		if m.verbs >= m.st.verbMax {
+		if !m.takeVerb() {
 			m.ctl = ctlHalt
 			return nil, errVerbMax
 		}
-		m.verbs++
 		deadline := m.now().Add(wasmCallMax)
 		if !m.deadline.IsZero() && m.deadline.Before(deadline) {
 			deadline = m.deadline

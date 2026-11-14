@@ -124,6 +124,22 @@ type Timeout struct {
 
 func (*Timeout) stmt() {}
 
+// Par runs branches concurrently, at most N at once (v5 section 8,
+// docs/plans/2026-11-14-sash-mux-pipe.md): each statement of Body is a
+// branch, or, when Each is set, Body is one For and each item is a branch.
+// As, when set, binds the branch rows.
+type Par struct {
+	N    Word
+	As   string
+	Body Program
+	Each bool
+}
+
+func (*Par) stmt() {}
+
+// parMax is the largest par N.
+const parMax = 16
+
 // Use loads fn and declare -r definitions from a file read through
 // file.read. It runs no other statement.
 type Use struct{ Path Word }
@@ -273,6 +289,8 @@ func (p *parser) stmt() (Stmt, error) {
 			}
 			r.Body = *body
 			return r, nil
+		case "par":
+			return p.par()
 		case "timeout":
 			p.i++
 			if p.peek().kind != kWord {
@@ -299,6 +317,119 @@ func (p *parser) stmt() (Stmt, error) {
 		}
 	}
 	return p.chain()
+}
+
+// par reads par N [as r] { branches } or par N [as r] for x in src { }.
+// A par inside a par is refused, and so is a break, continue, return, or
+// exit that would leave a branch.
+func (p *parser) par() (Stmt, error) {
+	p.i++
+	if p.peek().kind != kWord {
+		return nil, fmt.Errorf("parse: par needs a count")
+	}
+	s := &Par{N: p.peek().word}
+	p.i++
+	if p.peek().kind == kWord && plain(p.peek().word) == "as" {
+		p.i++
+		name, err := p.plainName("par as")
+		if err != nil {
+			return nil, err
+		}
+		s.As = name
+	}
+	if p.peek().kind == kWord && plain(p.peek().word) == "for" {
+		at := p.peek().pos
+		f, err := p.forr()
+		if err != nil {
+			return nil, err
+		}
+		s.Body = Program{Stmts: []Stmt{f}, Pos: []int{at}}
+		s.Each = true
+	} else {
+		body, err := p.block()
+		if err != nil {
+			return nil, err
+		}
+		s.Body = *body
+	}
+	branches := s.Body.Stmts
+	if s.Each {
+		branches = s.Body.Stmts[0].(*For).Body.Stmts
+	}
+	for _, b := range branches {
+		if msg := parBranchCheck(b, false); msg != "" {
+			return nil, fmt.Errorf("parse: %s", msg)
+		}
+	}
+	return s, nil
+}
+
+// parBranchCheck refuses, in one branch, a nested par and a jump that
+// would leave the branch: return and exit anywhere outside a fn body, and
+// break or continue outside a loop of the branch. A fn defined in a branch
+// may return; a call that reaches exit or a par at run time is refused
+// there.
+func parBranchCheck(s Stmt, inLoop bool) string {
+	switch s := s.(type) {
+	case *Par:
+		return "par inside par"
+	case *Chain:
+		// atomic { } (v6 section 3) is not built; when it is, it and par
+		// exclude each other. A branch cannot start one now.
+		if len(s.Pipes) > 0 && len(s.Pipes[0].Stages) > 0 && plainFirst(s.Pipes[0].Stages[0]) == "atomic" {
+			return "atomic inside par"
+		}
+		return ""
+	case *Jump:
+		switch {
+		case s.Kind == "return" || s.Kind == "exit":
+			return s.Kind + " would leave a par branch"
+		case !inLoop:
+			return s.Kind + " would leave a par branch"
+		}
+		return ""
+	case *Fn:
+		var msg string
+		needsEachStmt(&s.Body, func(in Stmt) {
+			if _, ok := in.(*Par); ok && msg == "" {
+				msg = "par inside par"
+			}
+		})
+		return msg
+	case *For:
+		return parBodyCheck(&s.Body, true)
+	case *While:
+		return parBodyCheck(&s.Body, true)
+	case *If:
+		if msg := parBodyCheck(&s.Then, inLoop); msg != "" {
+			return msg
+		}
+		return parBodyCheck(s.Else, inLoop)
+	case *Try:
+		if msg := parBodyCheck(&s.Body, inLoop); msg != "" {
+			return msg
+		}
+		return parBodyCheck(s.Catch, inLoop)
+	case *With:
+		return parBodyCheck(&s.Body, inLoop)
+	case *Retry:
+		return parBodyCheck(&s.Body, inLoop)
+	case *Timeout:
+		return parBodyCheck(&s.Body, inLoop)
+	}
+	return ""
+}
+
+func parBodyCheck(p *Program, inLoop bool) string {
+	if p == nil {
+		return ""
+	}
+	for _, s := range p.Stmts {
+		if msg := parBranchCheck(s, inLoop); msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 func (p *parser) let() (Stmt, error) {

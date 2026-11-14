@@ -130,6 +130,8 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 			whyFns(&s.Body, fns)
 		case *Timeout:
 			whyFns(&s.Body, fns)
+		case *Par:
+			whyFns(&s.Body, fns)
 		}
 	}
 }

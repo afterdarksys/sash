@@ -1290,6 +1290,7 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 	e.opt.Confirm = func(prompt string) (bool, bool) {
 		return askConfirm(keys, out, func() error { return flushInput(int(in.Fd())) }, prompt)
 	}
+	e.opt.Interrupts = parInterrupts(keys)
 	return finishRaw(guard.Restore, e.loop(keys, out, errOut))
 }
 

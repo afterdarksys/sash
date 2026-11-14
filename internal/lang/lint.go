@@ -40,6 +40,7 @@ var lintRules = map[string]string{
 	"shadowed-secret":    lintWarning,
 	"secret-file":        lintInfo,
 	"secret-after-write": lintWarning,
+	"par-same-target":    lintWarning,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -105,6 +106,7 @@ func Lint(src string) Outcome {
 	l.unused()
 	l.shadowed()
 	l.blocks(prog)
+	l.parTargets()
 	l.needs()
 	return l.report(comments)
 }
@@ -150,6 +152,8 @@ func lintBodies(s Stmt) []*Program {
 	case *Retry:
 		return []*Program{&s.Body}
 	case *Timeout:
+		return []*Program{&s.Body}
+	case *Par:
 		return []*Program{&s.Body}
 	case *Fn:
 		return []*Program{&s.Body}
@@ -276,6 +280,8 @@ func ownRefs(s Stmt, out map[string]bool) {
 		}
 	case *Timeout:
 		wordRefs(s.D, out)
+	case *Par:
+		wordRefs(s.N, out)
 	case *Use:
 		wordRefs(s.Path, out)
 	}
@@ -351,6 +357,8 @@ func ownWords(s Stmt, w func(Word), x func(Expr)) {
 		}
 	case *Timeout:
 		w(s.D)
+	case *Par:
+		w(s.N)
 	case *Use:
 		w(s.Path)
 	}
@@ -550,11 +558,79 @@ func (l *linter) collect(p *Program, top bool, tryNode string) {
 				// Params are tainted from call sites in taint.
 				bind(prm, "parameter", nil)
 			}
+		case *Par:
+			if s.As != "" {
+				bind(s.As, "par as", nil)
+			}
 		}
 		for _, body := range lintBodies(s) {
 			l.collect(body, false, tryNode)
 		}
 	}
+}
+
+// parTargets is par-same-target: two branches of one par that name the
+// same mutating target (a unit, package, or sysctl by literal name, or a
+// > or template_file path), or a par for whose body names a literal one,
+// so every branch hits it. The agent serializes them per target, but not
+// in any order, so the result depends on which finishes last.
+func (l *linter) parTargets() {
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
+		p, ok := s.(*Par)
+		if !ok {
+			return
+		}
+		if p.Each {
+			for _, t := range parStmtTargets(p.Body.Stmts[0].(*For).Body.Stmts) {
+				l.add(at, "par-same-target", "every branch of par for reaches "+t)
+				return
+			}
+			return
+		}
+		seen := map[string]bool{}
+		for _, b := range p.Body.Stmts {
+			for _, t := range parStmtTargets([]Stmt{b}) {
+				if seen[t] {
+					l.add(at, "par-same-target", "two branches reach "+t)
+					return
+				}
+				seen[t] = true
+			}
+		}
+	})
+}
+
+// parStmtTargets are the literal mutating targets in stmts, once each, as
+// "<key> <target>" through needsCell.
+func parStmtTargets(stmts []Stmt) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(key, target string) {
+		if target == "" {
+			return
+		}
+		t := needsCell(key) + " " + needsCell(target)
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	needsEachStage(&Program{Stmts: stmts}, func(st Stage) {
+		for _, r := range st.Redirs {
+			if r.Kind == ">" {
+				add("file.write", plain(r.Path))
+			}
+		}
+		key := lintKey(st)
+		switch {
+		case !mutating[key]:
+		case plain(st.Argv[0]) == "template_file" && len(st.Argv) == 4:
+			add(key, plain(st.Argv[3]))
+		case len(st.Argv) > 2 && plain(st.Argv[0]) != "template_file":
+			add(key, plain(st.Argv[2]))
+		}
+	})
+	return out
 }
 
 // dep records that a taint on from taints to.
@@ -850,6 +926,8 @@ func (l *linter) sinks(p *Program) {
 			})
 		case *Timeout:
 			own("reaches a timeout", func(o map[string]bool) { wordRefs(s.D, o) })
+		case *Par:
+			own("reaches a par count", func(o map[string]bool) { wordRefs(s.N, o) })
 		}
 	})
 }

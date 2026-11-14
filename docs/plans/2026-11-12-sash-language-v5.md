@@ -1,6 +1,6 @@
 # sash language v5: the line, lint, and par
 
-Status: approved by Ryan 2026-11-12. Every "Recommended" below is the decision, plus three explicit answers: `par` waits for a multiplexed verb pipe (its own agent contract), so section 8 is semantics only; Tab completes seen paths only; and a bare `try` without `catch` becomes a parse error (section 0). Tier 3 (WASM, provenance, atomic, replay) is `2026-11-12-sash-v6-tier3.md`.
+Status: approved by Ryan 2026-11-12. Every "Recommended" below is the decision, plus three explicit answers: `par` waits for a multiplexed verb pipe (its own agent contract), so section 8 is semantics only (built 2026-11-14 on that pipe; see section 8's As built); Tab completes seen paths only; and a bare `try` without `catch` becomes a parse error (section 0). Tier 3 (WASM, provenance, atomic, replay) is `2026-11-12-sash-v6-tier3.md`.
 
 Every v1–v4 rule holds: no PATH exec, no `&`, no `eval`; values never parsed as source; a command name is a literal; every verb goes through `machine.prepare` and the agent re-checks it; everything is bounded by the 8 MiB value cap and depth 64. Nothing in v5 adds a door to the parent. Sections 1–7 are display and editing, 8 is concurrency, 9 is a gate at the one door (`machine.do`).
 
@@ -143,8 +143,19 @@ v5 fix: `loadHist` drops only lines containing `\n`, `\r`, or `\x00`, so ESC, C1
 
 **Verb pipe.** `proto.Client.Do` serializes on one mutex and `proto.Serve` handles one request at a time, so concurrent `Do` calls are safe but not parallel. A broken frame mid-call leaves the pipe unusable; v5 marks the client broken and fails every branch closed.
 
-- Decision: build `par` on the serialized pipe now, or wait for a multiplexed pipe (request ids, an agent-side concurrency limit per lease). Recommended: wait. With one serialized pipe, `par` buys no verb parallelism, only overlapped `retry` delays, while adding every race above. Ship the semantics when the agent contract lands.
-- Decision: under `set -o confirm`, run `par` with N forced to 1, or prompt from N branches. Recommended: force 1, so prompts arrive in source order with their context.
+- Decision (closed): build `par` on the multiplexed pipe (`2026-11-14-sash-mux-pipe.md`), not the serialized one. Effective N is min(N, the agent's M) after hello at the first `par`, or 1 against an agent without mux or a parent that is not the verb pipe.
+- Decision (closed): under `set -o confirm`, `par` runs with N = 1 and sends no hello, so prompts arrive in source order.
+
+**As built.** `internal/lang/par.go`.
+- Syntax: `par N [as r] { s1; s2 }` (each statement a branch; a fn call makes a branch of several statements) and `par N [as r] for x in src { body }`. N is 1 to 16 (`usage par`).
+- Parse errors: `par` inside `par` (also through a fn defined in a branch; a fn defined outside that runs `par` in a branch is refused when it runs, `type par: par inside par`); `break`/`continue` outside a loop of the branch; `return`/`exit` in a branch outside a fn body (an `exit` reached through a fn is refused when it runs); and `atomic` in a branch, reserving v6 §3's rule that the two exclude each other. Nested `par` is refused because the agent's limit M (4) already caps concurrency per session, so nesting adds no parallelism, only a second level of cancellation, output buffering, and joins to reason about.
+- State: each branch runs on its own machine over a copy of the State (names, fns, options, checks, origins, wasm modules, and the secret sets copied), with its own prefix stack and output. At the join, outputs are emitted in branch order, `checks` rows merge in branch order, every secret text and hash a branch bound is kept, and every binding (and branch origin) is discarded.
+- Budgets: one shared `verbmax` count (compare-and-swap, never passed across 16 branches); `par for` over more than `loopmax` items is `loop max` before any branch runs; the deadline is shared.
+- Failure: a branch fails on a stop, a non-zero last status, or an exit leaving it. The first failure cancels the rest: queued requests get a cancel frame (the agent answers `cancelled`, nothing ran), and every branch stops at its next statement or verb. A started verb finishes; a mutating verb that finished after the cancel is reported (`branch 1: unit.restart nginx finished after cancel (exit 0)`), also in the rows' message. `par` fails with the first failure's status and `par: branch N failed (exit S)`; `try` catches it. A cap or secret fault in a branch ends the line.
+- Interrupts: the prompt (Ctrl-C while a `par` waits; other keys typed then are dropped) and a script (SIGINT, caught only while a `par` waits). The first cancels the branches and waits for them, then `par: interrupted`, exit 130. A second stops waiting at once and prints `outcome unknown: <key> <target>` for each mutating verb still outstanding; the line ends.
+- Rows (`as r`): `branch, item, status, message, key`; `item` is the `par for` item; `status` is empty for a branch never started; `key` as `try` reports it.
+- Plan mode holds in every branch; record and replay keep a stream per branch (v6 §4).
+- `needs`, `lint`, `why`, and the preview walk `par` bodies; lint `par-same-target` (warning) is two branches naming one literal mutating target (a unit, package, or sysctl, a `>` path, a `template_file` out), or a `par for` body naming one.
 
 ## 9. Confirm mode
 

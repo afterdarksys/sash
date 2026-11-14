@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -94,17 +95,23 @@ type recResp struct {
 }
 
 type recEvent struct {
-	Seq  int      `json:"seq"`
-	Line int      `json:"line"`
-	Kind string   `json:"kind"`
-	Req  *recReq  `json:"req,omitempty"`
-	Resp *recResp `json:"resp,omitempty"`
-	Prev string   `json:"prev"`
+	Seq  int    `json:"seq"`
+	Line int    `json:"line"`
+	Kind string `json:"kind"`
+	// Branch is a par branch ("<par>.<branch>", both from 1) and BSeq
+	// its own sequence; both are empty outside par.
+	Branch string   `json:"branch,omitempty"`
+	BSeq   int      `json:"bseq,omitempty"`
+	Req    *recReq  `json:"req,omitempty"`
+	Resp   *recResp `json:"resp,omitempty"`
+	Prev   string   `json:"prev"`
 }
 
 // pending is one recorded event held in memory until Finish, unredacted,
 // so it can be redacted against every secret the whole run bound.
 type pending struct {
+	branch  string
+	bseq    int
 	kind    string
 	line    int
 	v       *parent.Verb
@@ -115,8 +122,22 @@ type pending struct {
 	value   string
 }
 
-// Tape is one recording, being written (record) or read back (replay).
+// Tape is one recording, being written (record) or read back (replay),
+// as seen by one machine: the top level, or one par branch. Every view
+// shares one tapeCore under its mutex. Each branch keeps its own stream:
+// recording appends events in completion order (the chain covers that
+// merged order), and replay answers each branch from its own events in
+// its own order, never comparing the merged order, and requires every
+// event to be used exactly once.
 type Tape struct {
+	*tapeCore
+	branch string // "" at top level
+	bseq   int    // events this branch has recorded
+	at     int
+}
+
+type tapeCore struct {
+	mu     sync.Mutex
 	replay bool
 	// record: nothing reaches w until Finish
 	w        io.Writer
@@ -125,15 +146,30 @@ type Tape struct {
 	size     int64
 	secrets  map[string]bool
 	finished bool
-	// replay
+	// replay: events, the indexes of each branch's events, and how many
+	// of each a run has used
 	events []recEvent
-	pos    int
+	by     map[string][]int
+	used   map[string]int
 	// both
-	seq      int
+	pars     int
 	nl       []int
-	at       int
 	err      error // first write error or divergence
 	diverged int   // seq of the first divergence, or -1
+}
+
+// branchView is the tape for branch i (from 0) of par p (from newPar).
+func (t *Tape) branchView(p, i int) *Tape {
+	return &Tape{tapeCore: t.tapeCore, branch: strconv.Itoa(p) + "." + strconv.Itoa(i+1), at: t.at}
+}
+
+// newPar numbers the next par statement, from 1. Par is never nested and
+// a branch never starts one, so the numbering is the same on replay.
+func (t *Tape) newPar() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pars++
+	return t.pars
 }
 
 // TapeError is how a tape failed: a divergence, a broken chain, an
@@ -162,8 +198,8 @@ func sha(b []byte) string {
 // even one bound after the event (declare -s tok = (cat ...)). A run
 // that never reaches Finish writes nothing.
 func NewRecorder(w io.Writer, script string, expires time.Time) (*Tape, error) {
-	return &Tape{w: w, diverged: -1, secrets: map[string]bool{},
-		header: recHeader{V: recFormat, ScriptSHA256: sha([]byte(script)), SashVersion: Version, Modules: map[string]string{}, Expires: expires.Unix()}}, nil
+	return &Tape{tapeCore: &tapeCore{w: w, diverged: -1, secrets: map[string]bool{},
+		header: recHeader{V: recFormat, ScriptSHA256: sha([]byte(script)), SashVersion: Version, Modules: map[string]string{}, Expires: expires.Unix()}}}, nil
 }
 
 // LoadReplay reads a recording for script and checks it before any
@@ -188,7 +224,7 @@ func LoadReplay(r io.Reader, script string, now time.Time) (*Tape, error) {
 	if now.Unix() >= h.Expires {
 		return nil, &TapeError{"replay_expired", -1}
 	}
-	t := &Tape{replay: true, diverged: -1, header: h}
+	t := &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}}}
 	prev := sha(headLine)
 	total := len(headLine)
 	for sc.Scan() {
@@ -207,6 +243,10 @@ func LoadReplay(r io.Reader, script string, now time.Time) (*Tape, error) {
 			return nil, &TapeError{"replay_bad_chain", len(t.events) + 1}
 		}
 		prev = sha(line)
+		if (ev.Branch == "") != (ev.BSeq == 0) {
+			return nil, &TapeError{"replay_bad_format", len(t.events) + 1}
+		}
+		t.by[ev.Branch] = append(t.by[ev.Branch], len(t.events))
 		t.events = append(t.events, ev)
 	}
 	if err := sc.Err(); err != nil {
@@ -231,16 +271,32 @@ func (t *Tape) begin(text string) {
 func (t *Tape) line() int { return sort.SearchInts(t.nl, t.at) + 1 }
 
 // Err is the tape's failure, or nil. Run turns a divergence into exit 2.
-func (t *Tape) Err() error { return t.err }
+func (t *Tape) Err() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
+}
 
 // Finish ends the tape. On replay, an event the run never asked for is a
 // divergence. On record, every event is redacted against every secret
 // text the run bound, chained, and written in one go; on any error
 // nothing is written.
 func (t *Tape) Finish() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.replay {
-		if t.err == nil && t.pos < len(t.events) {
-			t.diverge(t.events[t.pos].Seq)
+		// Every event used exactly once: the first one any stream left
+		// unused diverges.
+		first := 0
+		for b, list := range t.by {
+			if u := t.used[b]; u < len(list) {
+				if seq := t.events[list[u]].Seq; first == 0 || seq < first {
+					first = seq
+				}
+			}
+		}
+		if t.err == nil && first != 0 {
+			t.divergeLocked(first)
 		}
 		return t.err
 	}
@@ -266,7 +322,7 @@ func (t *Tape) Finish() error {
 	buf.WriteByte('\n')
 	prev := sha(head)
 	for i, p := range t.pend {
-		ev := recEvent{Seq: i + 1, Line: p.line, Kind: p.kind, Prev: prev}
+		ev := recEvent{Seq: i + 1, Line: p.line, Kind: p.kind, Branch: p.branch, BSeq: p.bseq, Prev: prev}
 		if p.v != nil {
 			ev.Req = reqOf(*p.v, p.tainted, secrets)
 		}
@@ -300,6 +356,8 @@ func (t *Tape) see(texts []string) {
 	if t.replay {
 		return
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for _, s := range texts {
 		t.secrets[s] = true
 	}
@@ -307,6 +365,8 @@ func (t *Tape) see(texts []string) {
 
 // add holds one event, within the size caps.
 func (t *Tape) add(p pending) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.err != nil {
 		return
 	}
@@ -329,6 +389,10 @@ func (t *Tape) add(p pending) {
 		return
 	}
 	p.line = t.line()
+	if t.branch != "" {
+		t.bseq++
+		p.branch, p.bseq = t.branch, t.bseq
+	}
 	t.pend = append(t.pend, p)
 }
 
@@ -381,27 +445,48 @@ func holdsAnyLine(s string, secrets []string) bool {
 }
 
 func (t *Tape) diverge(seq int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.divergeLocked(seq)
+}
+
+// divergeHere diverges at the event this view would use next.
+func (t *Tape) divergeHere() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seq := len(t.events) + 1
+	if list, u := t.by[t.branch], t.used[t.branch]; u < len(list) {
+		seq = t.events[list[u]].Seq
+	}
+	t.divergeLocked(seq)
+}
+
+func (t *Tape) divergeLocked(seq int) {
 	if t.err == nil {
 		t.diverged = seq
 		t.err = &TapeError{"replay_diverged", seq}
 	}
 }
 
-// next takes the next event (replay mode) if it is kind, else diverges.
+// next takes this view's next event (replay mode) if it is kind, else
+// diverges. A branch's events must also be in its own order.
 func (t *Tape) next(kind string) (recEvent, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.err != nil {
 		return recEvent{}, false
 	}
-	if t.pos >= len(t.events) {
-		t.diverge(len(t.events) + 1)
+	list, u := t.by[t.branch], t.used[t.branch]
+	if u >= len(list) {
+		t.divergeLocked(len(t.events) + 1)
 		return recEvent{}, false
 	}
-	ev := t.events[t.pos]
-	if ev.Kind != kind {
-		t.diverge(ev.Seq)
+	ev := t.events[list[u]]
+	if ev.Kind != kind || (t.branch != "" && ev.BSeq != u+1) {
+		t.divergeLocked(ev.Seq)
 		return recEvent{}, false
 	}
-	t.pos++
+	t.used[t.branch] = u + 1
 	return ev, true
 }
 
@@ -486,16 +571,16 @@ func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []stri
 	}
 	ev, ok := t.next("call")
 	if !ok {
-		return parent.Result{}, t.err
+		return parent.Result{}, t.Err()
 	}
 	if !reqMatches(ev.Req, v) {
 		t.diverge(ev.Seq)
-		return parent.Result{}, t.err
+		return parent.Result{}, t.Err()
 	}
 	r := ev.Resp
 	if r == nil {
 		t.diverge(ev.Seq)
-		return parent.Result{}, t.err
+		return parent.Result{}, t.Err()
 	}
 	res := parent.Result{Kind: parent.KindBytes, Exit: r.Exit, Cols: r.Cols, Rows: r.Rows, Bytes: r.Bytes}
 	if r.Kind == "rows" {
@@ -540,6 +625,8 @@ func (t *Tape) value(kind string, read func() string) string {
 // module records a loaded wasm module's hash in the header, or, on
 // replay, checks the header names the same module with the same hash.
 func (t *Tape) module(name, hash string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if !t.replay {
 		t.header.Modules[name] = hash
 		return nil
@@ -583,7 +670,7 @@ func (m *machine) now() time.Time {
 	v := m.tape.value("now", func() string { return nowFn().UTC().Format(time.RFC3339Nano) })
 	t, err := time.Parse(time.RFC3339Nano, v)
 	if err != nil {
-		m.tape.diverge(m.tape.pos)
+		m.tape.divergeHere()
 		m.ctl = ctlHalt
 		return time.Time{}
 	}
@@ -599,7 +686,7 @@ func (m *machine) sleep(d time.Duration) {
 		sleepFn(d)
 		return d.String()
 	})
-	if m.tape.err != nil {
+	if m.tape.Err() != nil {
 		m.ctl = ctlHalt
 	}
 }
@@ -621,9 +708,9 @@ func (m *machine) uuidPin() func() (string, error) {
 		if rerr != nil {
 			return "", rerr
 		}
-		if m.tape.err != nil {
+		if err := m.tape.Err(); err != nil {
 			m.ctl = ctlHalt
-			return "", m.tape.err
+			return "", err
 		}
 		return v, nil
 	}
@@ -676,9 +763,9 @@ func (m *machine) secretTexts() []string {
 // tapeDo is machine.do's call through the tape.
 func (m *machine) tapeDo(v parent.Verb) (parent.Result, error) {
 	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
-	if m.tape.err != nil {
+	if terr := m.tape.Err(); terr != nil {
 		m.ctl = ctlHalt
-		return parent.Result{}, m.tape.err
+		return parent.Result{}, terr
 	}
 	return res, err
 }

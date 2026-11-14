@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -69,10 +70,40 @@ func main() {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		os.Exit(langExit(2))
 	}
-	got := lang.Run(src, g, p, lang.Options{State: st})
+	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	os.Exit(langExit(got.Status))
+}
+
+// sigInterrupts is lang.Options.Interrupts for a script: SIGINT is caught
+// only while a par waits for its branches (the first cancels them, a
+// second stops the wait); outside par it ends sash as before.
+func sigInterrupts() (<-chan struct{}, func()) {
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt)
+	ch := make(chan struct{}, 2)
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-sig:
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return ch, func() {
+		signal.Stop(sig)
+		close(done)
+		<-stopped
+	}
 }
 
 // readSource takes exactly one source: -c script, one file, or stdin.

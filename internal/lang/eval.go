@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -93,6 +94,11 @@ type Options struct {
 	// State carries names, functions, and set options from line to line.
 	// nil is a fresh State: a script, or sash -c.
 	State *State
+	// Interrupts, when set, is asked for an interrupt (Ctrl-C) channel
+	// while a par waits for its branches, and stop ends the watch. The
+	// first interrupt cancels the branches; a second stops the wait.
+	// Under confirm it is never asked, so the prompt keeps the keys.
+	Interrupts func() (ch <-chan struct{}, stop func())
 }
 
 // Run expands src, then parses and executes it. Toolkit names call p.
@@ -133,6 +139,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m := newMachine(g, p, opt.State)
 	m.trace = opt.Trace
 	m.confirm = opt.Confirm
+	m.interrupts = opt.Interrupts
 	if opt.Tape != nil {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
@@ -190,8 +197,9 @@ type machine struct {
 	retVal    *value
 	exitCode  int
 	loopDepth int
-	verbs     int
-	st        *State
+	// verbs counts door calls against verbmax; par branches share it.
+	verbs *atomic.Int64
+	st    *State
 	// sawSecret is set when a word expanded a secret, so prepare can keep
 	// it from reaching a verb or a file.
 	sawSecret bool
@@ -223,6 +231,10 @@ type machine struct {
 	// haltStatus, when set, is the status of a ctlHalt (a Ctrl-C at a
 	// confirm prompt stops the line with 126).
 	haltStatus int
+	// pb is set on a par branch's machine (par.go); interrupts is
+	// Options.Interrupts.
+	pb         *parBranch
+	interrupts func() (<-chan struct{}, func())
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -337,13 +349,21 @@ var mutating = map[string]bool{"unit.restart": true, "package.install": true, "s
 // plan mode a mutating verb stops here: it prints what it would do and
 // succeeds without a call.
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
-	if m.verbs >= m.st.verbMax {
+	if m.pb != nil && m.pb.ctx.Err() != nil {
+		// A cancelled par branch starts nothing new.
+		m.pb.stopped = true
+		m.ctl = ctlHalt
+		return parent.Result{}, errParCancelled
+	}
+	if m.verbs.Load() >= int64(m.st.verbMax) {
 		return parent.Result{}, errVerbMax
 	}
 	if m.pastDeadline() {
 		return parent.Result{}, errTimeout
 	}
-	m.verbs++
+	if !m.takeVerb() {
+		return parent.Result{}, errVerbMax
+	}
 	if m.st.plan && mutating[v.Key] {
 		what := strings.Join(v.Argv, " ")
 		if v.Key == "file.write" {
@@ -355,9 +375,9 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
 			m.tape.plan(v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
-			if m.tape.err != nil {
+			if err := m.tape.Err(); err != nil {
 				m.ctl = ctlHalt
-				return parent.Result{}, m.tape.err
+				return parent.Result{}, err
 			}
 		}
 		return parent.Result{Kind: parent.KindBytes}, nil
@@ -393,10 +413,16 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	}
 	var res parent.Result
 	var err error
+	if m.pb != nil {
+		m.pb.begin(v)
+	}
 	if m.tape != nil {
 		res, err = m.tapeDo(v)
 	} else {
 		res, err = m.p.Do(v)
+	}
+	if m.pb != nil {
+		m.pb.end(v, res, err)
 	}
 	if err == nil {
 		m.noteOrigin(v, res)
@@ -411,6 +437,20 @@ var fileWriteRefusals = map[string]string{
 	"owner_changed": "the file is owned by another user, so the agent will not replace it",
 }
 
+// takeVerb counts one door call, or reports verbmax reached. It is a
+// compare-and-swap, so par branches sharing the count never pass it.
+func (m *machine) takeVerb() bool {
+	for {
+		cur := m.verbs.Load()
+		if cur >= int64(m.st.verbMax) {
+			return false
+		}
+		if m.verbs.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
 // doFailed writes why a door call failed and returns the status: a
 // decline is 126 declined <key>, which try catches with key set; a
 // timeout or a missing terminal is 2; anything else is the parent's.
@@ -420,6 +460,9 @@ func (m *machine) doFailed(key string, err error) int {
 	case errors.As(err, &te):
 		// Run reports the tape's error once, at the end.
 		m.ctl = ctlHalt
+		return exitType
+	case errors.Is(err, errParCancelled):
+		// The branch stops; its par reports why.
 		return exitType
 	case errors.Is(err, errDeclined):
 		m.err.WriteString("declined " + key + "\n")
@@ -447,7 +490,7 @@ func newMachine(g grant.Grant, p parent.Parent, st *State) *machine {
 	if st == nil {
 		st = NewState()
 	}
-	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}}
+	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}, verbs: new(atomic.Int64)}
 }
 
 func (m *machine) prefix() string {
@@ -476,6 +519,12 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		}
 		if i < len(prog.Pos) {
 			m.at = prog.Pos[i]
+		}
+		if m.pb != nil && m.pb.ctx.Err() != nil {
+			// A cancelled par branch stops at the next statement.
+			m.pb.stopped = true
+			m.ctl = ctlHalt
+			return exitType, true
 		}
 		if m.pastDeadline() {
 			m.err.WriteString("timeout\n")
@@ -535,6 +584,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runRetry(s)
 	case *Timeout:
 		return m.runTimeout(s)
+	case *Par:
+		return m.runPar(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -882,10 +933,11 @@ func (m *machine) runIf(s *If) (int, bool) {
 	return m.runProg(branch)
 }
 
-func (m *machine) runFor(s *For) (int, bool) {
-	type item struct{ a, b value }
-	var items []item
-	isMap := false
+// forItem is one item of a for source: index or key a, element or value b.
+type forItem struct{ a, b value }
+
+// forItems evaluates a for source into its items. isMap is a map source.
+func (m *machine) forItems(s *For) (items []forItem, isMap bool, status int, stop bool) {
 	switch {
 	case s.SrcX != nil || s.SrcRef != "":
 		var d any
@@ -897,52 +949,75 @@ func (m *machine) runFor(s *For) (int, bool) {
 		}
 		if err != nil {
 			m.err.WriteString(err.Error() + "\n")
-			return exitType, true
+			return nil, false, exitType, true
 		}
 		switch x := d.(type) {
 		case []any:
 			for i, e := range x {
-				items = append(items, item{fromDatum(int64(i)), fromDatum(e)})
+				items = append(items, forItem{fromDatum(int64(i)), fromDatum(e)})
 			}
 		case *omap:
 			isMap = true
 			for _, k := range x.keys {
-				items = append(items, item{fromDatum(k), fromDatum(x.m[k])})
+				items = append(items, forItem{fromDatum(k), fromDatum(x.m[k])})
 			}
 		default:
 			m.err.WriteString("type for " + typeName(d) + "\n")
-			return exitType, true
+			return nil, false, exitType, true
 		}
 	default:
 		st, stop, v := m.runPipe(s.Src)
 		if stop {
-			return st, true
+			return nil, false, st, true
 		}
 		switch {
 		case v.kind == valRows:
 			for i, row := range v.rows {
-				items = append(items, item{fromDatum(int64(i)), value{kind: valRow, row: row}})
+				items = append(items, forItem{fromDatum(int64(i)), value{kind: valRow, row: row}})
 			}
 		case v.kind == valData:
 			// from json and the like: walk the value as a [ ] would.
 			switch x := v.d.(type) {
 			case []any:
 				for i, e := range x {
-					items = append(items, item{fromDatum(int64(i)), fromDatum(e)})
+					items = append(items, forItem{fromDatum(int64(i)), fromDatum(e)})
 				}
 			case *omap:
 				isMap = true
 				for _, k := range x.keys {
-					items = append(items, item{fromDatum(k), fromDatum(x.m[k])})
+					items = append(items, forItem{fromDatum(k), fromDatum(x.m[k])})
 				}
 			default:
 				m.err.WriteString("type for " + typeName(v.d) + "\n")
-				return exitType, true
+				return nil, false, exitType, true
 			}
 		default:
 			m.err.WriteString("type for\n")
-			return exitType, true
+			return nil, false, exitType, true
 		}
+	}
+	return items, isMap, 0, false
+}
+
+// bindForItem binds one item: one name takes a list element, a map key,
+// or a row; two names take index and element, or key and value.
+func (m *machine) bindForItem(s *For, it forItem, isMap bool) {
+	if s.Name2 == "" {
+		if isMap {
+			m.vars[s.Name] = m.withProv(it.a)
+		} else {
+			m.vars[s.Name] = m.withProv(it.b)
+		}
+		return
+	}
+	m.vars[s.Name] = m.withProv(it.a)
+	m.vars[s.Name2] = m.withProv(it.b)
+}
+
+func (m *machine) runFor(s *For) (int, bool) {
+	items, isMap, st, stop := m.forItems(s)
+	if stop {
+		return st, true
 	}
 	names := []string{s.Name}
 	if s.Name2 != "" {
@@ -955,18 +1030,7 @@ func (m *machine) runFor(s *For) (int, bool) {
 	defer m.restoreVars(saved)
 	status, iter := 0, 0
 	for _, it := range items {
-		// One name takes the item: a list element, a map key, or a row.
-		// Two names take index and element, or key and value.
-		if s.Name2 == "" {
-			if isMap {
-				m.vars[s.Name] = m.withProv(it.a)
-			} else {
-				m.vars[s.Name] = m.withProv(it.b)
-			}
-		} else {
-			m.vars[s.Name] = m.withProv(it.a)
-			m.vars[s.Name2] = m.withProv(it.b)
-		}
+		m.bindForItem(s, it, isMap)
 		st, stop, brk := m.loopBody(&s.Body, &iter)
 		status = st
 		if stop {
@@ -1180,15 +1244,7 @@ func (m *machine) runTry(t *Try) (int, bool) {
 		e := newOmap()
 		e.set("status", int64(st))
 		e.set("message", msg)
-		key := ""
-		if first, _, _ := strings.Cut(msg, "\n"); strings.HasPrefix(first, "denied ") {
-			key = strings.TrimPrefix(first, "denied ")
-		} else if strings.HasPrefix(first, "declined ") {
-			key = strings.TrimPrefix(first, "declined ")
-		} else if rest, ok := strings.CutPrefix(first, "refused "); ok {
-			key, _, _ = strings.Cut(rest, ":")
-		}
-		e.set("key", key)
+		e.set("key", failKey(msg))
 		m.vars[t.Name] = m.withProv(value{kind: valData, d: e})
 	}
 	st, stop = m.runProg(t.Catch)
@@ -1836,7 +1892,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			m.err.WriteString("timeout\n")
 			return exitType, value{}
 		}
-		if (st.key != "" || st.outPath != "") && m.verbs >= m.st.verbMax {
+		if (st.key != "" || st.outPath != "") && m.verbs.Load() >= int64(m.st.verbMax) {
 			m.err.WriteString("verb max\n")
 			m.ctl = ctlHalt
 			return exitType, value{}
@@ -2506,7 +2562,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par"} {
 		reservedNames[n] = true
 	}
 }

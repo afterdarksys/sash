@@ -98,6 +98,7 @@ var builtins = []builtinRow{
 	{"template", "verb", "file.read", "render tpl with the piped value", true},
 	{"retry", "keyword", "", "retry N [delay D] { }: again on failure", true},
 	{"timeout", "keyword", "", "timeout D { }: checked before each statement and verb", true},
+	{"par", "keyword", "", "par N [as r] { } or par N for x in src { }: branches at once, up to N (1-16)", true},
 	{"check", "builtin", "", "check \"name\" [ expr ]: ok or FAIL, kept for checks", true},
 	{"checks", "builtin", "", "the check rows so far", true},
 	{"origin", "builtin", "", "origin name: where a name's value came from", true},
