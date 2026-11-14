@@ -6,7 +6,11 @@ package proto
 // Threats: a response routed to the wrong call (an unknown, repeated, or
 // id-0 response, or one after the client broke), interleaved frames, an
 // agent that answers hello with anything but the two exact shapes, an id
-// space that wraps, and a call that waits forever on a dead pipe. Ids are
+// space that wraps, and a call that waits forever on a dead pipe. A
+// request over MaxFrame is that call's error, checked before an id or the
+// write lock is taken, never a broken pipe. Not handled here: a call that
+// sent cancel waits for the agent's answer with no bound; par (step 4)
+// stops that wait on a second interrupt and prints outcome unknown. Ids are
 // allocated here, strictly increasing, under the write lock, so they reach
 // the agent in order, and are never reused; exhaustion breaks the client.
 // A response for an id not outstanding is never routed to another waiter:
@@ -34,6 +38,10 @@ import (
 // an unknown response id, an over-limit or protocol reply, a malformed
 // hello, or id exhaustion. Every call fails closed.
 var ErrBroken = errors.New("verb pipe broken")
+
+// errFrameTooLarge is the text serial Write returns for a frame over
+// MaxFrame.
+var errFrameTooLarge = errors.New("frame too large")
 
 const (
 	muxVersion = 1
@@ -192,6 +200,19 @@ func (c *Client) doMux(ctx context.Context, v parent.Verb) (parent.Result, error
 	if err := c.brokenErr(); err != nil {
 		return parent.Result{}, err
 	}
+	req := muxRequest{Key: v.Key, Argv: v.Argv, Path: v.Path, Mode: v.Mode}
+	if len(v.Body) > 0 {
+		req.Body = base64.StdEncoding.EncodeToString(v.Body)
+	}
+	// Too large is this call's error, as serial, and the client stays
+	// healthy: sized with the longest id before any id or lock is taken.
+	sized := req
+	sized.ID = muxIDMax
+	if body, err := json.Marshal(sized); err != nil {
+		return parent.Result{}, err
+	} else if len(body) > MaxFrame {
+		return parent.Result{}, errFrameTooLarge
+	}
 	// A waiting call blocks here, before it has an id.
 	select {
 	case c.sem <- struct{}{}:
@@ -199,10 +220,6 @@ func (c *Client) doMux(ctx context.Context, v parent.Verb) (parent.Result, error
 		return parent.Result{}, ctx.Err()
 	}
 	defer func() { <-c.sem }()
-	req := muxRequest{Key: v.Key, Argv: v.Argv, Path: v.Path, Mode: v.Mode}
-	if len(v.Body) > 0 {
-		req.Body = base64.StdEncoding.EncodeToString(v.Body)
-	}
 	id, ch, err := c.send(req)
 	if err != nil {
 		return parent.Result{}, err
@@ -342,7 +359,7 @@ func (c *Client) writeFrameLocked(v any) error {
 		return err
 	}
 	if len(body) > MaxFrame {
-		return errors.New("frame too large")
+		return errFrameTooLarge
 	}
 	buf := make([]byte, 4+len(body))
 	binary.BigEndian.PutUint32(buf, uint32(len(body)))

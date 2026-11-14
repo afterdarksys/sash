@@ -396,3 +396,45 @@ func waitOpen(t *testing.T, a *fakeAgent, n int) {
 	}
 	t.Fatalf("agent never had %d outstanding", n)
 }
+
+// A request over MaxFrame is that call's error in both modes, the same
+// text, and the client stays healthy.
+func TestMuxTooLargeIsPerCall(t *testing.T) {
+	big := parent.Verb{Key: "file.write", Path: "/srv/x", Body: make([]byte, MaxFrame)}
+	a, b := net.Pipe()
+	var mu sync.Mutex
+	var frames [][]byte
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		oldAgent(b, &frames, &mu, echoPath)
+	}()
+	serial := &Client{RW: a}
+	_, serialErr := serial.Do(big)
+	if serialErr == nil {
+		t.Fatal("serial: no error")
+	}
+	if res, err := serial.Do(parent.Verb{Key: "ps", Path: "p"}); err != nil || string(res.Bytes) != "p" {
+		t.Fatalf("serial after: %v", err)
+	}
+	a.Close()
+	<-done
+
+	c, agent, stop := muxPair(t, 4, 4, echoPath)
+	defer stop()
+	if _, err := c.Concurrency(4); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.DoContext(context.Background(), big)
+	if err == nil || errors.Is(err, ErrBroken) || err.Error() != serialErr.Error() {
+		t.Fatalf("mux: %v (serial %v)", err, serialErr)
+	}
+	if res, err := c.Do(parent.Verb{Key: "ps", Path: "p"}); err != nil || string(res.Bytes) != "p" || c.brokenErr() != nil {
+		t.Fatalf("mux after: %v", err)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if agent.lastID != 1 {
+		t.Fatalf("an id went to the oversized call: lastID %d", agent.lastID)
+	}
+}
