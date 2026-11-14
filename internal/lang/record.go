@@ -747,6 +747,11 @@ func (m *machine) secretTexts() []string {
 			}
 		}
 	}
+	// Texts the session marked secret and no longer binds (a par
+	// branch's, or a secret reassigned) are redacted too.
+	for t := range m.st.secretText {
+		out = append(out, t)
+	}
 	for _, v := range m.vars {
 		if v.kind == valData {
 			if inner, ok := unsecret(v.d); ok {

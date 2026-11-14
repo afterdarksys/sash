@@ -49,6 +49,65 @@ type parBranch struct {
 	// inflight is the door call under way, for the second interrupt.
 	inflight *parent.Verb
 	late     []string
+	// done is set by the branch's goroutine when it ends; abandoned by
+	// par when a second interrupt left it running. Under mu, exactly one
+	// side handles the finished branch: par if done was set first, else
+	// the goroutine, through the State's late queue.
+	done      bool
+	abandoned bool
+}
+
+// lateQueue holds what branches left running by a second interrupt
+// reported when they ended: their secret texts and hashes, and their
+// late outcome lines. The branch goroutine only appends, under mu; the
+// session's own machine drains it, under mu, at the start of each top-level
+// statement of a later run, and merges into State maps it alone touches.
+// No other goroutine ever writes the session State, so the next line's
+// evaluation never races a late branch.
+type lateQueue struct {
+	mu    sync.Mutex
+	texts []string
+	hash  [][32]byte
+	lines []string
+}
+
+func (q *lateQueue) push(b *State, lines []string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for t := range b.secretText {
+		q.texts = append(q.texts, t)
+	}
+	for h := range b.secretHash {
+		q.hash = append(q.hash, h)
+	}
+	q.lines = append(q.lines, lines...)
+}
+
+// drainLate merges what late branches left into this machine's State and
+// prints their late outcomes. Only the machine of a Run calls it.
+func (m *machine) drainLate() {
+	q := m.st.late
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	texts, hashes, lines := q.texts, q.hash, q.lines
+	q.texts, q.hash, q.lines = nil, nil, nil
+	q.mu.Unlock()
+	if len(texts) == 0 && len(hashes) == 0 && len(lines) == 0 {
+		return
+	}
+	b := &State{secretText: map[string]bool{}, secretHash: map[[32]byte]bool{}}
+	for _, t := range texts {
+		b.secretText[t] = true
+	}
+	for _, h := range hashes {
+		b.secretHash[h] = true
+	}
+	m.mergeSecrets(b)
+	for _, l := range lines {
+		m.err.WriteString("late: " + l + "\n")
+	}
 }
 
 func (pb *parBranch) begin(v parent.Verb) {
@@ -277,6 +336,14 @@ func (m *machine) runPar(s *Par) (int, bool) {
 			go func(i int) {
 				bm := machines[i]
 				st, stop := bm.runProg(branches[i].body)
+				bm.pb.mu.Lock()
+				bm.pb.done = true
+				abandoned := bm.pb.abandoned
+				late := append([]string(nil), bm.pb.late...)
+				bm.pb.mu.Unlock()
+				if abandoned && m.st.late != nil {
+					m.st.late.push(bm.st, late)
+				}
 				<-sem
 				results <- parResult{i: i, st: st, stop: stop, ctl: bm.ctl, halt: bm.haltStatus, cancelled: ctx.Err() != nil}
 			}(i)
@@ -309,19 +376,34 @@ func (m *machine) runPar(s *Par) (int, bool) {
 			}
 			// A second interrupt stops the wait. What still runs is
 			// named, never assumed done or undone; the agent audit
-			// holds the real outcome.
-			for i := range branches {
-				if finished[i] {
-					m.emitBranch(machines[i])
+			// holds the real outcome. A branch whose goroutine has
+			// ended is handled here; any other is marked abandoned, and
+			// reports through the State's late queue when it ends.
+			done := make([]bool, len(branches))
+			var unknown []string
+			for i, bm := range machines {
+				bm.pb.mu.Lock()
+				done[i] = bm.pb.done
+				if !done[i] {
+					bm.pb.abandoned = true
+					if v := bm.pb.inflight; v != nil && mutating[v.Key] {
+						unknown = append(unknown, "outcome unknown: "+verbLabel(*v))
+					}
 				}
+				bm.pb.mu.Unlock()
 			}
-			for i := range branches {
-				if finished[i] {
+			for i, bm := range machines {
+				if !done[i] {
 					continue
 				}
-				if v := machines[i].pb.outstanding(); v != nil && mutating[v.Key] {
-					m.err.WriteString("outcome unknown: " + verbLabel(*v) + "\n")
+				m.emitBranch(bm)
+				for _, l := range bm.pb.lateLines() {
+					m.err.WriteString(l + "\n")
 				}
+				m.mergeSecrets(bm.st)
+			}
+			for _, l := range unknown {
+				m.err.WriteString(l + "\n")
 			}
 			m.err.WriteString("par: interrupted\n")
 			m.ctl = ctlHalt

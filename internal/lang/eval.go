@@ -146,6 +146,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	}
 	m.nl = provNewlines(expanded)
 	m.provTop = true
+	m.drains = true
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
@@ -235,6 +236,9 @@ type machine struct {
 	// Options.Interrupts.
 	pb         *parBranch
 	interrupts func() (<-chan struct{}, func())
+	// drains is set on a Run's own machine: it drains the State's late
+	// queue before each top-level statement.
+	drains bool
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -519,6 +523,9 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		}
 		if i < len(prog.Pos) {
 			m.at = prog.Pos[i]
+		}
+		if m.drains && top {
+			m.drainLate()
 		}
 		if m.pb != nil && m.pb.ctx.Err() != nil {
 			// A cancelled par branch stops at the next statement.

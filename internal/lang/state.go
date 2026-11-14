@@ -53,6 +53,10 @@ type State struct {
 	secrets    int
 	secretsGen uint64
 	secretsOK  bool
+	// late is where par branches left running by a second interrupt
+	// report when they end (par.go); clones share it, and only a Run's
+	// own machine drains it.
+	late *lateQueue
 }
 
 // Generation is the write counter: equal values mean no write between.
@@ -79,6 +83,7 @@ func NewState() *State {
 		types:    map[string]string{},
 		loopMax:  loopMaxDefault,
 		verbMax:  verbMaxDefault,
+		late:     &lateQueue{},
 	}
 }
 

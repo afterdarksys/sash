@@ -205,7 +205,7 @@ func TestParInterrupts(t *testing.T) {
 }
 
 // verbmax is one count across every branch: 16 branches of 2 reads each
-// under verbmax 10 make exactly 10 requests.
+// under verbmax 10 make at most 10 requests.
 func TestParVerbMaxShared(t *testing.T) {
 	a := &prototest.Agent{Max: 4, Handle: barrierCat(1)}
 	c, done := muxClient(t, a)
@@ -216,7 +216,9 @@ func TestParVerbMaxShared(t *testing.T) {
 	}
 	src := "set verbmax 10\npar 16 for i in [ [" + strings.Join(items, ",") + "] ] { cat /srv/ops/a; cat /srv/ops/b }"
 	out := Run(src, parGrant(), c, Options{})
-	if st := a.Stats(); st.Requests != 10 || out.Status == 0 || !strings.Contains(out.Stderr, "verb max") {
+	// Never past 10. The branch that hits verbmax fails and cancels the
+	// rest, so a verb already counted may stop before it is sent.
+	if st := a.Stats(); st.Requests > 10 || st.Requests < 4 || out.Status == 0 || !strings.Contains(out.Stderr, "verb max") {
 		t.Fatalf("requests %d: %+v", st.Requests, out)
 	}
 }
@@ -377,5 +379,86 @@ func TestLintPar(t *testing.T) {
 	}
 	if out := Needs("par 2 { unit restart nginx; cat /srv/ops/a }", NeedsOptions{}); !strings.Contains(out.Stdout, "unit.restart") || !strings.Contains(out.Stdout, "/srv/ops/a") {
 		t.Errorf("needs: %+v", out)
+	}
+}
+
+// Two interrupts: a branch that already ended (it bound a secret, and its
+// restart finished after the first cancel) is reported and its secret
+// kept; a branch still running reports when it ends, through the next
+// run, and its secret is redacted from then on.
+func TestParSecondInterruptReports(t *testing.T) {
+	fast, slow := make(chan struct{}), make(chan struct{})
+	var a *prototest.Agent
+	a = &prototest.Agent{Max: 4, Handle: func(v parent.Verb) (parent.Result, error) {
+		switch {
+		case v.Key == "unit.restart" && v.Argv[2] == "fast":
+			<-fast
+		case v.Key == "unit.restart" && v.Argv[2] == "slow":
+			<-slow
+		case v.Path == "/srv/ops/tok":
+			return parent.Result{Kind: parent.KindBytes, Bytes: []byte("hunter2-long")}, nil
+		case v.Path == "/srv/ops/tok2":
+			return parent.Result{Kind: parent.KindBytes, Bytes: []byte("swordfish-9")}, nil
+		case v.Path == "/srv/ops/echo":
+			return parent.Result{Kind: parent.KindBytes, Bytes: []byte("hunter2-long swordfish-9")}, nil
+		}
+		return parent.Result{Kind: parent.KindBytes}, nil
+	}}
+	c, done := muxClient(t, a)
+	defer done()
+	var once sync.Once
+	releaseSlow := func() { once.Do(func() { close(slow) }) }
+	// Registered after done, so it runs first: a failed check never
+	// leaves the slow handler holding the agent open.
+	defer releaseSlow()
+	st := NewState()
+	intr := make(chan struct{}, 2)
+	opt := Options{State: st, Interrupts: func() (<-chan struct{}, func()) { return intr, func() {} }}
+	go func() {
+		waitFor(t, "both restarts running", func() bool { return a.Stats().Running == 2 })
+		intr <- struct{}{}
+		waitFor(t, "two cancels", func() bool { return len(a.Stats().Cancels) == 2 })
+		close(fast)
+		waitFor(t, "fast done", func() bool { return a.Stats().Running == 1 })
+		// The fast branch ends at its next boundary, microseconds later.
+		time.Sleep(100 * time.Millisecond)
+		intr <- struct{}{}
+	}()
+	src := "fn a1() { declare -s s = (cat /srv/ops/tok); unit restart fast }\n" +
+		"fn b1() { declare -s t = (cat /srv/ops/tok2); unit restart slow }\n" +
+		"par 2 { a1; b1 }"
+	out := Run(src, parGrant(), c, opt)
+	if out.Status != exitInterrupted || !strings.Contains(out.Stderr, "branch 1: unit.restart fast finished after cancel (exit 0)") ||
+		!strings.Contains(out.Stderr, "outcome unknown: unit.restart slow") || strings.Contains(out.Stderr, "late:") {
+		t.Fatalf("%+v", out)
+	}
+	if !st.secretText["hunter2-long"] {
+		t.Fatal("the finished branch's secret was not kept")
+	}
+	releaseSlow()
+	waitFor(t, "slow done", func() bool { return a.Stats().Running == 0 })
+	// The abandoned branch ends at its next boundary; the next run
+	// reports it before its first statement.
+	var late Outcome
+	for i := 0; i < 200 && !strings.Contains(late.Stderr, "late:"); i++ {
+		time.Sleep(5 * time.Millisecond)
+		late = Run("echo x", parGrant(), c, opt)
+	}
+	if !strings.Contains(late.Stderr, "late: branch 2: unit.restart slow finished after cancel (exit 0)") || !st.secretText["swordfish-9"] {
+		t.Fatalf("late: %+v", late)
+	}
+	// Both secrets are redacted in a later recording.
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, "cat /srv/ops/echo", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt.Tape = tape
+	Run("cat /srv/ops/echo", parGrant(), c, opt)
+	if err := tape.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "hunter2") || strings.Contains(buf.String(), "swordfish") || !strings.Contains(buf.String(), `"redacted":true`) {
+		t.Fatalf("recording: %s", buf.String())
 	}
 }
