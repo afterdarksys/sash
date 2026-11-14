@@ -213,6 +213,9 @@ type machine struct {
 	// runs, so its door calls are recorded as secret.
 	tape       *Tape
 	secretPipe bool
+	// secretWrite is set by a template_file whose render read a secret,
+	// so its write goes out with mode 0600 (jobs contract section 2).
+	secretWrite bool
 	// confirm is Options.Confirm; declined is set when a verb was declined
 	// in the current retry attempt, so retry does not ask again.
 	confirm  func(string) (bool, bool)
@@ -346,9 +349,12 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		if v.Key == "file.write" {
 			what = fmt.Sprintf("write %s (%d bytes)", v.Path, len(v.Body))
 		}
+		if v.Key == "file.write" && v.Mode != "" {
+			what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
+		}
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
-			m.tape.plan(v, m.sawSecret || m.secretPipe, m.secretTexts())
+			m.tape.plan(v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
 			if m.tape.err != nil {
 				m.ctl = ctlHalt
 				return parent.Result{}, m.tape.err
@@ -398,6 +404,13 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	return res, err
 }
 
+// fileWriteRefusals are the agent's file.write mode errors, which try
+// catches with key file.write.
+var fileWriteRefusals = map[string]string{
+	"bad_mode":      "the agent refused the file mode",
+	"owner_changed": "the file is owned by another user, so the agent will not replace it",
+}
+
 // doFailed writes why a door call failed and returns the status: a
 // decline is 126 declined <key>, which try catches with key set; a
 // timeout or a missing terminal is 2; anything else is the parent's.
@@ -417,6 +430,13 @@ func (m *machine) doFailed(key string, err error) int {
 	case errors.Is(err, errNoTTY):
 		m.err.WriteString(msgConfirmTerminal + "\n")
 		m.ctl = ctlHalt
+		return exitType
+	case err.Error() == parent.ErrModeUnsupported.Error():
+		// By text too: a replayed error is a new error with that text.
+		m.err.WriteString(err.Error() + "\n")
+		return exitType
+	case key == "file.write" && fileWriteRefusals[err.Error()] != "":
+		m.err.WriteString("refused file.write: " + err.Error() + " (" + fileWriteRefusals[err.Error()] + ")\n")
 		return exitType
 	}
 	m.err.WriteString("parent " + key + "\n")
@@ -1165,6 +1185,8 @@ func (m *machine) runTry(t *Try) (int, bool) {
 			key = strings.TrimPrefix(first, "denied ")
 		} else if strings.HasPrefix(first, "declined ") {
 			key = strings.TrimPrefix(first, "declined ")
+		} else if rest, ok := strings.CutPrefix(first, "refused "); ok {
+			key, _, _ = strings.Cut(rest, ":")
 		}
 		e.set("key", key)
 		m.vars[t.Name] = m.withProv(value{kind: valData, d: e})
@@ -1835,12 +1857,21 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 	}
 	if exp[len(exp)-1].outPath != "" {
 		body := render(cur)
-		if _, err := m.do(parent.Verb{
+		v := parent.Verb{
 			Key:  "file.write",
 			Argv: []string{">", exp[len(exp)-1].outPath},
 			Path: exp[len(exp)-1].outPath,
 			Body: []byte(body),
-		}); err != nil {
+		}
+		// Only template_file writes a secret, and only at 0600: a > of
+		// a secret is refused in prepare.
+		secret := m.secretWrite && exp[len(exp)-1].argv[0] == "template_file"
+		m.secretWrite = false
+		if secret {
+			v.Mode = "0600"
+			cur = value{kind: valData, d: secretVal{body}}
+		}
+		if _, err := m.do(v); err != nil {
 			return m.doFailed("file.write", err), cur
 		}
 	}

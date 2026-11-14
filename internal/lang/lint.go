@@ -38,6 +38,7 @@ var lintRules = map[string]string{
 	"silent-catch":      lintWarning,
 	"incomplete-needs":  lintWarning,
 	"shadowed-secret":   lintWarning,
+	"secret-file":       lintInfo,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -99,6 +100,7 @@ func Lint(src string) Outcome {
 	l.collect(prog, true, "")
 	l.taint()
 	l.sinks(prog)
+	l.secretFiles()
 	l.unused()
 	l.shadowed()
 	l.blocks(prog)
@@ -665,6 +667,67 @@ func stageName(st Stage) string {
 		return name
 	}
 	return "a command from a value"
+}
+
+// secretFiles is secret-file: a template_file (not --check) whose spec or
+// tpl is a literal path that a secret binding's pipe reads (cat or <).
+// The run writes that render with mode 0600 (templatefile.go), so this
+// is information, not a sink. A secret in a template_file path is still
+// secret-to-sink. Matching is by the literal word, so it can miss a file
+// read under another spelling; the run decides by the response, not this.
+func (l *linter) secretFiles() {
+	read := map[string]bool{}
+	pipeReads := func(p *Pipeline) {
+		for _, st := range p.Stages {
+			if plain(st.Argv[0]) == "cat" {
+				for _, w := range st.Argv[1:] {
+					if lit := plain(w); lit != "" {
+						read[lit] = true
+					}
+				}
+			}
+			for _, r := range st.Redirs {
+				if lit := plain(r.Path); r.Kind == "<" && lit != "" {
+					read[lit] = true
+				}
+			}
+		}
+	}
+	bound := func(name string, lt *Let) {
+		if lt != nil && lt.Pipe != nil && l.tainted[name] {
+			pipeReads(lt.Pipe)
+		}
+	}
+	lintEach(l.prog, true, func(s Stmt, _ int, _ bool) {
+		switch s := s.(type) {
+		case *Let:
+			bound(s.Name, s)
+		case *Declare:
+			bound(s.Name, s.Value)
+		case *With:
+			for _, lt := range s.Lets {
+				bound(lt.Name, lt)
+			}
+		}
+	})
+	if len(read) == 0 {
+		return
+	}
+	lintEach(l.prog, true, func(s Stmt, _ int, _ bool) {
+		lintEachPipe(s, func(pl Pipeline, _ string) {
+			for _, st := range pl.Stages {
+				if plain(st.Argv[0]) != "template_file" || len(st.Argv) != 4 {
+					continue
+				}
+				for _, w := range st.Argv[1:3] {
+					if lit := plain(w); read[lit] {
+						l.add(st.Argv[0].Pos, "secret-file", "template_file renders secret file "+needsCell(lit)+" to "+needsCell(plain(st.Argv[3]))+" at mode 0600")
+						break
+					}
+				}
+			}
+		})
+	})
 }
 
 // sinks is secret-to-sink.

@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-// A secret (declare -s) is a value that never leaves sash in v4: it renders
-// as *** everywhere, anything computed from it is a secret too, and a verb
+// A secret (declare -s) is a value that never leaves sash: it renders as
+// *** everywhere, anything computed from it is a secret too, and a verb
 // argument, a redirect, or a template that would carry one is refused. The
-// agent's file.write has no mode, so a rendered secret would land in a file
-// readable by others; writing one waits for the agent contract.
+// one exit is a template_file render that read a secret, written only with
+// file.write mode 0600 (templatefile.go, jobs contract section 2).
 //
 // A secret decides nothing: a condition that reads one (if, while, do,
 // filter, check, a template if) is refused, since a branch per guess would

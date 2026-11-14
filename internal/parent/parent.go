@@ -2,6 +2,8 @@
 // The systemapi agent implements it in commit 3.
 package parent
 
+import "errors"
+
 // Kind is the shape of a stage result.
 type Kind int
 
@@ -25,12 +27,20 @@ type Result struct {
 }
 
 // Verb is one entitled call. Path is set for file verbs. Body is the text for file.write.
+// Mode is "" or a file.write mode ("0600"); sash sets it only when a write
+// needs one, because an agent older than the mode refuses any frame with it.
 type Verb struct {
 	Key  string
 	Argv []string
 	Path string
 	Body []byte
+	Mode string
 }
+
+// ErrModeUnsupported is a file.write with a mode that the agent refused as
+// an unknown frame field: an agent older than file.write mode. The write is
+// never retried without the mode.
+var ErrModeUnsupported = errors.New("agent too old for file.write mode")
 
 // Parent fulfills toolkit verbs. sash does not exec host binaries.
 type Parent interface {

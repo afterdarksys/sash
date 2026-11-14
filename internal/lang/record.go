@@ -74,6 +74,7 @@ type recReq struct {
 	Argv     []string `json:"argv,omitempty"`
 	Path     string   `json:"path,omitempty"`
 	BodySHA  string   `json:"body_sha256,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
 	Redacted bool     `json:"redacted,omitempty"`
 	ArgvLen  int      `json:"argv_len,omitempty"`
 	PathLen  int      `json:"path_len,omitempty"`
@@ -398,9 +399,9 @@ func reqOf(v parent.Verb, tainted bool, secrets []string) *recReq {
 		for _, a := range v.Argv {
 			n += len(a) + 1
 		}
-		return &recReq{Key: v.Key, Redacted: true, Argv: []string{redacted3}, ArgvLen: n, PathLen: len(v.Path), BodyLen: len(v.Body)}
+		return &recReq{Key: v.Key, Mode: v.Mode, Redacted: true, Argv: []string{redacted3}, ArgvLen: n, PathLen: len(v.Path), BodyLen: len(v.Body)}
 	}
-	r := &recReq{Key: v.Key, Argv: append([]string(nil), v.Argv...), Path: v.Path}
+	r := &recReq{Key: v.Key, Mode: v.Mode, Argv: append([]string(nil), v.Argv...), Path: v.Path}
 	if v.Body != nil {
 		r.BodySHA = sha(v.Body)
 		r.BodyLen = len(v.Body)
@@ -653,7 +654,7 @@ func (m *machine) secretTexts() []string {
 
 // tapeDo is machine.do's call through the tape.
 func (m *machine) tapeDo(v parent.Verb) (parent.Result, error) {
-	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe, m.secretTexts())
+	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
 	if m.tape.err != nil {
 		m.ctl = ctlHalt
 		return parent.Result{}, m.tape.err

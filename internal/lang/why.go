@@ -224,6 +224,9 @@ func (m *machine) whyCommand(command string, argv []string, literal bool) parent
 	if _, prob := m.bindPaths(&es); prob != nil {
 		return m.whyPathRow(command, key, prob, m.g.FileRead)
 	}
+	if argv[0] == "template_file" && key == "file.write" {
+		return whyRow(command, key, "yes", "granted", "a render that reads a secret is written with mode 0600; an agent without file.write mode refuses it")
+	}
 	return whyRow(command, key, "yes", "granted", whyAgentNote(key))
 }
 

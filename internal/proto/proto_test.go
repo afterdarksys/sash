@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -116,4 +117,67 @@ func TestServeReturnsBodyErrorWriteFailure(t *testing.T) {
 	if err == nil || err.Error() != "pipe broken" || calls != 0 {
 		t.Fatalf("err %v calls %d", err, calls)
 	}
+}
+
+// rawServe answers each frame with reply and hands the raw request to got.
+func rawServe(t *testing.T, rw net.Conn, reply response, got chan<- string) {
+	for {
+		var n [4]byte
+		if _, err := io.ReadFull(rw, n[:]); err != nil {
+			return
+		}
+		body := make([]byte, binary.BigEndian.Uint32(n[:]))
+		if _, err := io.ReadFull(rw, body); err != nil {
+			return
+		}
+		got <- string(body)
+		if err := Write(rw, reply); err != nil {
+			t.Error(err)
+			return
+		}
+	}
+}
+
+// A file.write mode is on the wire only when the verb has one; an agent
+// that refuses it as a bad frame is reported as too old, and only for a
+// moded write.
+func TestModeOnTheWire(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	got := make(chan string, 4)
+	go rawServe(t, b, response{Error: "frame body"}, got)
+	c := Client{RW: a}
+	_, err := c.Do(parent.Verb{Key: "file.write", Path: "/srv/x", Body: []byte("s"), Mode: "0600"})
+	if frame := <-got; !strings.Contains(frame, `"mode":"0600"`) || !errors.Is(err, parent.ErrModeUnsupported) || err.Error() != "agent too old for file.write mode" {
+		t.Fatalf("moded: %s %v", frame, err)
+	}
+	_, err = c.Do(parent.Verb{Key: "file.write", Path: "/srv/x", Body: []byte("s")})
+	if frame := <-got; strings.Contains(frame, "mode") || err == nil || err.Error() != "frame body" {
+		t.Fatalf("no mode: %s %v", frame, err)
+	}
+	a.Close()
+}
+
+// Serve hands the mode to the handler.
+func TestServeMode(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	modes := make(chan string, 2)
+	go func() {
+		if err := Serve(b, func(v parent.Verb) (parent.Result, error) {
+			modes <- v.Mode
+			return parent.Result{}, nil
+		}); err != nil {
+			t.Error(err)
+		}
+	}()
+	c := Client{RW: a}
+	for _, want := range []string{"0600", ""} {
+		if _, err := c.Do(parent.Verb{Key: "file.write", Path: "/srv/x", Mode: want}); err != nil || <-modes != want {
+			t.Fatalf("mode %q: %v", want, err)
+		}
+	}
+	a.Close()
 }

@@ -12,6 +12,15 @@ import (
 // template_file spec tpl out [--check] and template tpl. The files are read
 // through file.read and out is written through the same door as ">": the
 // grant, the write roots, and the agent re-check all apply.
+//
+// Threats: a render that read a secret landing on disk readable by others,
+// or printed. A render is secret when the spec or tpl response is: its
+// hash is a secret origin's, or it holds a bound secret's text (the
+// origin rule, prov.go). Such a render is written only with mode 0600
+// (jobs contract section 2), never retried without it; an agent too old
+// for the mode is exit 2. Its --check and plan diffs are not listed, an
+// error after the read ends the line like any secret fault, and the value
+// it leaves is a secret. A secret in a path is still refused in prepare.
 
 var schemaKeys = map[string]bool{"type": true, "required": true, "enum": true, "pattern": true, "default": true}
 
@@ -159,29 +168,49 @@ func classifyTemplateFile(argv []string) (classified, *problem) {
 
 // readFile reads one path the stage already bound.
 func (m *machine) readFile(p string) (string, error) {
-	res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"cat", p}, Path: p})
-	if err != nil || res.Exit != 0 {
-		return "", fmt.Errorf("cannot read")
-	}
-	if len(res.Bytes) > dataMaxBytes {
-		return "", fmt.Errorf("too large")
-	}
-	return string(res.Bytes), nil
+	s, _, err := m.readFileSecret(p)
+	return s, err
 }
 
+// readFileSecret is readFile, and whether the response is secret: its hash
+// is a secret origin's or it holds a bound secret's text.
+func (m *machine) readFileSecret(p string) (string, bool, error) {
+	res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"cat", p}, Path: p})
+	if err != nil || res.Exit != 0 {
+		return "", false, fmt.Errorf("cannot read")
+	}
+	if len(res.Bytes) > dataMaxBytes {
+		return "", false, fmt.Errorf("too large")
+	}
+	return string(res.Bytes), m.st.secretHash[responseHash(res)] || m.st.respHoldsSecret(res), nil
+}
+
+// secretDiff stands in for a diff that would list a secret.
+const secretDiff = "files differ (a secret is in the render or the file; not listed)\n"
+
 func (m *machine) runTemplateFile(st expStage) (value, int) {
+	m.secretWrite = false
+	secret := false
 	fail := func(msg string) (value, int) {
+		if secret {
+			// A parse, schema, or render message can quote the
+			// secret; it ends the line as any secret fault does.
+			m.secretFault()
+			m.ctl = ctlHalt
+			msg = "template_file: " + errSecretFault.Error()
+		}
 		m.err.WriteString(msg + "\n")
 		return value{}, exitType
 	}
-	specText, err := m.readFile(st.paths[0])
+	specText, specSecret, err := m.readFileSecret(st.paths[0])
 	if err != nil {
 		return fail("template_file spec: " + err.Error())
 	}
-	tpl, err := m.readFile(st.paths[1])
+	tpl, tplSecret, err := m.readFileSecret(st.paths[1])
 	if err != nil {
 		return fail("template_file tpl: " + err.Error())
 	}
+	secret = specSecret || tplSecret
 	sv, err := runFrom(specFormat(st.paths[0]), value{kind: valStr, s: specText})
 	if err != nil {
 		return fail("template_file spec: " + err.Error())
@@ -200,11 +229,14 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 	if len(st.argv) == 5 || (m.st.plan && readable) {
 		// --check, or plan mode: diff the current file against the render.
 		// In plan mode the write still goes to the door, which prints it.
-		cur, rerr := m.readFile(st.paths[2])
+		cur, curSecret, rerr := m.readFileSecret(st.paths[2])
 		if rerr != nil {
 			cur = ""
 		}
 		d, same := lineDiff(cur, out)
+		if !same && (secret || curSecret) {
+			d = secretDiff
+		}
 		if len(st.argv) == 5 {
 			if same {
 				return value{kind: valBytes}, 0
@@ -213,6 +245,7 @@ func (m *machine) runTemplateFile(st expStage) (value, int) {
 		}
 		m.err.WriteString(d)
 	}
+	m.secretWrite = secret
 	return value{kind: valBytes, b: []byte(out)}, 0
 }
 

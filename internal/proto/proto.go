@@ -31,6 +31,7 @@ type request struct {
 	Argv []string `json:"argv"`
 	Path string   `json:"path"`
 	Body string   `json:"body"`
+	Mode string   `json:"mode,omitempty"`
 }
 
 type response struct {
@@ -46,7 +47,7 @@ type response struct {
 func (c *Client) Do(v parent.Verb) (parent.Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	req := request{Key: v.Key, Argv: v.Argv, Path: v.Path}
+	req := request{Key: v.Key, Argv: v.Argv, Path: v.Path, Mode: v.Mode}
 	if len(v.Body) > 0 {
 		req.Body = base64.StdEncoding.EncodeToString(v.Body)
 	}
@@ -58,6 +59,12 @@ func (c *Client) Do(v parent.Verb) (parent.Result, error) {
 		return parent.Result{}, err
 	}
 	if resp.Error != "" {
+		// An agent older than file.write mode refuses the unknown field
+		// as a bad frame. That is never retried without the mode: the
+		// write would land with the default mode.
+		if v.Mode != "" && resp.Error == "frame body" {
+			return parent.Result{}, parent.ErrModeUnsupported
+		}
 		return parent.Result{}, errors.New(resp.Error)
 	}
 	out := parent.Result{Rows: resp.Rows, Cols: resp.Cols, Exit: resp.Exit}
@@ -90,7 +97,7 @@ func Serve(rw io.ReadWriter, h func(parent.Verb) (parent.Result, error)) error {
 		if err != nil {
 			return err
 		}
-		verb := parent.Verb{Key: req.Key, Argv: req.Argv, Path: req.Path}
+		verb := parent.Verb{Key: req.Key, Argv: req.Argv, Path: req.Path, Mode: req.Mode}
 		if req.Body != "" {
 			b, decErr := base64.StdEncoding.DecodeString(req.Body)
 			if decErr != nil {
