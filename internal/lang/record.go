@@ -342,8 +342,29 @@ const secretMinRunes = 4
 
 // holdsAny reports whether field s holds any secret text: as a substring
 // for a text of secretMinRunes or more, or as the whole field for a
-// shorter one.
+// shorter one. When s has a CR or LF it is checked once more with every
+// CR and LF removed from it and from the secrets, so a secret split across
+// lines ("hunter2\n-long") is caught. That one extra pass can also join
+// the ends of two unrelated lines into a secret's text: it over-redacts
+// (or marks a render secret), never leaks. Recording, provenance, and the
+// template_file render scan all use this.
 func holdsAny(s string, secrets []string) bool {
+	if holdsAnyLine(s, secrets) {
+		return true
+	}
+	if !strings.ContainsAny(s, "\r\n") {
+		return false
+	}
+	joined := make([]string, len(secrets))
+	for i, sec := range secrets {
+		joined[i] = crlf.Replace(sec)
+	}
+	return holdsAnyLine(crlf.Replace(s), joined)
+}
+
+var crlf = strings.NewReplacer("\r", "", "\n", "")
+
+func holdsAnyLine(s string, secrets []string) bool {
 	whole := strings.TrimSuffix(strings.TrimSuffix(s, "\n"), "\r")
 	for _, sec := range secrets {
 		switch {

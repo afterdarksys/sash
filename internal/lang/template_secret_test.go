@@ -311,3 +311,21 @@ func TestLintSecretAfterWrite(t *testing.T) {
 		}
 	}
 }
+
+// A secret split across output lines is caught by the joined pass; a
+// join that spans two unrelated lines over-redacts and does not fail.
+func TestTemplateFileSecretSplitLines(t *testing.T) {
+	f := builtFiles()
+	f["/srv/ops/lines.tpl"] = "pw={{ $a }}\n{{ $b }}\n"
+	f["/srv/ops/near.yaml"] = "a: x-hunter2\nb: -long-y\n"
+	for name, spec := range map[string]string{"split": "/srv/ops/split.yaml", "unrelated": "/srv/ops/near.yaml"} {
+		p := &tplParent{files: f}
+		out := Run(bindTok+"template_file "+spec+" /srv/ops/lines.tpl /srv/ops/out/app.conf", tplGrant(), p, Options{})
+		if w := writesTo(p, "/srv/ops/out/app.conf"); out.Status != 0 || len(w) != 1 || w[0].Mode != "0600" {
+			t.Errorf("%s: %+v %+v", name, out, w)
+		}
+	}
+	if !holdsAny("pw=hunter2\r\n-long", []string{"hunter2-long\n"}) || holdsAny("pw=hunter2\n-lon", []string{"hunter2-long"}) || !holdsAny("o\nk", []string{"ok"}) {
+		t.Fatal("holdsAny joined pass")
+	}
+}
