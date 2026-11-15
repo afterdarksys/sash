@@ -252,6 +252,8 @@ func collectUses(prog *Program, out *[]*Use) {
 			collectUses(&s.Body, out)
 		case *Par:
 			collectUses(&s.Body, out)
+		case *Atomic:
+			collectUses(&s.Body, out)
 		case *Fn:
 			collectUses(&s.Body, out)
 		}

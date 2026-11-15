@@ -346,7 +346,7 @@ func TestParShape(t *testing.T) {
 		"par 0 { echo x }":                         "usage par: N is 1 to 16",
 		"par 17 { echo x }":                        "usage par: N is 1 to 16",
 		"par x { echo x }":                         "usage par: N is 1 to 16",
-		"par 2 { atomic }":                         "parse: atomic inside par",
+		"par 2 { atomic { echo x } }":              "parse: atomic inside par",
 	} {
 		out := Run(src, parGrant(), p, Options{})
 		if want == "" {

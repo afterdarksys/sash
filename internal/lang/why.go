@@ -132,6 +132,8 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 			whyFns(&s.Body, fns)
 		case *Par:
 			whyFns(&s.Body, fns)
+		case *Atomic:
+			whyFns(&s.Body, fns)
 		}
 	}
 }

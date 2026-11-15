@@ -14,7 +14,10 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/afterdarksys/sash/internal/parent"
 )
@@ -30,6 +33,18 @@ type Agent struct {
 	Max    int
 	Hold   func(v parent.Verb) <-chan struct{}
 	Handle func(v parent.Verb) (parent.Result, error)
+	// Files, when set, is the host's files: file.read and file.write use
+	// it instead of Handle, and atomic.* journal and restore it as the
+	// agent does. NoAtomic is an agent before atomic (it denies the keys).
+	Files    map[string]string
+	NoAtomic bool
+	// Before, when set, runs as each request starts, serial or mux,
+	// before the agent answers it (a test's hook into timing).
+	Before func(v parent.Verb)
+
+	tx      *journal
+	ended   error // a restore not yet reported, for the next commit/abort
+	atomics []string
 
 	writeMu sync.Mutex
 	mu      sync.Mutex
@@ -168,6 +183,10 @@ func (a *Agent) serial(conn net.Conn, body []byte) {
 		a.write(conn, result(nil, parent.Result{}, err))
 		return
 	}
+	if res, err, ok := a.builtin(v); ok {
+		a.write(conn, result(nil, res, err))
+		return
+	}
 	a.mu.Lock()
 	a.running++
 	a.maxRun = max(a.maxRun, a.running)
@@ -213,6 +232,13 @@ func (a *Agent) work(conn net.Conn, id uint64, v parent.Verb, q *req) {
 		delete(a.open, id)
 		a.mu.Unlock()
 		a.write(conn, result(&id, parent.Result{}, err))
+		return
+	}
+	if res, err, ok := a.builtin(v); ok {
+		a.mu.Lock()
+		delete(a.open, id)
+		a.mu.Unlock()
+		a.write(conn, result(&id, res, err))
 		return
 	}
 	a.mu.Lock()
@@ -270,6 +296,147 @@ func (a *Agent) write(conn net.Conn, v any) {
 	if _, err := conn.Write(buf); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 		a.fail(err)
 	}
+}
+
+// journal is an open transaction: each path's content before its first
+// write (nil when it did not exist) and the last body the transaction
+// wrote there.
+type journal struct {
+	before map[string]*string
+	wrote  map[string]string
+}
+
+var errDenied = errors.New("denied")
+
+// builtin answers atomic.* and, when Files is set, file.read and
+// file.write, under a.mu. ok is false for anything else.
+func (a *Agent) builtin(v parent.Verb) (parent.Result, error, bool) {
+	if a.Before != nil {
+		a.Before(v)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case strings.HasPrefix(v.Key, "atomic."):
+		a.atomics = append(a.atomics, v.Key)
+		if a.NoAtomic {
+			return parent.Result{}, errDenied, true
+		}
+		res, err := a.atomic(v)
+		return res, err, true
+	case a.tx != nil && (v.Key == "unit.restart" || v.Key == "package.install" || v.Key == "sysctl.set"):
+		return parent.Result{}, errDenied, true
+	case a.Files != nil && v.Key == "file.read":
+		s, ok := a.Files[v.Path]
+		if !ok {
+			return parent.Result{Kind: parent.KindBytes, Exit: 1}, nil, true
+		}
+		return parent.Result{Kind: parent.KindBytes, Bytes: []byte(s)}, nil, true
+	case a.Files != nil && v.Key == "file.write":
+		if a.ended != nil {
+			return parent.Result{}, a.ended, true
+		}
+		if a.tx != nil {
+			if _, seen := a.tx.before[v.Path]; !seen {
+				var old *string
+				if s, ok := a.Files[v.Path]; ok {
+					old = &s
+				}
+				a.tx.before[v.Path] = old
+			}
+			a.tx.wrote[v.Path] = string(v.Body)
+		}
+		a.Files[v.Path] = string(v.Body)
+		return parent.Result{Kind: parent.KindBytes}, nil, true
+	}
+	return parent.Result{}, nil, false
+}
+
+func (a *Agent) atomic(v parent.Verb) (parent.Result, error) {
+	switch v.Key {
+	case "atomic.begin":
+		if a.tx != nil || a.ended != nil {
+			return parent.Result{}, errors.New("atomic_open")
+		}
+		a.tx = &journal{before: map[string]*string{}, wrote: map[string]string{}}
+		return parent.Result{Kind: parent.KindRows, Cols: []string{"deadline"}, Rows: []parent.Row{{"deadline": strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)}}}, nil
+	case "atomic.commit", "atomic.abort":
+		if e := a.ended; e != nil {
+			a.ended = nil
+			return parent.Result{}, e
+		}
+		if a.tx == nil {
+			return parent.Result{}, errors.New("atomic_none")
+		}
+		if v.Key == "atomic.commit" {
+			a.tx = nil
+			return parent.Result{Kind: parent.KindBytes}, nil
+		}
+		if err := a.restoreLocked(); err != nil {
+			return parent.Result{}, err
+		}
+		return parent.Result{Kind: parent.KindBytes}, nil
+	}
+	return parent.Result{}, errDenied
+}
+
+// restoreLocked puts every file back by compare-and-swap: only a file
+// still holding what the transaction wrote; any other is left as found
+// and the transaction is inconsistent.
+func (a *Agent) restoreLocked() error {
+	bad := false
+	for p, old := range a.tx.before {
+		if cur, ok := a.Files[p]; !ok || cur != a.tx.wrote[p] {
+			bad = true
+			continue
+		}
+		if old == nil {
+			delete(a.Files, p)
+		} else {
+			a.Files[p] = *old
+		}
+	}
+	a.tx = nil
+	if bad {
+		return errors.New("atomic_inconsistent")
+	}
+	return nil
+}
+
+// Expire restores the open transaction as the agent does at its
+// deadline; the next commit or abort reports it.
+func (a *Agent) Expire() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tx == nil {
+		return
+	}
+	a.ended = errors.New("atomic_restored")
+	if err := a.restoreLocked(); err != nil {
+		a.ended = err
+	}
+}
+
+// File is the host file at p.
+func (a *Agent) File(p string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.Files[p]
+	return s, ok
+}
+
+// SetFile changes a host file as another writer would.
+func (a *Agent) SetFile(p, s string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Files[p] = s
+}
+
+// Atomics is every atomic.* key the agent was sent, in order.
+func (a *Agent) Atomics() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.atomics...)
 }
 
 // Stats is what the agent saw.

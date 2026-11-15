@@ -384,6 +384,8 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 	case *Par:
 		// Branches run from the same prefixes, in any order.
 		return n.prog(&s.Body, b)
+	case *Atomic:
+		return n.prog(&s.Body, b)
 	case *Try:
 		body := n.prog(&s.Body, b)
 		in := b
@@ -697,6 +699,8 @@ func needsEachStmt(p *Program, fn func(Stmt)) {
 		case *Timeout:
 			needsEachStmt(&s.Body, fn)
 		case *Par:
+			needsEachStmt(&s.Body, fn)
+		case *Atomic:
 			needsEachStmt(&s.Body, fn)
 		case *Fn:
 			needsEachStmt(&s.Body, fn)

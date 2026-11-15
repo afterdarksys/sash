@@ -29,6 +29,10 @@ func (m *machine) runCheck(st expStage) (value, int) {
 	res, line, code := "pass", "ok "+name+"\n", 0
 	if !pass {
 		res, line, code = "fail", "FAIL "+name+"\n", 1
+		if m.atomic != nil {
+			// A failed check rolls an atomic block back, set -e or not.
+			m.atomic.checkFailed = true
+		}
 	}
 	if len(m.st.checks) >= checkMax {
 		m.err.WriteString("check max\n")

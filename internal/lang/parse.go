@@ -137,6 +137,16 @@ type Par struct {
 
 func (*Par) stmt() {}
 
+// Atomic runs Body as one transaction of file writes (v6 section 3): the
+// agent journals each write and restores them all unless the block
+// succeeds. Deadline, when set, is the transaction's deadline.
+type Atomic struct {
+	Deadline *Word
+	Body     Program
+}
+
+func (*Atomic) stmt() {}
+
 // parMax is the largest par N.
 const parMax = 16
 
@@ -291,6 +301,8 @@ func (p *parser) stmt() (Stmt, error) {
 			return r, nil
 		case "par":
 			return p.par()
+		case "atomic":
+			return p.atomic()
 		case "timeout":
 			p.i++
 			if p.peek().kind != kWord {
@@ -364,6 +376,82 @@ func (p *parser) par() (Stmt, error) {
 	return s, nil
 }
 
+// atomic reads atomic [deadline D] { body }. A break, continue, return,
+// or exit that would leave the block is refused: the block ends only by
+// running through (commit) or failing (abort).
+func (p *parser) atomic() (Stmt, error) {
+	p.i++
+	a := &Atomic{}
+	if p.peek().kind == kWord && plain(p.peek().word) == "deadline" {
+		p.i++
+		if p.peek().kind != kWord {
+			return nil, fmt.Errorf("parse: atomic deadline needs a duration")
+		}
+		d := p.peek().word
+		a.Deadline = &d
+		p.i++
+	}
+	body, err := p.block()
+	if err != nil {
+		return nil, err
+	}
+	a.Body = *body
+	for _, s := range a.Body.Stmts {
+		if msg := jumpLeaves(s, false, "an atomic block"); msg != "" {
+			return nil, fmt.Errorf("parse: %s", msg)
+		}
+	}
+	return a, nil
+}
+
+// jumpLeaves refuses a jump that would leave a block: return and exit
+// outside a fn body, break and continue outside a loop of the block.
+func jumpLeaves(s Stmt, inLoop bool, what string) string {
+	switch s := s.(type) {
+	case *Jump:
+		if s.Kind == "return" || s.Kind == "exit" || !inLoop {
+			return s.Kind + " would leave " + what
+		}
+	case *For:
+		return jumpsIn(&s.Body, true, what)
+	case *While:
+		return jumpsIn(&s.Body, true, what)
+	case *If:
+		if msg := jumpsIn(&s.Then, inLoop, what); msg != "" {
+			return msg
+		}
+		return jumpsIn(s.Else, inLoop, what)
+	case *Try:
+		if msg := jumpsIn(&s.Body, inLoop, what); msg != "" {
+			return msg
+		}
+		return jumpsIn(s.Catch, inLoop, what)
+	case *With:
+		return jumpsIn(&s.Body, inLoop, what)
+	case *Retry:
+		return jumpsIn(&s.Body, inLoop, what)
+	case *Timeout:
+		return jumpsIn(&s.Body, inLoop, what)
+	case *Atomic:
+		return jumpsIn(&s.Body, false, what)
+	case *Par:
+		return jumpsIn(&s.Body, false, what)
+	}
+	return ""
+}
+
+func jumpsIn(p *Program, inLoop bool, what string) string {
+	if p == nil {
+		return ""
+	}
+	for _, s := range p.Stmts {
+		if msg := jumpLeaves(s, inLoop, what); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
 // parBranchCheck refuses, in one branch, a nested par and a jump that
 // would leave the branch: return and exit anywhere outside a fn body, and
 // break or continue outside a loop of the branch. A fn defined in a branch
@@ -373,13 +461,10 @@ func parBranchCheck(s Stmt, inLoop bool) string {
 	switch s := s.(type) {
 	case *Par:
 		return "par inside par"
-	case *Chain:
-		// atomic { } (v6 section 3) is not built; when it is, it and par
-		// exclude each other. A branch cannot start one now.
-		if len(s.Pipes) > 0 && len(s.Pipes[0].Stages) > 0 && plainFirst(s.Pipes[0].Stages[0]) == "atomic" {
-			return "atomic inside par"
-		}
-		return ""
+	case *Atomic:
+		// A transaction serializes the session's verbs at the agent; a
+		// branch cannot hold one (and atomic refuses par inside).
+		return "atomic inside par"
 	case *Jump:
 		switch {
 		case s.Kind == "return" || s.Kind == "exit":

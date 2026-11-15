@@ -252,6 +252,8 @@ type machine struct {
 	text   string
 	// recWriting is set while finishRecord writes the recording.
 	recWriting bool
+	// atomic is the transaction of the atomic block running, if any.
+	atomic *atomicTx
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -367,6 +369,11 @@ var mutating = map[string]bool{"unit.restart": true, "package.install": true, "s
 // plan mode a mutating verb stops here: it prints what it would do and
 // succeeds without a call.
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
+	if m.atomic != nil && irreversible[v.Key] {
+		// The static check found every literal stage; this catches the
+		// rest (unit $op).
+		return parent.Result{}, errAtomicIrreversible
+	}
 	if m.st.HungUp() && !m.recWriting {
 		// After a hangup only the recording's own write goes out.
 		m.ctl = ctlHalt
@@ -462,6 +469,13 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 var fileWriteRefusals = map[string]string{
 	"bad_mode":      "the agent refused the file mode",
 	"owner_changed": "the file is owned by another user, so the agent will not replace it",
+	// Inside atomic; the block then aborts. None means the file changed.
+	"atomic_mode":         "the file's mode is not 0600, 0640, or 0644, so atomic cannot restore it",
+	"atomic_files":        "the transaction already holds 64 files",
+	"atomic_size":         "the transaction's snapshots would pass 32 MiB",
+	"atomic_journal":      "the agent could not journal the write; the file is untouched",
+	"atomic_restored":     "the agent already restored the transaction at its deadline",
+	"atomic_inconsistent": "the agent already restored the transaction and left some files as found",
 }
 
 // takeVerb counts one door call, or reports verbmax reached. It is a
@@ -487,6 +501,9 @@ func (m *machine) doFailed(key string, err error) int {
 	case errors.As(err, &te):
 		// Run reports the tape's error once, at the end.
 		m.ctl = ctlHalt
+		return exitType
+	case errors.Is(err, errAtomicIrreversible):
+		m.err.WriteString("atomic_irreversible: " + key + "\n")
 		return exitType
 	case errors.Is(err, errHangup):
 		m.err.WriteString("hangup\n")
@@ -630,7 +647,13 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 	case *Timeout:
 		return m.runTimeout(s)
 	case *Par:
+		if m.atomic != nil {
+			m.err.WriteString("atomic_irreversible: par\n")
+			return exitType, true
+		}
 		return m.runPar(s)
+	case *Atomic:
+		return m.runAtomic(s)
 	case *Fn:
 		return m.defFn(s)
 	case *Chain:
@@ -859,6 +882,10 @@ func (m *machine) runWith(w *With) (int, bool) {
 // runs no verb. The whole file is checked before anything is defined. The
 // file is not expanded: no history, braces, or globs.
 func (m *machine) runUse(u *Use) (int, bool) {
+	if m.atomic != nil {
+		m.err.WriteString("atomic_irreversible: use\n")
+		return exitType, true
+	}
 	fail := func(status int, msg string) (int, bool) {
 		m.err.WriteString(msg + "\n")
 		return status, true
@@ -2616,7 +2643,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic"} {
 		reservedNames[n] = true
 	}
 }

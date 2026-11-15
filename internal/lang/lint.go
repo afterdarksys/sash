@@ -29,19 +29,20 @@ const (
 // lintRules is every rule and its severity. incomplete-needs is an error
 // for command_from_value and a warning otherwise.
 var lintRules = map[string]string{
-	"unused-binding":     lintInfo,
-	"unreachable":        lintWarning,
-	"constant-check":     lintWarning,
-	"retry-on-mutation":  lintWarning,
-	"secret-to-sink":     lintError,
-	"secret-fault":       lintWarning,
-	"silent-catch":       lintWarning,
-	"incomplete-needs":   lintWarning,
-	"shadowed-secret":    lintWarning,
-	"secret-file":        lintInfo,
-	"secret-after-write": lintWarning,
-	"par-same-target":    lintWarning,
-	"record-file":        lintInfo,
+	"unused-binding":      lintInfo,
+	"unreachable":         lintWarning,
+	"constant-check":      lintWarning,
+	"retry-on-mutation":   lintWarning,
+	"secret-to-sink":      lintError,
+	"secret-fault":        lintWarning,
+	"silent-catch":        lintWarning,
+	"incomplete-needs":    lintWarning,
+	"shadowed-secret":     lintWarning,
+	"secret-file":         lintInfo,
+	"secret-after-write":  lintWarning,
+	"par-same-target":     lintWarning,
+	"record-file":         lintInfo,
+	"atomic-irreversible": lintWarning,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -109,6 +110,7 @@ func Lint(src string) Outcome {
 	l.blocks(prog)
 	l.parTargets()
 	l.recordFiles()
+	l.atomicBodies()
 	l.needs()
 	return l.report(comments)
 }
@@ -156,6 +158,8 @@ func lintBodies(s Stmt) []*Program {
 	case *Timeout:
 		return []*Program{&s.Body}
 	case *Par:
+		return []*Program{&s.Body}
+	case *Atomic:
 		return []*Program{&s.Body}
 	case *Fn:
 		return []*Program{&s.Body}
@@ -284,6 +288,10 @@ func ownRefs(s Stmt, out map[string]bool) {
 		wordRefs(s.D, out)
 	case *Par:
 		wordRefs(s.N, out)
+	case *Atomic:
+		if s.Deadline != nil {
+			wordRefs(*s.Deadline, out)
+		}
 	case *Use:
 		wordRefs(s.Path, out)
 	}
@@ -361,6 +369,10 @@ func ownWords(s Stmt, w func(Word), x func(Expr)) {
 		w(s.D)
 	case *Par:
 		w(s.N)
+	case *Atomic:
+		if s.Deadline != nil {
+			w(*s.Deadline)
+		}
 	case *Use:
 		w(s.Path)
 	}
@@ -599,6 +611,37 @@ func (l *linter) parTargets() {
 				seen[t] = true
 			}
 		}
+	})
+}
+
+// atomicBodies is atomic-irreversible: a verb atomic cannot undo
+// (unit.restart, package.install, sysctl.set), use, par, or a nested
+// atomic in an atomic body. A run refuses each before atomic.begin (exit 2
+// atomic_irreversible); lint names them earlier. Called fns are not
+// followed here; the run follows them.
+func (l *linter) atomicBodies() {
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
+		a, ok := s.(*Atomic)
+		if !ok {
+			return
+		}
+		lintEach(&a.Body, false, func(in Stmt, inAt int, _ bool) {
+			switch in.(type) {
+			case *Use:
+				l.add(inAt, "atomic-irreversible", "atomic holds a use")
+			case *Par:
+				l.add(inAt, "atomic-irreversible", "atomic holds a par")
+			case *Atomic:
+				l.add(inAt, "atomic-irreversible", "atomic holds a nested atomic")
+			}
+			lintEachPipe(in, func(pl Pipeline, _ string) {
+				for _, st := range pl.Stages {
+					if k := lintKey(st); irreversible[k] {
+						l.add(st.Argv[0].Pos, "atomic-irreversible", "atomic cannot undo "+k)
+					}
+				}
+			})
+		})
 	})
 }
 
@@ -948,6 +991,10 @@ func (l *linter) sinks(p *Program) {
 			own("reaches a timeout", func(o map[string]bool) { wordRefs(s.D, o) })
 		case *Par:
 			own("reaches a par count", func(o map[string]bool) { wordRefs(s.N, o) })
+		case *Atomic:
+			if s.Deadline != nil {
+				own("reaches an atomic deadline", func(o map[string]bool) { wordRefs(*s.Deadline, o) })
+			}
 		}
 	})
 }

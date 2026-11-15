@@ -572,5 +572,12 @@ func failKey(msg string) string {
 		key, _, _ := strings.Cut(rest, ":")
 		return key
 	}
+	// An atomic block's outcome is reported after the output of what
+	// failed inside it.
+	for _, l := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(l, "refused atomic:") {
+			return "atomic"
+		}
+	}
 	return ""
 }
