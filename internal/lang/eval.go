@@ -169,6 +169,12 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 		out.Status = m.exitCode
 		out.Exit = true
 	}
+	if m.rolledBack && out.Status == 0 {
+		// An atomic block rolled back in this run: the run never ends 0,
+		// even when a try caught it or an exit 0 followed, so nothing
+		// believes its writes landed.
+		out.Status = exitType
+	}
 	return out
 }
 
@@ -252,8 +258,10 @@ type machine struct {
 	text   string
 	// recWriting is set while finishRecord writes the recording.
 	recWriting bool
-	// atomic is the transaction of the atomic block running, if any.
-	atomic *atomicTx
+	// atomic is the transaction of the atomic block running, if any;
+	// rolledBack is set once a block in this run rolled back.
+	atomic     *atomicTx
+	rolledBack bool
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.

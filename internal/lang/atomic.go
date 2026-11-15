@@ -134,7 +134,7 @@ func (m *machine) runAtomic(s *Atomic) (int, bool) {
 		}
 		if err.Error() == "denied" {
 			// Never run the block without the journal.
-			return fail(exitType, "agent too old for atomic")
+			return fail(exitType, "atomic unavailable: agent too old, or no file write targets in the grant")
 		}
 		return fail(exitType, atomicRefused(err))
 	}
@@ -165,6 +165,14 @@ func (m *machine) runAtomic(s *Atomic) (int, bool) {
 	}
 	m.atomic = nil
 	m.deadline = prevDeadline
+	// A jump that reached past the block at run time (exit in a fn the
+	// block calls) is refused as the parser refuses a literal one: the
+	// block rolls back and fails, never ends the run as a success.
+	if jump := map[ctl]string{ctlExit: "exit", ctlReturn: "return", ctlBreak: "break", ctlContinue: "continue"}[m.ctl]; jump != "" {
+		m.ctl = ctlNone
+		m.err.WriteString(jump + " would leave an atomic block\n")
+		status, stop = exitType, true
+	}
 	if !stop && status == 0 && !tx.checkFailed {
 		if _, err := m.doAtomic(parent.Verb{Key: "atomic.commit", Argv: []string{"atomic", "commit"}}); err != nil {
 			if m.ctl == ctlHalt {
@@ -174,6 +182,7 @@ func (m *machine) runAtomic(s *Atomic) (int, bool) {
 		}
 		return 0, false
 	}
+	m.rolledBack = true
 	m.err.WriteString("atomic: rolled back\n")
 	if _, err := m.doAtomic(parent.Verb{Key: "atomic.abort", Argv: []string{"atomic", "abort"}}); err != nil && m.ctl != ctlHalt {
 		m.err.WriteString(atomicRefused(err) + "\n")

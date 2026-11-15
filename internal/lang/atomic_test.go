@@ -175,7 +175,7 @@ func TestAtomicOldAgent(t *testing.T) {
 	a := atomicAgent(t)
 	a.NoAtomic = true
 	out := runAtomicSrc(t, a, "atomic { echo new > /srv/ops/out/a }", Options{})
-	if out.Status != exitType || !strings.Contains(out.Stderr, "agent too old for atomic") || atomics(a) != "atomic.begin" {
+	if out.Status != exitType || !strings.Contains(out.Stderr, "atomic unavailable: agent too old, or no file write targets in the grant") || atomics(a) != "atomic.begin" {
 		t.Fatalf("%+v %s", out, atomics(a))
 	}
 	fileIs(t, a, "/srv/ops/out/a", "old\n")
@@ -250,5 +250,33 @@ func TestAtomicWalkers(t *testing.T) {
 	}
 	if out := Why("atomic { cat /etc/passwd }", parGrant(), Options{}); !strings.Contains(out.Stdout, "outside_roots") {
 		t.Errorf("why: %+v", out)
+	}
+}
+
+// An exit reached inside a block (through a fn it calls) is refused there:
+// the block rolls back and the run ends 2, never 0. So does a rollback a
+// try caught, and a return can never leave a block.
+func TestAtomicExitInside(t *testing.T) {
+	for _, src := range []string{
+		"fn f() { exit 0 }\natomic { echo new > /srv/ops/out/a; f }\necho after",
+		"fn f() { exit 0 }\nfn w() { atomic { echo new > /srv/ops/out/a; f } }\nw\necho after",
+		"fn f() { exit 0 }\ntry { atomic { echo new > /srv/ops/out/a; f } } catch e { echo caught }\nexit 0",
+		"try { atomic { echo new > /srv/ops/out/a; check \"x\" [ false ] } } catch e { echo caught }",
+	} {
+		a := atomicAgent(t)
+		out := runAtomicSrc(t, a, src, Options{})
+		// try keeps the block's messages for its catch; the status is
+		// still 2.
+		caught := strings.HasPrefix(src, "try") || strings.Contains(src, "\ntry")
+		if out.Status != exitType || (!caught && !strings.Contains(out.Stderr, "atomic: rolled back")) || (caught && !strings.Contains(out.Stdout, "caught")) || atomics(a) != "atomic.begin atomic.abort" {
+			t.Errorf("%q: %+v %s", src, out, atomics(a))
+		}
+		if strings.Contains(src, "exit 0 }\natomic") && !strings.Contains(out.Stderr, "exit would leave an atomic block") {
+			t.Errorf("%q: %+v", src, out)
+		}
+		fileIs(t, a, "/srv/ops/out/a", "old\n")
+	}
+	if out := Run("fn w() { atomic { echo new > /srv/ops/out/a; return 0 } }", parGrant(), &tplParent{}, Options{}); out.Status != exitType || !strings.Contains(out.Stderr, "return would leave an atomic block") {
+		t.Errorf("return: %+v", out)
 	}
 }
