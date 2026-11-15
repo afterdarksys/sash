@@ -5,8 +5,8 @@ package main
 // that names a grant and canned results, served by a fake parent, so no
 // host is reached and nothing is written but the recording itself. That
 // is the simplest safe source: a session's parent would be a real host,
-// and in-session recording must write through file.write with a mode
-// (jobs §2), which does not exist yet. Replay takes the same fixture for
+// and in-session recording is set -o record, written through file.write
+// with mode 0600 (lang/recsession.go). Replay takes the same fixture for
 // its grant only; every result comes from the recording, and its parent
 // refuses every call. A recording never authorizes anything.
 //
@@ -24,6 +24,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -267,14 +268,52 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 	return langExit(got.Status)
 }
 
+// recReadMax bounds one recording file read for replay: the 64 MiB
+// recording cap, plus a header.
+const recReadMax = 64<<20 + 1<<20
+
+func readRec(p string) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, recReadMax+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > recReadMax {
+		return nil, errors.New("replay_too_large")
+	}
+	return b, nil
+}
+
+// replay runs src against a recording. A segmented session recording is
+// named by its first segment, <base>.1; the rest, <base>.2 .. <base>.N,
+// are read in order and the chain is checked across them.
 func replay(src, recPath string, g grant.Grant) int {
-	f, err := os.Open(recPath)
+	first, err := readRec(recPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2
 	}
-	defer f.Close()
-	tape, err := lang.LoadReplay(f, src, time.Now())
+	rs := []io.Reader{bytes.NewReader(first)}
+	if n := lang.RecSegments(first); n > 0 {
+		base, ok := strings.CutSuffix(recPath, ".1")
+		if !ok || n > 1<<10 {
+			fmt.Fprintln(os.Stderr, "replay_bad_segment 1")
+			return 2
+		}
+		for k := 2; k <= n; k++ {
+			b, err := readRec(base + "." + strconv.Itoa(k))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "replay_bad_segment "+strconv.Itoa(k))
+				return 2
+			}
+			rs = append(rs, bytes.NewReader(b))
+		}
+	}
+	tape, err := lang.LoadReplaySegments(rs, src, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2

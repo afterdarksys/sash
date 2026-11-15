@@ -68,7 +68,21 @@ type recHeader struct {
 	SashVersion  string            `json:"sash_version"`
 	Modules      map[string]string `json:"modules"`
 	Expires      int64             `json:"expires"`
+	// A segmented recording (in a session, over recSegMax) is files
+	// <path>.1 .. <path>.N. Each header names its segment and the count,
+	// and from the second on, the sha256 of the previous segment's last
+	// line; the segment's first event chains to its own header. An
+	// unsegmented recording has none of these.
+	Segment     int    `json:"segment,omitempty"`
+	Segments    int    `json:"segments,omitempty"`
+	PrevSegment string `json:"prev_segment,omitempty"`
 }
+
+// recSegMax is the largest session recording segment: file.write sends
+// the body base64-encoded in one frame of at most proto.MaxFrame, so a
+// segment is three quarters of that, less room for the rest of the frame.
+// A variable so tests can lower it.
+var recSegMax = (8<<20)/4*3 - 64<<10
 
 type recReq struct {
 	Key      string   `json:"key"`
@@ -151,6 +165,10 @@ type tapeCore struct {
 	events []recEvent
 	by     map[string][]int
 	used   map[string]int
+	// segMax, when set, is a session recording: Finish keeps the
+	// output in segs, split at segMax, instead of writing w.
+	segMax int
+	segs   [][]byte
 	// both
 	pars     int
 	nl       []int
@@ -206,56 +224,112 @@ func NewRecorder(w io.Writer, script string, expires time.Time) (*Tape, error) {
 // event is used: the format, the script hash, the expiry against now, and
 // every link of the chain.
 func LoadReplay(r io.Reader, script string, now time.Time) (*Tape, error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64<<10), recMaxEvent+1)
-	if !sc.Scan() {
-		return nil, &TapeError{"replay_bad_format", -1}
-	}
-	headLine := append([]byte(nil), sc.Bytes()...)
+	return LoadReplaySegments([]io.Reader{r}, script, now)
+}
+
+// RecSegments reads a recording's first header line and returns how many
+// segments it has: 0 for an unsegmented recording, else N (the file is
+// segment 1 of N, named <base>.1). It checks nothing else.
+func RecSegments(first []byte) int {
+	line, _, _ := bytes.Cut(first, []byte("\n"))
 	var h recHeader
-	dec := json.NewDecoder(bytes.NewReader(headLine))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&h); err != nil || h.V != recFormat || h.Expires == 0 {
+	if json.Unmarshal(line, &h) != nil || h.Segment != 1 {
+		return 0
+	}
+	return h.Segments
+}
+
+// LoadReplaySegments is LoadReplay over a recording's segments in order.
+// Every segment's header must match the first's, name its place and the
+// same count, and carry the sha256 of the previous segment's last line;
+// the chain runs through every header and event, and seq continues across
+// segments. A missing, extra, reordered, or edited segment is refused.
+func LoadReplaySegments(rs []io.Reader, script string, now time.Time) (*Tape, error) {
+	if len(rs) == 0 {
 		return nil, &TapeError{"replay_bad_format", -1}
 	}
-	if h.ScriptSHA256 != sha([]byte(script)) {
-		return nil, &TapeError{"replay_other_script", -1}
+	var t *Tape
+	var first recHeader
+	prev := ""
+	total := 0
+	for k, r := range rs {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64<<10), recMaxEvent+1)
+		if !sc.Scan() {
+			return nil, &TapeError{"replay_bad_format", -1}
+		}
+		headLine := append([]byte(nil), sc.Bytes()...)
+		var h recHeader
+		dec := json.NewDecoder(bytes.NewReader(headLine))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&h); err != nil || h.V != recFormat || h.Expires == 0 {
+			return nil, &TapeError{"replay_bad_format", -1}
+		}
+		if k == 0 {
+			if h.ScriptSHA256 != sha([]byte(script)) {
+				return nil, &TapeError{"replay_other_script", -1}
+			}
+			if now.Unix() >= h.Expires {
+				return nil, &TapeError{"replay_expired", -1}
+			}
+			segmented := h.Segment != 0 || h.Segments != 0 || h.PrevSegment != ""
+			if (len(rs) > 1 || segmented) && (h.Segment != 1 || h.Segments != len(rs) || h.Segments < 2 || h.PrevSegment != "") {
+				return nil, &TapeError{"replay_bad_segment", 1}
+			}
+			first = h
+			t = &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}}}
+		} else {
+			same := h
+			same.Segment, same.PrevSegment = first.Segment, first.PrevSegment
+			a, errA := json.Marshal(same)
+			b, errB := json.Marshal(first)
+			if errA != nil || errB != nil || !bytes.Equal(a, b) || h.Segment != k+1 || h.PrevSegment != prev {
+				return nil, &TapeError{"replay_bad_segment", k + 1}
+			}
+		}
+		prev = sha(headLine)
+		total += len(headLine) + 1
+		if err := t.loadEvents(sc, &prev, &total); err != nil {
+			return nil, err
+		}
 	}
-	if now.Unix() >= h.Expires {
-		return nil, &TapeError{"replay_expired", -1}
-	}
-	t := &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}}}
-	prev := sha(headLine)
-	total := len(headLine)
+	return t, nil
+}
+
+// loadEvents reads one segment's events after its header, chaining from
+// prev.
+func (t *Tape) loadEvents(sc *bufio.Scanner, prevp *string, totalp *int) error {
+	prev, total := *prevp, *totalp
+	defer func() { *prevp, *totalp = prev, total }()
 	for sc.Scan() {
 		line := sc.Bytes()
 		total += len(line) + 1
 		if total > recMaxTotal || len(t.events) >= recMaxEvents {
-			return nil, &TapeError{"replay_too_large", len(t.events) + 1}
+			return &TapeError{"replay_too_large", len(t.events) + 1}
 		}
 		var ev recEvent
 		d := json.NewDecoder(bytes.NewReader(line))
 		d.DisallowUnknownFields()
 		if err := d.Decode(&ev); err != nil {
-			return nil, &TapeError{"replay_bad_format", len(t.events) + 1}
+			return &TapeError{"replay_bad_format", len(t.events) + 1}
 		}
 		if ev.Prev != prev || ev.Seq != len(t.events)+1 {
-			return nil, &TapeError{"replay_bad_chain", len(t.events) + 1}
+			return &TapeError{"replay_bad_chain", len(t.events) + 1}
 		}
 		prev = sha(line)
 		if (ev.Branch == "") != (ev.BSeq == 0) {
-			return nil, &TapeError{"replay_bad_format", len(t.events) + 1}
+			return &TapeError{"replay_bad_format", len(t.events) + 1}
 		}
 		t.by[ev.Branch] = append(t.by[ev.Branch], len(t.events))
 		t.events = append(t.events, ev)
 	}
 	if err := sc.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
-			return nil, &TapeError{"replay_too_large", len(t.events) + 1}
+			return &TapeError{"replay_too_large", len(t.events) + 1}
 		}
-		return nil, &TapeError{"replay_bad_format", len(t.events) + 1}
+		return &TapeError{"replay_bad_format", len(t.events) + 1}
 	}
-	return t, nil
+	return nil
 }
 
 // begin gives the tape the text being run, for line numbers.
@@ -312,17 +386,12 @@ func (t *Tape) Finish() error {
 		secrets = append(secrets, s)
 	}
 	sort.Strings(secrets)
-	var buf bytes.Buffer
-	head, err := json.Marshal(t.header)
-	if err != nil {
-		t.err = &TapeError{"record_failed", 0}
-		return t.err
-	}
-	buf.Write(head)
-	buf.WriteByte('\n')
-	prev := sha(head)
+	evs := make([]recEvent, len(t.pend))
+	sizes := make([]int, len(t.pend))
+	zero := strings.Repeat("0", 64)
+	total := 0
 	for i, p := range t.pend {
-		ev := recEvent{Seq: i + 1, Line: p.line, Kind: p.kind, Branch: p.branch, BSeq: p.bseq, Prev: prev}
+		ev := recEvent{Seq: i + 1, Line: p.line, Kind: p.kind, Branch: p.branch, BSeq: p.bseq}
 		if p.v != nil {
 			ev.Req = reqOf(*p.v, p.tainted, secrets)
 		}
@@ -335,19 +404,109 @@ func (t *Tape) Finish() error {
 				ev.Resp = &recResp{Value: redacted3}
 			}
 		}
+		// Every prev is 64 hex digits, so a line's size is known before
+		// the chain is.
+		ev.Prev = zero
 		line, err := json.Marshal(ev)
-		if err != nil || len(line) > recMaxEvent || buf.Len()+len(line)+1 > recMaxTotal {
+		total += len(line) + 1
+		if err != nil || len(line) > recMaxEvent || total > recMaxTotal {
 			t.err = &TapeError{"record_too_large", i + 1}
 			return t.err
 		}
-		buf.Write(line)
-		buf.WriteByte('\n')
-		prev = sha(line)
+		evs[i], sizes[i] = ev, len(line)
 	}
-	if _, err := t.w.Write(buf.Bytes()); err != nil {
+	groups, err := t.segment(sizes, total)
+	if err != nil {
+		t.err = err
+		return t.err
+	}
+	t.segs = make([][]byte, len(groups))
+	prev := ""
+	for k, g := range groups {
+		h := t.header
+		if len(groups) > 1 {
+			h.Segment, h.Segments, h.PrevSegment = k+1, len(groups), prev
+		}
+		var buf bytes.Buffer
+		head, err := json.Marshal(h)
+		if err != nil {
+			t.err = &TapeError{"record_failed", 0}
+			return t.err
+		}
+		buf.Write(head)
+		buf.WriteByte('\n')
+		prev = sha(head)
+		for _, i := range g {
+			ev := evs[i]
+			ev.Prev = prev
+			line, err := json.Marshal(ev)
+			if err != nil {
+				t.err = &TapeError{"record_failed", i + 1}
+				return t.err
+			}
+			buf.Write(line)
+			buf.WriteByte('\n')
+			prev = sha(line)
+		}
+		t.segs[k] = buf.Bytes()
+	}
+	if t.segMax > 0 {
+		return nil
+	}
+	if _, err := t.w.Write(t.segs[0]); err != nil {
 		t.err = &TapeError{"record_failed", len(t.pend)}
 	}
 	return t.err
+}
+
+// segment splits the events into segments of at most segMax bytes, each
+// with its header: one group when the recording is offline or fits. An
+// event too large for a segment with its header is record_too_large.
+func (t *tapeCore) segment(sizes []int, total int) ([][]int, error) {
+	all := make([]int, len(sizes))
+	for i := range all {
+		all[i] = i
+	}
+	plain, err := json.Marshal(t.header)
+	if err != nil {
+		return nil, &TapeError{"record_failed", 0}
+	}
+	if t.segMax == 0 || len(plain)+1+total <= t.segMax {
+		return [][]int{all}, nil
+	}
+	// The largest a segment's header can be.
+	h := t.header
+	h.Segment, h.Segments, h.PrevSegment = recMaxEvents, recMaxEvents, strings.Repeat("0", 64)
+	big, err := json.Marshal(h)
+	if err != nil {
+		return nil, &TapeError{"record_failed", 0}
+	}
+	var groups [][]int
+	var cur []int
+	used := len(big) + 1
+	for i, n := range sizes {
+		if used+n+1 > t.segMax {
+			if len(cur) == 0 {
+				return nil, &TapeError{"record_too_large", i + 1}
+			}
+			groups = append(groups, cur)
+			cur, used = nil, len(big)+1
+			if used+n+1 > t.segMax {
+				return nil, &TapeError{"record_too_large", i + 1}
+			}
+		}
+		cur = append(cur, i)
+		used += n + 1
+	}
+	return append(groups, cur), nil
+}
+
+// Segments is a finished session recording's files, in order: one, or
+// <path>.1 .. <path>.N when it was split.
+func (t *Tape) Segments() [][]byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.segs
 }
 
 // see adds secret texts to the run's set. It only grows: a secret later

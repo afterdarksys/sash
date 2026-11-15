@@ -57,6 +57,9 @@ type State struct {
 	// report when they end (par.go); clones share it, and only a Run's
 	// own machine drains it.
 	late *lateQueue
+	// rec is the session recording set -o record started, if any
+	// (recsession.go).
+	rec *sessionRec
 }
 
 // Generation is the write counter: equal values mean no write between.
@@ -326,9 +329,9 @@ func (s *State) runSet(argv []string) (value, error) {
 
 func (s *State) setLong(name string, on bool) error {
 	if name == "record" {
-		// In-session recording needs file.write with a mode (jobs §2);
-		// offline recording is sash --record.
-		return fmt.Errorf("record needs file.write mode")
+		// set -o record <path> and set +o record are statements of their
+		// own (recsession.go); no other form takes record.
+		return fmt.Errorf("usage set -o record <path>, set +o record")
 	}
 	if name == "pipefail" {
 		if !on {

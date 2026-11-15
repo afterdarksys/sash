@@ -359,17 +359,6 @@ func TestReplayRefusesBrokenRecordings(t *testing.T) {
 	}
 }
 
-// set -o record is not built in a session: it needs file.write with a
-// mode.
-func TestSetRecordRefused(t *testing.T) {
-	for _, src := range []string{"set -o record", "set -o record /tmp/r.jsonl", "shopt -s record"} {
-		out := Run(src, recGrant(), &countParent{}, Options{})
-		if out.Status != exitType || !strings.Contains(out.Stderr, "record needs file.write mode") {
-			t.Errorf("%q: %+v", src, out)
-		}
-	}
-}
-
 func TestRecordEventCapIsTheFrameCap(t *testing.T) {
 	if recMaxEvent != proto.MaxFrame {
 		t.Fatalf("recMaxEvent %d proto.MaxFrame %d", recMaxEvent, proto.MaxFrame)

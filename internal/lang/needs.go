@@ -525,6 +525,12 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 	case "popd":
 		// The prefix below the top is not tracked.
 		return b.plus("?")
+	case "set":
+		// set -o record <path> writes the session recording there at the
+		// end, through file.write.
+		if len(args) == 3 && plain(args[0]) == "-o" && plain(args[1]) == "record" {
+			n.path("file.write", args[2], needFile, b)
+		}
 	case "template":
 		if len(args) == 1 {
 			n.path("file.read", args[0], needFile, b)

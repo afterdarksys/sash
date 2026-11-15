@@ -107,6 +107,10 @@ func Run(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if opt.State != nil {
 		defer func() { opt.State.gen++ }()
 	}
+	if opt.Tape == nil && opt.State != nil && opt.State.rec != nil {
+		// A session recording covers every later line.
+		opt.Tape = opt.State.rec.tape
+	}
 	if opt.Tape != nil {
 		out := runTaped(src, g, p, opt)
 		if err := opt.Tape.Err(); err != nil {
@@ -147,6 +151,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m.nl = provNewlines(expanded)
 	m.provTop = true
 	m.drains = true
+	m.src, m.text = src, expanded
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
@@ -237,8 +242,12 @@ type machine struct {
 	pb         *parBranch
 	interrupts func() (<-chan struct{}, func())
 	// drains is set on a Run's own machine: it drains the State's late
-	// queue before each top-level statement.
+	// queue before each top-level statement. src is the Run's source as
+	// given (a session recording's header hashes it, as --record does)
+	// and text what it executes after expansion (for line numbers).
 	drains bool
+	src    string
+	text   string
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -374,7 +383,10 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 			what = fmt.Sprintf("write %s (%d bytes)", v.Path, len(v.Body))
 		}
 		if v.Key == "file.write" && v.Mode != "" {
-			what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
+			what = fmt.Sprintf("write %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
+			if len(v.Argv) > 0 && v.Argv[0] == ">" {
+				what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
+			}
 		}
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
@@ -512,7 +524,10 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 	if m.tape != nil {
 		// Every secret bound so far joins the tape's set, which never
 		// shrinks: a secret bound and then reassigned is still redacted.
-		defer func() { m.tape.see(m.secretTexts()) }()
+		// The tape this body started under: set +o record may end the
+		// session recording (m.tape becomes nil) while the body runs.
+		tape := m.tape
+		defer func() { tape.see(m.secretTexts()) }()
 	}
 	for i, s := range prog.Stmts {
 		if m.tape != nil {
@@ -1366,6 +1381,10 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		if name == "origin" && (len(st.Argv) != 2 || plain(st.Argv[1]) == "") {
 			return nil, &problem{exitType, "usage origin name"}, refusal{}
 		}
+		// A recording's path is a literal, so needs can report it.
+		if name == "set" && len(st.Argv) == 4 && plain(st.Argv[1]) == "-o" && plain(st.Argv[2]) == "record" && plain(st.Argv[3]) == "" {
+			return nil, &problem{exitType, "usage set -o record: the path must be literal"}, refusal{}
+		}
 		if (name == "filter" || name == "each" || name == "check" || name == "log") && last >= 1 && exprOf(st.Argv[last]) != nil {
 			// The [ ] keeps its value: per row for filter and each, a
 			// datum for check and log.
@@ -2045,6 +2064,11 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		}
 		return v, 0
 	case "set", "shopt":
+		for _, a := range st.argv[1:] {
+			if a == "record" {
+				return value{kind: valBytes}, m.runRecord(st.argv)
+			}
+		}
 		v, err := m.st.runSet(st.argv)
 		if err == nil && m.st.confirm && m.confirm == nil {
 			m.st.confirm = false

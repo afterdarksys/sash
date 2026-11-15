@@ -73,6 +73,13 @@ func main() {
 	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
+	// A recording set -o record started is written when the script ends.
+	fin := lang.FinishRecording(g, p, lang.Options{State: st, Prefix: got.Prefix})
+	fmt.Fprint(os.Stdout, fin.Stdout)
+	fmt.Fprint(os.Stderr, fin.Stderr)
+	if got.Status == 0 && fin.Status != 0 {
+		got.Status = fin.Status
+	}
 	os.Exit(langExit(got.Status))
 }
 

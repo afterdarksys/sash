@@ -1291,7 +1291,25 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		return askConfirm(keys, out, func() error { return flushInput(int(in.Fd())) }, prompt)
 	}
 	e.opt.Interrupts = parInterrupts(keys)
-	return finishRaw(guard.Restore, e.loop(keys, out, errOut))
+	status := e.loop(keys, out, errOut)
+	// Logout writes a recording set -o record started, asking under
+	// confirm like any file.write.
+	fin := e.FinishRecording()
+	if text := fin.Stdout + fin.Stderr; text != "" {
+		if err := writeAll(errOut, []byte(strings.ReplaceAll(text, "\n", "\r\n"))); err != nil {
+			status = 1
+		}
+	}
+	if status == 0 && fin.Status != 0 {
+		status = fin.Status
+	}
+	return finishRaw(guard.Restore, status)
+}
+
+// FinishRecording writes the session recording, if one is open: at
+// logout, Ctrl-D, or exit.
+func (e *Editor) FinishRecording() lang.Outcome {
+	return lang.FinishRecording(e.g, e.parent, e.opt)
 }
 
 // termGuard puts the terminal back once: bracketed paste off (a confirm

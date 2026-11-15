@@ -41,6 +41,7 @@ var lintRules = map[string]string{
 	"secret-file":        lintInfo,
 	"secret-after-write": lintWarning,
 	"par-same-target":    lintWarning,
+	"record-file":        lintInfo,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -107,6 +108,7 @@ func Lint(src string) Outcome {
 	l.shadowed()
 	l.blocks(prog)
 	l.parTargets()
+	l.recordFiles()
 	l.needs()
 	return l.report(comments)
 }
@@ -597,6 +599,24 @@ func (l *linter) parTargets() {
 				seen[t] = true
 			}
 		}
+	})
+}
+
+// recordFiles is record-file: set -o record writes a recording of the
+// rest of the session or script, at mode 0600, to its path.
+func (l *linter) recordFiles() {
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
+		lintEachPipe(s, func(pl Pipeline, _ string) {
+			for _, st := range pl.Stages {
+				if plain(st.Argv[0]) == "set" && len(st.Argv) == 4 && plain(st.Argv[1]) == "-o" && plain(st.Argv[2]) == "record" {
+					where := "a path from a value (refused)"
+					if p := plain(st.Argv[3]); p != "" {
+						where = needsCell(p)
+					}
+					l.add(st.Argv[0].Pos, "record-file", "set -o record writes the session recording to "+where+" at mode 0600")
+				}
+			}
+		})
 	})
 }
 
