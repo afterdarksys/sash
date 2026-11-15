@@ -14,6 +14,17 @@ import (
 	"github.com/afterdarksys/sash/internal/proto/prototest"
 )
 
+// agentWriteRule is the agent's own check on a file.write verb
+// (systemapi-agent sash_verb.go, sashDoFileWrite): exactly argv [">",
+// path] for the verb's path, else denied. Every fake parent that answers
+// file.write applies it, so sash sending anything else fails a test.
+func agentWriteRule(v parent.Verb) error {
+	if v.Path == "" || len(v.Argv) != 2 || v.Argv[0] != ">" || v.Argv[1] != v.Path {
+		return errors.New("denied")
+	}
+	return nil
+}
+
 // writeParent is hostParent that keeps every file.write (it never
 // writes) and answers it with err.
 type writeParent struct {
@@ -25,6 +36,9 @@ type writeParent struct {
 
 func (p *writeParent) Do(v parent.Verb) (parent.Result, error) {
 	if v.Key == "file.write" {
+		if err := agentWriteRule(v); err != nil {
+			return parent.Result{}, err
+		}
 		v.Body = append([]byte(nil), v.Body...)
 		p.writes = append(p.writes, v)
 		return parent.Result{Kind: parent.KindBytes}, p.err
@@ -53,7 +67,7 @@ func TestSessionRecordWritten(t *testing.T) {
 	if out := Run("set +o record", recGrant(), p, opt); out.Status != 0 || st.Recording() {
 		t.Fatalf("%+v", out)
 	}
-	if len(p.writes) != 1 || p.writes[0].Mode != "0600" || p.writes[0].Path != "/tmp/s.jsonl" || p.writes[0].Argv[0] != "record" {
+	if len(p.writes) != 1 || p.writes[0].Mode != "0600" || p.writes[0].Path != "/tmp/s.jsonl" || p.writes[0].Argv[0] != ">" {
 		t.Fatalf("writes %+v", p.writes)
 	}
 	body := string(p.writes[0].Body)
@@ -236,7 +250,7 @@ func TestSessionRecordPlanAndConfirm(t *testing.T) {
 		opt := Options{State: NewState(), Confirm: func(q string) (bool, bool) { asked = append(asked, q); return yes, false }}
 		Run("set -o confirm\nset -o record /tmp/s.jsonl\nps", recGrant(), p, opt)
 		fin := FinishRecording(recGrant(), p, opt)
-		if len(asked) != 1 || !strings.Contains(asked[0], "file.write record /tmp/s.jsonl") {
+		if len(asked) != 1 || !strings.Contains(asked[0], "file.write > /tmp/s.jsonl") {
 			t.Fatalf("asked %q", asked)
 		}
 		if yes && (fin.Status != 0 || len(p.writes) != 1) {
@@ -281,5 +295,99 @@ func TestSessionRecordPathAndNeeds(t *testing.T) {
 	var te *TapeError
 	if _, err := LoadReplaySegments(nil, "", recNow); !errors.As(err, &te) {
 		t.Errorf("no segments: %v", err)
+	}
+}
+
+// Over the real wire, an agent that applies its own file.write rule
+// accepts the recording write: argv [">", path], mode 0600.
+func TestSessionRecordOverTheWire(t *testing.T) {
+	clocks(t)
+	var got []parent.Verb
+	a := &prototest.Agent{Max: 4, Handle: func(v parent.Verb) (parent.Result, error) {
+		if v.Key == "file.write" {
+			got = append(got, v)
+		}
+		return parent.Result{Kind: parent.KindBytes, Bytes: []byte("ok\n")}, nil
+	}}
+	c1, c2 := net.Pipe()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		a.Serve(c2)
+	}()
+	c := &proto.Client{RW: c1}
+	st := NewState()
+	Run("set -o record /tmp/s.jsonl\ncat /tmp/a", recGrant(), c, Options{State: st})
+	fin := FinishRecording(recGrant(), c, Options{State: st})
+	c1.Close()
+	<-served
+	if fin.Status != 0 || len(got) != 1 || got[0].Mode != "0600" || got[0].Path != "/tmp/s.jsonl" {
+		t.Fatalf("%+v %+v", fin, got)
+	}
+}
+
+// A hangup stops the run at its next statement (129) and starts no verb,
+// but the session recording is still written.
+func TestSessionRecordHangup(t *testing.T) {
+	clocks(t)
+	p := &writeParent{}
+	st := NewState()
+	Run("set -o record /tmp/s.jsonl\nps", recGrant(), p, Options{State: st})
+	st.HangUp()
+	if out := Run("ps\nps", recGrant(), p, Options{State: st}); out.Status != exitHangup || !strings.Contains(out.Stderr, "hangup") {
+		t.Fatalf("%+v", out)
+	}
+	if fin := FinishRecording(recGrant(), p, Options{State: st}); fin.Status != 0 || len(p.writes) != 1 || p.writes[0].Mode != "0600" {
+		t.Fatalf("%+v %+v", fin, p.writes)
+	}
+}
+
+// At the size cap a session recording stops, warns once, never halts the
+// session's verbs, and is written with a final truncated event; replay
+// says it is partial.
+func TestSessionRecordTruncated(t *testing.T) {
+	oldTotal, oldEvents := recMaxTotal, recMaxEvents
+	defer func() { recMaxTotal, recMaxEvents = oldTotal, oldEvents }()
+	recMaxEvents = 5
+	clocks(t)
+	p := &writeParent{}
+	st := NewState()
+	src := "set -o record /tmp/s.jsonl\nfor i in [ 1..10 ] { cat /tmp/a }\necho done"
+	out := Run(src, recGrant(), p, Options{State: st})
+	if out.Status != 0 || !strings.Contains(out.Stdout, "done") || strings.Count(out.Stderr, "reached its size cap") != 1 {
+		t.Fatalf("%+v", out)
+	}
+	if strings.Count(out.Stdout, "content of /tmp/a") != 10 {
+		t.Fatalf("verbs stopped: %+v", out)
+	}
+	fin := FinishRecording(recGrant(), p, Options{State: st})
+	if fin.Status != 0 || len(p.writes) != 1 || !strings.Contains(fin.Stderr, "written truncated") {
+		t.Fatalf("%+v %+v", fin, p.writes)
+	}
+	lines := recLines(p.writes[0].Body)
+	if !bytes.Contains(lines[len(lines)-1], []byte(`"kind":"truncated"`)) || len(lines) != 1+4+1 {
+		t.Fatalf("recording:\n%s", p.writes[0].Body)
+	}
+	_, err := replay(t, p.writes[0].Body, src)
+	var te *TapeError
+	if !errors.As(err, &te) || te.Code != "replay_truncated" {
+		t.Fatalf("replay: %v", err)
+	}
+	// An event too large for a segment truncates there too.
+	oldSeg := recSegMax
+	defer func() { recSegMax = oldSeg }()
+	recMaxEvents = oldEvents
+	recSegMax = 1024
+	clocks(t)
+	p = &writeParent{data: strings.Repeat("x", 2048)}
+	st = NewState()
+	Run("set -o record /tmp/s.jsonl\nps\ncat /tmp/a\nps", recGrant(), p, Options{State: st})
+	fin = FinishRecording(recGrant(), p, Options{State: st})
+	if fin.Status != 0 || !strings.Contains(fin.Stderr, "written truncated") || len(p.writes) == 0 {
+		t.Fatalf("big event: %+v %d writes", fin, len(p.writes))
+	}
+	last := p.writes[len(p.writes)-1].Body
+	if !bytes.Contains(last, []byte(`"kind":"truncated"`)) || bytes.Contains(last, []byte(strings.Repeat("x", 100))) {
+		t.Fatalf("big event recording: %s", last)
 	}
 }

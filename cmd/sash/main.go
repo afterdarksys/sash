@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/afterdarksys/sash/internal/grant"
@@ -70,15 +71,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		os.Exit(langExit(2))
 	}
+	stopHup := watchHangup(st, hupGrace, os.Exit)
 	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
-	// A recording set -o record started is written when the script ends.
+	// A recording set -o record started is written when the script ends,
+	// and after a hangup, which stops the run at its next statement.
 	fin := lang.FinishRecording(g, p, lang.Options{State: st, Prefix: got.Prefix})
+	stopHup()
 	fmt.Fprint(os.Stdout, fin.Stdout)
 	fmt.Fprint(os.Stderr, fin.Stderr)
 	if got.Status == 0 && fin.Status != 0 {
 		got.Status = fin.Status
+	}
+	if st.HungUp() {
+		got.Status = 129
 	}
 	os.Exit(langExit(got.Status))
 }
@@ -110,6 +117,31 @@ func sigInterrupts() (<-chan struct{}, func()) {
 		signal.Stop(sig)
 		close(done)
 		<-stopped
+	}
+}
+
+// hupGrace bounds the write of a session recording after a hangup.
+const hupGrace = 5 * time.Second
+
+// watchHangup catches SIGHUP (most ssh disconnects) while a script runs:
+// the run stops at its next statement or verb, so the recording can still
+// be written through the verb socket. If that takes past grace, sash ends
+// (129) without it: best effort, never a hang. stop ends the watch.
+func watchHangup(st *lang.State, grace time.Duration, exit func(int)) (stop func()) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-sig:
+			st.HangUp()
+			time.AfterFunc(grace, func() { exit(129) })
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sig)
+		close(done)
 	}
 }
 

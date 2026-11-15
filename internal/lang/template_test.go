@@ -23,6 +23,9 @@ func (p *tplParent) Do(v parent.Verb) (parent.Result, error) {
 		}
 		return parent.Result{Kind: parent.KindBytes, Exit: 1}, nil
 	case v.Key == "file.write":
+		if err := agentWriteRule(v); err != nil {
+			return parent.Result{}, err
+		}
 		if p.writes == nil {
 			p.writes = map[string]string{}
 		}

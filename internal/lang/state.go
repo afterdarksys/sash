@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/afterdarksys/sash/internal/parent"
 )
@@ -60,7 +61,22 @@ type State struct {
 	// rec is the session recording set -o record started, if any
 	// (recsession.go).
 	rec *sessionRec
+	// hup is set on a hangup (SIGHUP): runs stop at the next statement or
+	// verb, so the session recording can be written; clones share it.
+	hup *atomic.Bool
 }
+
+// HangUp marks the session hung up: every run stops at its next statement
+// or verb (exit 129) and starts nothing new, except writing the session
+// recording. Safe from a signal goroutine.
+func (s *State) HangUp() {
+	if s != nil && s.hup != nil {
+		s.hup.Store(true)
+	}
+}
+
+// HungUp reports HangUp.
+func (s *State) HungUp() bool { return s != nil && s.hup != nil && s.hup.Load() }
 
 // Generation is the write counter: equal values mean no write between.
 func (s *State) Generation() uint64 {
@@ -87,6 +103,7 @@ func NewState() *State {
 		loopMax:  loopMaxDefault,
 		verbMax:  verbMaxDefault,
 		late:     &lateQueue{},
+		hup:      new(atomic.Bool),
 	}
 }
 

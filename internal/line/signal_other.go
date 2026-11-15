@@ -11,3 +11,5 @@ func watchSignals(restore func() error, exit func(os.Signal, error)) (stop func(
 }
 
 func reraise(os.Signal, error) { os.Exit(1) }
+
+func isHangup(os.Signal) bool { return false }

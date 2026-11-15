@@ -58,10 +58,13 @@ type View struct {
 // this actor on this host. A private session loads none. prompt line is
 // the default. prompt menu lists the closed table.
 type Editor struct {
-	g      grant.Grant
-	opt    lang.Options
-	parent parent.Parent
-	run    func(string) lang.Outcome
+	// runLock orders runs, the logout write, and a hangup's write of the
+	// session recording: one at a time on the State.
+	runLock chan struct{}
+	g       grant.Grant
+	opt     lang.Options
+	parent  parent.Parent
+	run     func(string) lang.Outcome
 
 	line   string
 	cursor int
@@ -140,7 +143,10 @@ func New(g grant.Grant, p parent.Parent) *Editor {
 	// One State for the session: names, functions, and set options carry
 	// from line to line.
 	e.opt.State = lang.NewState()
+	e.runLock = make(chan struct{}, 1)
 	e.run = func(src string) lang.Outcome {
+		e.runLock <- struct{}{}
+		defer func() { <-e.runLock }()
 		opt := e.opt
 		opt.History = append([]string(nil), e.history...)
 		return lang.Run(src, e.g, e.parent, opt)
@@ -1283,7 +1289,12 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		return 1
 	}
 	guard := &termGuard{restore: restore, out: out}
-	stop := watchSignals(guard.Restore, reraise)
+	stop := watchSignals(guard.Restore, func(sig os.Signal, rerr error) {
+		if isHangup(sig) {
+			e.hangup(hupGrace)
+		}
+		reraise(sig, rerr)
+	})
 	defer stop()
 	e.width = func() int { return termWidth(int(out.Fd())) }
 	keys := newTTYSource(in)
@@ -1309,7 +1320,41 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 // FinishRecording writes the session recording, if one is open: at
 // logout, Ctrl-D, or exit.
 func (e *Editor) FinishRecording() lang.Outcome {
+	e.runLock <- struct{}{}
+	defer func() { <-e.runLock }()
 	return lang.FinishRecording(e.g, e.parent, e.opt)
+}
+
+// hupGrace bounds how long a hangup waits to write the session recording.
+const hupGrace = 5 * time.Second
+
+// hangup is SIGHUP (most ssh disconnects): best effort, within grace,
+// write the session recording while the verb socket may still be up. A
+// run in progress stops at its next statement or verb (State.HangUp); the
+// run lock then orders the write after it, so the State is never used by
+// two goroutines. There is no terminal to ask, so under confirm the
+// recording is not written. Past grace, nothing more is tried. The
+// process then ends as the signal says. It returns the outcome, or false
+// when grace ran out first.
+func (e *Editor) hangup(grace time.Duration) (lang.Outcome, bool) {
+	st := e.opt.State
+	st.HangUp()
+	got := make(chan lang.Outcome, 1)
+	go func() {
+		select {
+		case e.runLock <- struct{}{}:
+		case <-time.After(grace):
+			return
+		}
+		// The lock is kept: the process is ending.
+		got <- lang.FinishRecording(e.g, e.parent, lang.Options{State: st})
+	}()
+	select {
+	case out := <-got:
+		return out, true
+	case <-time.After(grace):
+		return lang.Outcome{}, false
+	}
 }
 
 // termGuard puts the terminal back once: bracketed paste off (a confirm

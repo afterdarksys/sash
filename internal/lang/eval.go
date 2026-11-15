@@ -23,6 +23,8 @@ const (
 	exitType    = 2
 	exitDenied  = 126
 	exitUnknown = 127
+	// exitHangup is a run stopped by SIGHUP, as a shell reports it.
+	exitHangup = 129
 )
 
 // fnDepth matches globDepth. A deeper call exits 2 and does not run.
@@ -248,6 +250,8 @@ type machine struct {
 	drains bool
 	src    string
 	text   string
+	// recWriting is set while finishRecord writes the recording.
+	recWriting bool
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -258,6 +262,7 @@ var (
 	errTimeout  = fmt.Errorf("timeout")
 	errDeclined = fmt.Errorf("declined")
 	errNoTTY    = fmt.Errorf(msgConfirmTerminal)
+	errHangup   = fmt.Errorf("hangup")
 	// nowFn and sleepFn are the clock; tests replace them.
 	nowFn   = time.Now
 	sleepFn = time.Sleep
@@ -362,6 +367,12 @@ var mutating = map[string]bool{"unit.restart": true, "package.install": true, "s
 // plan mode a mutating verb stops here: it prints what it would do and
 // succeeds without a call.
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
+	if m.st.HungUp() && !m.recWriting {
+		// After a hangup only the recording's own write goes out.
+		m.ctl = ctlHalt
+		m.haltStatus = exitHangup
+		return parent.Result{}, errHangup
+	}
 	if m.pb != nil && m.pb.ctx.Err() != nil {
 		// A cancelled par branch starts nothing new.
 		m.pb.stopped = true
@@ -383,9 +394,9 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 			what = fmt.Sprintf("write %s (%d bytes)", v.Path, len(v.Body))
 		}
 		if v.Key == "file.write" && v.Mode != "" {
-			what = fmt.Sprintf("write %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
-			if len(v.Argv) > 0 && v.Argv[0] == ">" {
-				what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
+			what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
+			if m.recWriting {
+				what = fmt.Sprintf("write %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
 			}
 		}
 		m.err.WriteString("plan: would " + what + "\n")
@@ -477,6 +488,9 @@ func (m *machine) doFailed(key string, err error) int {
 		// Run reports the tape's error once, at the end.
 		m.ctl = ctlHalt
 		return exitType
+	case errors.Is(err, errHangup):
+		m.err.WriteString("hangup\n")
+		return exitHangup
 	case errors.Is(err, errParCancelled):
 		// The branch stops; its par reports why.
 		return exitType
@@ -531,6 +545,9 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 	}
 	for i, s := range prog.Stmts {
 		if m.tape != nil {
+			if m.tape.takeWarn() {
+				m.err.WriteString("record: the recording reached its size cap and stopped; it will be written marked truncated\n")
+			}
 			m.tape.see(m.secretTexts())
 			if i < len(prog.Pos) {
 				m.tape.at = prog.Pos[i]
@@ -541,6 +558,12 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		}
 		if m.drains && top {
 			m.drainLate()
+		}
+		if m.st.HungUp() {
+			m.err.WriteString("hangup\n")
+			m.ctl = ctlHalt
+			m.haltStatus = exitHangup
+			return exitHangup, true
 		}
 		if m.pb != nil && m.pb.ctx.Err() != nil {
 			// A cancelled par branch stops at the next statement.

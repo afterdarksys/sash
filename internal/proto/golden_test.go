@@ -89,6 +89,22 @@ func TestAgentGolden(t *testing.T) {
 	if x := wait(ch); x.err != nil || len(x.r.Rows) != 1 {
 		t.Fatalf("serial ps %+v", x)
 	}
+	// Serial file.write with a mode, before hello: a template_file
+	// render that read a secret, and a session recording (set -o record).
+	// Both send exactly what a > redirect sends, argv [">", path], which
+	// the agent requires.
+	ch = call(bg, parent.Verb{Key: "file.write", Argv: []string{">", "/srv/app/app.conf"}, Path: "/srv/app/app.conf", Body: []byte("password=x\n"), Mode: "0600"}, true)
+	recv()
+	reply(`{"kind":"bytes","exit":0}`)
+	if x := wait(ch); x.err != nil {
+		t.Fatalf("serial template_file write %+v", x)
+	}
+	ch = call(bg, parent.Verb{Key: "file.write", Argv: []string{">", "/srv/rec/s.jsonl"}, Path: "/srv/rec/s.jsonl", Body: []byte("{\"v\":\"sash-rec/1\"}\n"), Mode: "0600"}, true)
+	recv()
+	reply(`{"kind":"bytes","exit":0}`)
+	if x := wait(ch); x.err != nil {
+		t.Fatalf("serial record write %+v", x)
+	}
 	// Hello.
 	nch := make(chan int, 1)
 	go func() {
@@ -146,6 +162,13 @@ func TestAgentGolden(t *testing.T) {
 	reply(`{"id":6,"error":"denied"}`)
 	if x := wait(ch); x.err == nil || x.err.Error() != "denied" {
 		t.Fatalf("denied %+v", x)
+	}
+	// A session recording segment written in mux mode.
+	ch = call(bg, parent.Verb{Key: "file.write", Argv: []string{">", "/srv/rec/s.jsonl.2"}, Path: "/srv/rec/s.jsonl.2", Body: []byte("{\"v\":\"sash-rec/1\",\"segment\":2}\n"), Mode: "0600"}, false)
+	recv()
+	reply(`{"id":7,"kind":"bytes","exit":0}`)
+	if x := wait(ch); x.err != nil {
+		t.Fatalf("mux record write %+v", x)
 	}
 	if err := c.brokenErr(); err != nil {
 		t.Fatalf("broken after the golden: %v", err)

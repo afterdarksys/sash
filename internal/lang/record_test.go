@@ -39,6 +39,8 @@ func (h *hostParent) Do(v parent.Verb) (parent.Result, error) {
 		return parent.Result{Kind: parent.KindBytes, Bytes: []byte("content of " + v.Path + "\n")}, nil
 	case v.Key == "unit.status":
 		return parent.Result{Kind: parent.KindBytes, Bytes: []byte("inactive\n"), Exit: 3}, nil
+	case v.Key == "file.write":
+		return parent.Result{Kind: parent.KindBytes}, agentWriteRule(v)
 	case v.Key == "unit.restart":
 		h.restarts++
 		if h.restarts < 3 {

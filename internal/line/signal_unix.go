@@ -50,6 +50,9 @@ func reraise(sig os.Signal, restoreErr error) {
 	exitFn(code)
 }
 
+// isHangup is SIGHUP: an ssh disconnect.
+func isHangup(sig os.Signal) bool { return sig == syscall.SIGHUP }
+
 // signalGrace is how long reraise waits for the re-raised signal before
 // its backstop exit; killFn and exitFn are replaced in tests.
 var (

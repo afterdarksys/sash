@@ -169,6 +169,12 @@ type tapeCore struct {
 	// output in segs, split at segMax, instead of writing w.
 	segMax int
 	segs   [][]byte
+	// truncated: a session recording reached a cap and stopped (it is
+	// written with a final truncated event); warn is the one warning not
+	// yet printed. On replay, truncAt is that event's seq.
+	truncated bool
+	warn      bool
+	truncAt   int
 	// both
 	pars     int
 	nl       []int
@@ -317,8 +323,12 @@ func (t *Tape) loadEvents(sc *bufio.Scanner, prevp *string, totalp *int) error {
 			return &TapeError{"replay_bad_chain", len(t.events) + 1}
 		}
 		prev = sha(line)
-		if (ev.Branch == "") != (ev.BSeq == 0) {
+		if (ev.Branch == "") != (ev.BSeq == 0) || t.truncAt != 0 || (ev.Kind == "truncated" && ev.Branch != "") {
+			// Nothing follows a truncated event.
 			return &TapeError{"replay_bad_format", len(t.events) + 1}
+		}
+		if ev.Kind == "truncated" {
+			t.truncAt = ev.Seq
 		}
 		t.by[ev.Branch] = append(t.by[ev.Branch], len(t.events))
 		t.events = append(t.events, ev)
@@ -369,6 +379,10 @@ func (t *Tape) Finish() error {
 				}
 			}
 		}
+		if t.err == nil && t.truncAt != 0 {
+			// A partial recording never replays as complete.
+			t.err = &TapeError{"replay_truncated", t.truncAt}
+		}
 		if t.err == nil && first != 0 {
 			t.divergeLocked(first)
 		}
@@ -390,6 +404,13 @@ func (t *Tape) Finish() error {
 	sizes := make([]int, len(t.pend))
 	zero := strings.Repeat("0", 64)
 	total := 0
+	limit, evMax := recMaxTotal, recMaxEvent
+	if t.segMax > 0 {
+		// Room for the truncated event, and every event must fit a
+		// segment with its header.
+		limit -= 1 << 10
+		evMax = min(evMax, t.segMax-t.segHeaderMax()-1)
+	}
 	for i, p := range t.pend {
 		ev := recEvent{Seq: i + 1, Line: p.line, Kind: p.kind, Branch: p.branch, BSeq: p.bseq}
 		if p.v != nil {
@@ -408,12 +429,33 @@ func (t *Tape) Finish() error {
 		// the chain is.
 		ev.Prev = zero
 		line, err := json.Marshal(ev)
-		total += len(line) + 1
-		if err != nil || len(line) > recMaxEvent || total > recMaxTotal {
-			t.err = &TapeError{"record_too_large", i + 1}
+		if err != nil {
+			t.err = &TapeError{"record_failed", i + 1}
 			return t.err
 		}
+		if len(line) > evMax || total+len(line)+1 > limit {
+			if t.segMax == 0 {
+				t.err = &TapeError{"record_too_large", i + 1}
+				return t.err
+			}
+			t.truncated = true
+			evs, sizes = evs[:i], sizes[:i]
+			break
+		}
+		total += len(line) + 1
 		evs[i], sizes[i] = ev, len(line)
+	}
+	if t.truncated {
+		// The last event says the recording stops here, so replay knows
+		// it is partial.
+		ev := recEvent{Seq: len(evs) + 1, Kind: "truncated", Prev: zero}
+		line, err := json.Marshal(ev)
+		if err != nil {
+			t.err = &TapeError{"record_failed", ev.Seq}
+			return t.err
+		}
+		total += len(line) + 1
+		evs, sizes = append(evs, ev), append(sizes, len(line))
 	}
 	groups, err := t.segment(sizes, total)
 	if err != nil {
@@ -474,23 +516,17 @@ func (t *tapeCore) segment(sizes []int, total int) ([][]int, error) {
 	if t.segMax == 0 || len(plain)+1+total <= t.segMax {
 		return [][]int{all}, nil
 	}
-	// The largest a segment's header can be.
-	h := t.header
-	h.Segment, h.Segments, h.PrevSegment = recMaxEvents, recMaxEvents, strings.Repeat("0", 64)
-	big, err := json.Marshal(h)
-	if err != nil {
-		return nil, &TapeError{"record_failed", 0}
-	}
+	big := t.segHeaderMax()
 	var groups [][]int
 	var cur []int
-	used := len(big) + 1
+	used := big + 1
 	for i, n := range sizes {
 		if used+n+1 > t.segMax {
 			if len(cur) == 0 {
 				return nil, &TapeError{"record_too_large", i + 1}
 			}
 			groups = append(groups, cur)
-			cur, used = nil, len(big)+1
+			cur, used = nil, big+1
 			if used+n+1 > t.segMax {
 				return nil, &TapeError{"record_too_large", i + 1}
 			}
@@ -499,6 +535,33 @@ func (t *tapeCore) segment(sizes []int, total int) ([][]int, error) {
 		used += n + 1
 	}
 	return append(groups, cur), nil
+}
+
+// segHeaderMax is the largest a segment's header can be.
+func (t *tapeCore) segHeaderMax() int {
+	h := t.header
+	h.Segment, h.Segments, h.PrevSegment = recMaxEvents, recMaxEvents, strings.Repeat("0", 64)
+	big, err := json.Marshal(h)
+	if err != nil {
+		return t.segMax
+	}
+	return len(big)
+}
+
+// takeWarn reports, once, that a session recording stopped at a cap.
+func (t *Tape) takeWarn() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	w := t.warn
+	t.warn = false
+	return w
+}
+
+// Truncated reports whether a recording stopped at a cap.
+func (t *Tape) Truncated() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.truncated
 }
 
 // Segments is a finished session recording's files, in order: one, or
@@ -542,8 +605,23 @@ func (t *Tape) add(p pending) {
 			n += int64(len(k) + len(v))
 		}
 	}
+	if t.truncated {
+		return
+	}
 	t.size += n
-	if len(t.pend) >= recMaxEvents || t.size > int64(recMaxTotal) {
+	maxEvents := recMaxEvents
+	if t.segMax > 0 {
+		// Room for the truncated event, so a truncated recording still
+		// loads under the event cap.
+		maxEvents--
+	}
+	if len(t.pend) >= maxEvents || t.size > int64(recMaxTotal) {
+		if t.segMax > 0 {
+			// A session's verbs never stop for its recording: the
+			// recording stops, and is written marked truncated.
+			t.truncated, t.warn = true, true
+			return
+		}
 		t.err = &TapeError{"record_too_large", len(t.pend) + 1}
 		return
 	}
@@ -636,6 +714,11 @@ func (t *Tape) next(kind string) (recEvent, bool) {
 		return recEvent{}, false
 	}
 	list, u := t.by[t.branch], t.used[t.branch]
+	if t.truncAt != 0 && (u >= len(list) || t.events[list[u]].Kind == "truncated") {
+		// The recording stopped at a cap; the run went past it.
+		t.err = &TapeError{"replay_truncated", t.truncAt}
+		return recEvent{}, false
+	}
 	if u >= len(list) {
 		t.divergeLocked(len(t.events) + 1)
 		return recEvent{}, false

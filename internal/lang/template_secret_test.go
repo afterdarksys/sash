@@ -148,6 +148,9 @@ type modeParent struct {
 func (p *modeParent) Do(v parent.Verb) (parent.Result, error) {
 	if v.Key == "file.write" {
 		p.calls = append(p.calls, v)
+		if err := agentWriteRule(v); err != nil {
+			return parent.Result{}, err
+		}
 		return parent.Result{}, p.err
 	}
 	return p.tplParent.Do(v)

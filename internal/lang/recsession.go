@@ -108,12 +108,16 @@ func (m *machine) finishRecord() int {
 		return fail("not written: " + err.Error())
 	}
 	segs := rec.tape.Segments()
+	m.recWriting = true
+	defer func() { m.recWriting = false }()
 	for i, seg := range segs {
 		p := rec.path
 		if len(segs) > 1 {
 			p += "." + strconv.Itoa(i+1)
 		}
-		if _, err := m.do(parent.Verb{Key: "file.write", Argv: []string{"record", p}, Path: p, Body: seg, Mode: "0600"}); err != nil {
+		// Exactly what a > redirect sends: the agent's file.write takes
+		// argv [">", path] and nothing else.
+		if _, err := m.do(parent.Verb{Key: "file.write", Argv: []string{">", p}, Path: p, Body: seg, Mode: "0600"}); err != nil {
 			st := m.doFailed("file.write", err)
 			if st < exitType {
 				st = exitType
@@ -125,6 +129,9 @@ func (m *machine) finishRecord() int {
 			m.err.WriteString("record: not written (plan)\n")
 			return exitType
 		}
+	}
+	if rec.tape.Truncated() {
+		m.err.WriteString("record: written truncated (it reached its size cap)\n")
 	}
 	return 0
 }

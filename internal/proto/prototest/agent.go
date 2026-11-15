@@ -163,6 +163,12 @@ func (a *Agent) serial(conn net.Conn, body []byte) {
 	}
 	a.mu.Lock()
 	a.reqs++
+	a.mu.Unlock()
+	if err := writeRule(v); err != nil {
+		a.write(conn, result(nil, parent.Result{}, err))
+		return
+	}
+	a.mu.Lock()
 	a.running++
 	a.maxRun = max(a.maxRun, a.running)
 	a.ran = append(a.ran, label(v))
@@ -172,6 +178,19 @@ func (a *Agent) serial(conn net.Conn, body []byte) {
 	a.running--
 	a.mu.Unlock()
 	a.write(conn, result(nil, res, err))
+}
+
+// writeRule is the agent's own check on a file.write verb
+// (systemapi-agent sash_verb.go, sashDoFileWrite): exactly argv [">",
+// path] for the verb's path, else denied, before any handler runs.
+func writeRule(v parent.Verb) error {
+	if v.Key != "file.write" {
+		return nil
+	}
+	if v.Path == "" || len(v.Argv) != 2 || v.Argv[0] != ">" || v.Argv[1] != v.Path {
+		return errors.New("denied")
+	}
+	return nil
 }
 
 func (a *Agent) work(conn net.Conn, id uint64, v parent.Verb, q *req) {
@@ -188,6 +207,13 @@ func (a *Agent) work(conn net.Conn, id uint64, v parent.Verb, q *req) {
 				return
 			}
 		}
+	}
+	if err := writeRule(v); err != nil {
+		a.mu.Lock()
+		delete(a.open, id)
+		a.mu.Unlock()
+		a.write(conn, result(&id, parent.Result{}, err))
+		return
 	}
 	a.mu.Lock()
 	q.started = true
