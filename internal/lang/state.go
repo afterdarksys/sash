@@ -281,7 +281,7 @@ func optionByShort(c byte) string {
 //	set                     list
 //	set -e +u -x -f         short flags
 //	set -o name, +o name    long names
-//	set loopmax N           bounded caps
+//	set loopmax N           caps, 1 up to the default
 //	shopt                   list
 //	shopt -s name, -u name  long names
 func (s *State) runSet(argv []string) (value, error) {
@@ -304,9 +304,16 @@ func (s *State) runSet(argv []string) (value, error) {
 		if len(argv) != 3 {
 			return value{}, fmt.Errorf("usage set %s", argv[1])
 		}
+		ceil := loopMaxDefault
+		if argv[1] == "verbmax" {
+			ceil = verbMaxDefault
+		}
 		n, err := strconv.Atoi(argv[2])
-		if err != nil || n < 1 || n > capCeil {
-			return value{}, fmt.Errorf("usage set %s: 1-%d", argv[1], capCeil)
+		if err != nil || n < 1 {
+			return value{}, fmt.Errorf("usage set %s: 1-%d", argv[1], ceil)
+		}
+		if n > ceil {
+			return value{}, fmt.Errorf("set %s %d: above the ceiling %d; set may lower a cap, not raise it", argv[1], n, ceil)
 		}
 		if argv[1] == "loopmax" {
 			s.loopMax = n
