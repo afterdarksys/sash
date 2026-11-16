@@ -55,7 +55,7 @@ Loops are capped. A cap (`loop max`, `verb max`) ends the line and `try` does no
 
 The prompt keeps one session state: names, functions, `set` options, and `declare` flags carry from line to line. A script and `sash -c` get a fresh one. `why` reads a copy and never changes it.
 
-Loops are capped. One loop runs at most `loopmax` iterations, default 100000, settable up to 10000000 with `set loopmax`. Past the cap it is exit 2 `loop max`. A runaway loop of agent verbs is the case that matters. The cap is per loop, and nested loops multiply, so verbs also count against `verbmax` per line, default 10000, also settable within the same ceiling.
+Loops are capped. One loop runs at most `loopmax` iterations, default 100000, settable up to 10000000 with `set loopmax` (since 2026-11-16, systemapi.io background work contract §8.3: `set` may lower it and raise it back to the default, never past it). Past the cap it is exit 2 `loop max`. A runaway loop of agent verbs is the case that matters. The cap is per loop, and nested loops multiply, so verbs also count against `verbmax` per line, default 10000, also settable within the same ceiling (since 2026-11-16: up to its default only).
 
 Functions: `fn name(a, b) { }` as today, plus `return` values and default parameters `fn f(a, b = 1) { }`. The depth cap stays eight.
 
