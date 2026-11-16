@@ -56,11 +56,13 @@ type Outcome struct {
 	Exit bool
 }
 
-// Loop and verb caps (language v2 contract). set raises them up to capCeil.
+// Loop and verb caps (language v2 contract). set may lower them and raise
+// them back, never past their default: the background work contract
+// (systemapi.io docs/sah-background-work-design.md §8.3) makes the ceiling
+// the grant's value, which is the default until grant-carried caps (§7) land.
 const (
 	loopMaxDefault = 100000
 	verbMaxDefault = 10000
-	capCeil        = 10000000
 )
 
 // ctl is a jump in flight. It travels on the stop path: a loop takes

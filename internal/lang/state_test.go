@@ -46,7 +46,7 @@ func TestSetAndShoptShareOneTable(t *testing.T) {
 	if st.errexit || st.xtrace || st.noglob || !st.nounset {
 		t.Fatalf("%+v", st)
 	}
-	for _, bad := range []string{"set -z", "set -o nope", "set +o pipefail", "set loopmax 0", "set verbmax 10000001", "set loopmax x", "shopt -s", "shopt -q x"} {
+	for _, bad := range []string{"set -z", "set -o nope", "set +o pipefail", "set loopmax 0", "set verbmax 10000001", "set loopmax 100001", "set verbmax 10001", "set loopmax x", "shopt -s", "shopt -q x"} {
 		if out := runIn(NewState(), bad); out.Status != exitType {
 			t.Errorf("%s: %+v", bad, out)
 		}
@@ -123,7 +123,7 @@ func TestDeclare(t *testing.T) {
 // denied and runs nothing.
 func TestNoOptionWeakensTheGrant(t *testing.T) {
 	st := NewState()
-	runIn(st, "set -e -u -x -f; set loopmax 10000000; set verbmax 10000000")
+	runIn(st, "set -e -u -x -f; set loopmax 100000; set verbmax 10000")
 	p := &listParent{}
 	out := Run("unit restart nginx", grant.Grant{V: "sash/1", Entitlements: []string{"ps"}}, p, Options{State: st})
 	if out.Status != exitDenied || len(p.calls) != 0 {
@@ -132,6 +132,37 @@ func TestNoOptionWeakensTheGrant(t *testing.T) {
 	out = Run("cat /etc/passwd", exprGrant(), p, Options{State: st})
 	if out.Status != exitDenied || len(p.calls) != 0 {
 		t.Fatalf("%+v calls %d", out, len(p.calls))
+	}
+}
+
+// set and with may lower loopmax and verbmax and raise them back, never
+// past the default (background work contract §8.3): a refused raise says
+// why and leaves the cap as it was.
+func TestSetCannotRaiseCaps(t *testing.T) {
+	st := NewState()
+	for src, msg := range map[string]string{
+		"set loopmax 100001":             "set loopmax 100001: above the ceiling 100000; set may lower a cap, not raise it",
+		"set verbmax 10001":              "set verbmax 10001: above the ceiling 10000; set may lower a cap, not raise it",
+		"set verbmax 10000000":           "above the ceiling 10000",
+		"with loopmax 1000000 { echo }":  "above the ceiling 100000",
+		"with verbmax 20000 { echo hi }": "above the ceiling 10000",
+	} {
+		out := runIn(st, src)
+		if out.Status != exitType || !strings.Contains(out.Stderr, msg) || out.Stdout != "" {
+			t.Errorf("%s: %+v want %q", src, out, msg)
+		}
+	}
+	if st.loopMax != loopMaxDefault || st.verbMax != verbMaxDefault {
+		t.Fatalf("a refused raise moved a cap: loopmax %d verbmax %d", st.loopMax, st.verbMax)
+	}
+	if out := runIn(st, "set loopmax 10; set verbmax 3"); out.Status != 0 || st.loopMax != 10 || st.verbMax != 3 {
+		t.Fatalf("lowering: %+v loopmax %d verbmax %d", out, st.loopMax, st.verbMax)
+	}
+	if out := runIn(st, "let n = 0\nwhile [ true ] { let n = [ $n + 1 ] }"); out.Status != exitType || !strings.Contains(out.Stderr, "loop max") {
+		t.Fatalf("lowered loopmax not enforced: %+v", out)
+	}
+	if out := runIn(st, "set loopmax 100000; set verbmax 10000"); out.Status != 0 || st.loopMax != loopMaxDefault || st.verbMax != verbMaxDefault {
+		t.Fatalf("back to the default: %+v loopmax %d verbmax %d", out, st.loopMax, st.verbMax)
 	}
 }
 
