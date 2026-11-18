@@ -22,7 +22,7 @@ usage() {
 [[ $# -le 1 ]] || usage
 src="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sash"
 dest="${1-$HOME/.claude/skills}"
-[[ -n "$dest" ]] || usage
+[[ -n "$dest" && "$dest" != -* ]] || usage
 if [[ "$dest" != /* ]]; then
     dest="$PWD/$dest"
 fi

@@ -186,6 +186,14 @@ func TestInstallScript(t *testing.T) {
 	if out, code := run(cwd, ""); code != 2 {
 		t.Fatalf("empty target: %d %q", code, out)
 	}
+	for _, arg := range []string{"--", "-h", "--help", "-x"} {
+		dir := t.TempDir()
+		out, code := run(dir, arg)
+		ents, err := os.ReadDir(dir)
+		if code != 2 || !strings.Contains(out, "usage") || err != nil || len(ents) != 0 {
+			t.Errorf("%q: %d %q, created %v %v", arg, code, out, ents, err)
+		}
+	}
 }
 
 func must(t *testing.T, err error) {

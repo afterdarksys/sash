@@ -23,6 +23,7 @@ set +o plan
 ```sash
 # expect: host 0
 # call: unit.restart argv=unit restart nginx
+# Do not copy: this shows why set -o plan is not a lock. Never write set +o plan.
 set -o plan
 set +o plan
 unit restart nginx
@@ -32,7 +33,18 @@ A plan run is not the real run. A read after a planned write sees the old state,
 
 ```sash
 # stdout: listen 8080
+# nostdout: listen 9090
 # stderr: plan: would write /srv/app/app.conf
+echo "listen 9090" > /srv/app/app.conf
+cat /srv/app/app.conf
+```
+
+The same source in a real run reads what it wrote:
+
+```sash
+# expect: host 0
+# stdout: listen 9090
+# nostdout: listen 8080
 echo "listen 9090" > /srv/app/app.conf
 cat /srv/app/app.conf
 ```
@@ -230,10 +242,20 @@ origin conf
 
 ## `with`
 
-`with` items, then a block: `set` flags (`set -e`, `set -o plan`), `loopmax N`, `verbmax N` (same ceiling as `set`), `prefix <dir>` (checked like `cd`), and `name = value`. Each is restored on every way out. `noglob` is refused (`usage with: noglob is per line; use set -f`), a read-only name cannot be overridden, and `with env` is `parse: env not in this series`.
+`with` items, then a block: `set` flags (`set -e`, `set -o plan`), `loopmax N`, `verbmax N` (same ceiling as `set`), `prefix <dir>` (checked like `cd`), and `name = value`. Each is restored on every way out. `with set -f { }` and `with set -o noglob { }` are refused (`usage with: noglob is per line; use set -f`), `with noglob { }` is not an item (`parse: with item noglob`), a read-only name cannot be overridden, and `with env` is `parse: env not in this series`.
 
 ```sash
 with set -e, loopmax 1000, prefix /var/log { ls }
+```
+
+```sash
+# expect: empty 2 usage with: noglob is per line; use set -f
+with set -f { echo x }
+```
+
+```sash
+# expect: parse with item noglob
+with noglob { echo x }
 ```
 
 ## `use`
@@ -242,7 +264,7 @@ with set -e, loopmax 1000, prefix /var/log { ls }
 
 ## `set -o record`
 
-`set -o record <path>` records every later statement (verb requests and responses, clock readings, sleeps, uuids) and writes the recording at the end through `file.write` with mode `0600`, through the agent. The path is a literal under a `file_write` root. `set +o record`, the end of the script, or logout ends it. Only bound secrets are redacted (`***`): the response a `declare -s` read and any text equal to a bound secret. Every other response is in the recording as it came, including a credential file read with a plain `cat`, `config read` output, and `ps` command lines. A recording past about 6 MiB is split into `<path>.1` .. `<path>.N` segments, each chained to the last. Refused in plan mode (`record: refused in plan mode (plan writes nothing)`), inside `with`, through `shopt`, in a `par` branch, and while one is open. Recordings are for test and debug: anyone can recompute the hash chain, so it proves consistency, not who made it. Writing one is a `file.write`, so plan mode refuses it and confirm asks before it.
+`set -o record <path>` records every later statement (verb requests and responses, clock readings, sleeps, uuids) and writes the recording at the end through `file.write` with mode `0600`, through the agent. The path is a literal under a `file_write` root. `set +o record`, the end of the script, or logout ends it. Only bound secrets are redacted: a request or response is redacted when a `declare -s` read it, or when any of its fields contains a bound secret's text of four runes or more (a shorter secret only when a whole field equals it). A redacted response is replaced whole, keeping only its kind, exit, and length (`"redacted":true`), so a config file that holds a secret is missing from the recording entirely. Every other response is in the recording as it came, including a credential file read with a plain `cat`, `config read` output, and `ps` command lines. A recording past about 6 MiB is split into `<path>.1` .. `<path>.N` segments, each chained to the last. Refused in plan mode (`record: refused in plan mode (plan writes nothing)`), inside `with`, through `shopt`, in a `par` branch, and while one is open. Recordings are for test and debug: anyone can recompute the hash chain, so it proves consistency, not who made it. Writing one is a `file.write`, so plan mode refuses it and confirm asks before it.
 
 ## Offline record and replay
 

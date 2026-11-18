@@ -3,6 +3,7 @@ package lang
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -201,10 +202,18 @@ var skillDirs = map[string][]parent.Row{
 	"/var/log":       {{"name": "nginx", "type": "dir"}},
 }
 
-// skillHost answers every verb from fixtures and records each call.
-type skillHost struct{ calls []string }
+// skillHost answers every verb from fixtures and records each call. A
+// file.write lands in its own copy of skillFS, so a later read in the same
+// example sees it, as on a real host.
+type skillHost struct {
+	calls []string
+	files map[string]string
+}
 
 func (h *skillHost) Do(v parent.Verb) (parent.Result, error) {
+	if h.files == nil {
+		h.files = maps.Clone(skillFS)
+	}
 	h.calls = append(h.calls, fmt.Sprintf("%s argv=%s path=%s mode=%s body=%q", v.Key, strings.Join(v.Argv, " "), v.Path, v.Mode, v.Body))
 	rows := func(cols []string, r ...parent.Row) (parent.Result, error) {
 		return parent.Result{Kind: parent.KindRows, Cols: cols, Rows: r}, nil
@@ -235,10 +244,13 @@ func (h *skillHost) Do(v parent.Verb) (parent.Result, error) {
 		case "stat":
 			return text("")
 		}
-		if b, ok := skillFS[v.Path]; ok {
+		if b, ok := h.files[v.Path]; ok {
 			return text(b)
 		}
 		return parent.Result{}, fmt.Errorf("no_such_file")
+	}
+	if v.Key == "file.write" {
+		h.files[v.Path] = string(v.Body)
 	}
 	return text("")
 }
@@ -376,8 +388,23 @@ func TestSkillRecordingRedactsOnlyBoundSecrets(t *testing.T) {
 	if r := rec("declare -s tok = (cat /srv/app/token)\nlet raw = (cat /srv/app/token.copy)\n"); strings.Contains(r, clear) || strings.Contains(r, "s3cr3tvalue") {
 		t.Errorf("a bound secret's text is in the recording: %s", r)
 	}
+	// A response that merely contains a bound secret's text (four runes or
+	// more) is replaced whole: none of the file is kept, only its length.
+	r := rec("declare -s tok = (cat /srv/app/token)\nlet c = (cat /srv/app/db.yaml)\n")
+	if strings.Contains(r, "cGFzc3dvcmQ") || strings.Contains(r, "password") || strings.Count(r, `"redacted":true`) < 2 {
+		t.Errorf("a response holding the secret was not redacted whole: %s", r)
+	}
+	// A bound secret shorter than four runes is redacted only as a whole
+	// field, not inside other text.
+	r = rec("declare -s pin = abc\nlet c = (cat /etc/nginx/nginx.conf)\n")
+	if strings.Contains(r, `"redacted":true`) {
+		t.Errorf("a short secret redacted a response it is only part of: %s", r)
+	}
+	if secretMinRunes != 4 {
+		t.Errorf("features.md says four runes; the source says %d", secretMinRunes)
+	}
 	text := skillFiles(t)["reference/features.md"]
-	if !strings.Contains(text, "Only bound secrets are redacted") {
+	if !strings.Contains(text, "Only bound secrets are redacted") || !strings.Contains(text, "four runes or more") {
 		t.Errorf("features.md no longer states the recording rule")
 	}
 }
