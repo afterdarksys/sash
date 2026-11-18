@@ -28,7 +28,7 @@ case "${1:-build}" in
         go build -tags "${SASH_TAGS:-}" -o bin/sash ./cmd/sash
         ;;
     test)
-        unformatted="$(gofmt -l cmd internal)"
+        unformatted="$(gofmt -l cmd internal skills)"
         if [[ -n "$unformatted" ]]; then
             echo "gofmt: $unformatted" >&2
             exit 1

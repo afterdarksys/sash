@@ -5,6 +5,7 @@
 // and prints what it would ask for; it runs nothing. --lint reads a script
 // and prints advisory findings; it runs nothing either. --record and
 // --replay run a script offline against a fixture or a recording (tape.go).
+// --skill prints the embedded Claude skill for the language (skill.go).
 package main
 
 import (
@@ -32,6 +33,9 @@ func (closedParent) Do(parent.Verb) (parent.Result, error) {
 
 func main() {
 	args := os.Args[1:]
+	if skillMode(args) {
+		os.Exit(runSkill(args, os.Stdout))
+	}
 	if flagMode(args, "--lint") {
 		os.Exit(runLint(args))
 	}
@@ -168,7 +172,7 @@ func readSource(args []string) (string, error) {
 	return "", errors.New(usage)
 }
 
-const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]"
+const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"
 
 // needsMode is true when --needs is among the leading flags.
 func needsMode(args []string) bool { return flagMode(args, "--needs") }
