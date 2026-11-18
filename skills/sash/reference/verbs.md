@@ -1,6 +1,6 @@
 # sash: the closed table
 
-Read this to check that a name exists, which entitlement key it needs, and whether it mutates. Every name sash understands is in one Go table (`internal/lang/builtin.go`); the `builtin` command prints it, and a test fails if this file and that table disagree. A name that is not here, and is not a `fn` you defined, is exit 127 `unknown <name>`. There is no host binary behind it.
+Read this to check that a name exists, which entitlement key it needs, and whether it mutates. Every command and keyword form is in one Go table (`internal/lang/builtin.go`); the `builtin` command prints it, and a test fails if this file and that table disagree. The one statement outside it is `wasm` (`features.md`), which the release build refuses. A command name that is not here, and is not a `fn` you defined, is exit 127 `unknown <name>`. There is no host binary behind it.
 
 Columns:
 
@@ -24,11 +24,11 @@ Run by the local agent, one call each, behind the grant check and the agent re-c
 | `package install` | verb | package.install | yes | `package install <name>`, exactly one name. Grant: `--package <name>`. |
 | `sysctl get` | verb | sysctl.get | no | `sysctl get <key>`. Grant: `--tweak-sysctl <key>`. |
 | `sysctl set` | verb | sysctl.set | yes | `sysctl set <key> <value>`. Grant: `--tweak-sysctl <key>`. |
-| `config read` | verb | config.read | no | `config read <path>`, a clean absolute path. Needs `config.read` and `file.read` on that path. Grant: `--config <path>`. There is no `config write`. |
+| `config read` | verb | config.read | no | `config read <path>`, a clean absolute path. sash checks the `config.read` key and that the path is under a `file_read` root (outside is `denied file.read`), not the `file.read` key; the agent re-checks with its own policy. Grant: `--config <path>`. There is no `config write`. |
 
 ## Files and text
 
-Paths go through the agent's file helper under the grant's `file_read` and `file_write` roots; sash never opens a host path. Grant: `--file-read <dir>` or `--file-write <dir>`.
+Paths go through the agent's file helper under the grant's `file_read` and `file_write` roots; sash never opens a host path. Grant: `--file-read <dir>` or `--file-write <dir>`. Reads disclose host data: `cat`, `template`, `use`, `config read`, and the command lines in `ps` print whatever the host holds, credentials included, and a recording keeps it.
 
 | form | kind | key | mutates | what |
 | --- | --- | --- | --- | --- |
@@ -40,11 +40,40 @@ Paths go through the agent's file helper under the grant's `file_read` and `file
 | `popd` | builtin | - | no | Pops the prefix; popping the last entry is exit 2 `usage popd`. |
 | `echo` | filter | - | no | Prints its words and a newline. A list or map prints as JSON. |
 | `egrep` | filter | - | no | `egrep <re>`: keeps matching lines (Go RE2). Exactly one pattern, no flags. |
-| `head` | filter | - | no | `head`, `head <n>`, or `head -n <n>`: first lines (10 by default). |
+| `head` | filter | - | no | `head`, `head <n>`, or `head -n <n>`: first lines (10 by default). `head -1` and `head -<n>` print nothing and exit 0: use `head -n 1` or `head 1`. |
 | `cut` | filter | - | no | `cut [-d <sep>] -f <n>`: one field per line, whitespace-split without `-d`. |
-| `wc` | filter | - | no | Counts lines of text, or rows. Flags are ignored. |
+| `wc` | filter | - | no | Counts lines of text, or rows. Flags are ignored: `wc -c` and `wc -w` print the line count too. |
 | `template_file` | verb | file.write | yes | `template_file <spec> <tpl> <out> [--check]`: validate and render to `<out>`. `--check` writes nothing and prints a diff (only `file.read`). |
 | `template` | verb | file.read | no | `... \| template <tpl>`: render a template with the piped value. |
+
+```sash
+# expect: host 0
+# nostdout: listen
+cat /etc/nginx/nginx.conf | head -1
+```
+
+```sash
+# stdout: listen 80;
+cat /etc/nginx/nginx.conf | head -n 1
+```
+
+```sash
+# stdout: 2
+cat /etc/nginx/nginx.conf | wc -c
+```
+
+```sash
+# expect: host 0
+# drop: file.read
+# call: config.read argv=config read /etc/app.conf
+config read /etc/app.conf
+```
+
+```sash
+# expect: host 126 denied file.read
+# nocall: config.read
+config read /root/app.conf
+```
 
 ## Row tools
 
@@ -110,12 +139,12 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `exit` | keyword | - | no | `exit [n]`, n 0 to 255: end the script. |
 | `declare` | keyword | - | no | `declare -r -i -a -A -s name = value`; `declare` lists names, `declare -p name` shows one. |
 | `use` | keyword | file.read | no | `use <path>`: load `fn` and `declare -r` from a sash file; nothing else may be in it. |
-| `set` | builtin | - | no | Session options: `-e -u -x -f`, `-o name`, `+o name`, `loopmax N`, `verbmax N`, `-o record <path>`. |
+| `set` | builtin | - | no | Session options: `-e -u -x -f`, `-o name`, `+o name`, `loopmax N`, `verbmax N`. `set -o record <path>` also writes a file (a `file.write` at mode 0600 at the end; refused in plan mode, asked under confirm). |
 | `shopt` | builtin | - | no | `shopt -s name`, `shopt -u name`: the same option table by long name. |
 | `builtin` | builtin | - | no | Lists this table and the expression functions as rows; `builtin <name>` filters it. |
 | `retry` | keyword | - | no | `retry N [delay D] { }`: run again on failure. N 1 to 100, D up to 1h. |
 | `timeout` | keyword | - | no | `timeout D { }`: D up to 24h, checked before each statement and verb. |
-| `atomic` | keyword | file.write | yes | `atomic [deadline D] { }`: the file writes inside all stay or are all restored. The key is the writes it holds. |
+| `atomic` | keyword | file.write | yes | `atomic [deadline D] { }`: on a failure the agent restores the file writes inside, except files another writer changed meanwhile; writes are visible as they land. The key is the writes it holds. |
 | `par` | keyword | - | no | `par N [as r] { }` or `par N [as r] for x in <src> { }`: branches at once, N 1 to 16. |
 | `with` | keyword | - | no | `with set -e, loopmax N, prefix P, x = v { }`: scoped, restored on every way out. |
 | `check` | builtin | - | no | `check "name" [ <expr> ]`: prints `ok name` or `FAIL name` (status 1). |

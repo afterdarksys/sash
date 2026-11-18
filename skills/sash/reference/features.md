@@ -6,14 +6,35 @@ Contents: Plan mode · `--needs` · `--lint` · Confirm · Secrets · Templates 
 
 ## Plan mode
 
-`set -o plan`, or `sash --plan <script>`. The mutating verbs (`unit.restart`, `package.install`, `sysctl.set`, `file.write`) do not reach the agent: each prints `plan: would <command>` on stderr (a write prints `plan: would write <path> (<n> bytes)`) and succeeds. Reads run, so the logic sees real state. Plan does not change the grant: a denied mutation is still denied.
+`sash --plan <script>`, or `set -o plan` inside a run. The mutating verbs (`unit.restart`, `package.install`, `sysctl.set`, `file.write`) do not reach the agent: each prints `plan: would <command>` on stderr (a write prints `plan: would write <path> (<n> bytes)`) and succeeds. Reads run, so the logic sees real state. Plan does not change the grant: a denied mutation is still denied.
 
-`sash --plan` locks plan on for that run; `set +o plan` is then exit 2. Write every script so its `--plan` run reads well, and have the person run it that way first.
+Only `sash --plan` locks plan on: then `set +o plan`, `shopt -u plan`, and `with set +o plan { }` are exit 2 `usage set: plan is locked on for this run`. `set -o plan` inside a script is not a lock: a later `set +o plan`, in the script or in a `fn` loaded with `use` from a host file, turns it off and the mutations after it run. Write every script so its `sash --plan` run reads well, and have the person run it that way first. Never write `set +o plan` into a script.
 
 ```sash
-set -o plan
 unit restart nginx
 echo ready > /var/tmp/ops/flag
+```
+
+```sash
+# expect: plan 2 plan is locked on
+set +o plan
+```
+
+```sash
+# expect: host 0
+# call: unit.restart argv=unit restart nginx
+set -o plan
+set +o plan
+unit restart nginx
+```
+
+A plan run is not the real run. A read after a planned write sees the old state, because the write never happened, so a plan run can take other branches than the real one:
+
+```sash
+# stdout: listen 8080
+# stderr: plan: would write /srv/app/app.conf
+echo "listen 9090" > /srv/app/app.conf
+cat /srv/app/app.conf
 ```
 
 ## `--needs`
@@ -38,28 +59,51 @@ Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. E
 
 ## Confirm
 
-`set -o confirm` (terminal only) asks `confirm <key> <argv>? [y + Enter / N]` before each mutating verb, in loops and `par` too. Yes is `y` or `Y` then Enter; anything else is no, which is exit 126 `declined <key>`. `retry` does not retry a no; `try` catches it. Once on, only the editor's own `confirm off` line clears it. In a script there is no terminal: exit 2 `confirm needs a terminal`.
+`set -o confirm` (terminal only) asks `confirm <key> <argv>? [y + Enter / N]` before each mutating verb, in loops and `par` too. Yes is `y` or `Y` then Enter; anything else is no, which is exit 126 `declined <key>`. `retry` does not retry a no; `try` catches it. Once on, only the editor's own `confirm off` line clears it. In a script there is no terminal: exit 2 `confirm needs a terminal`. Never write `confirm off` or `set +o confirm` into source; the person turns confirm off themselves.
 
 ## Secrets
 
-`declare -s name = value` marks a name secret. So does `declare -s tok = (cat /srv/app/token)`. Anything computed from a secret is secret: an expression that reads one, a value built from one, a `template_file` render that read one.
+`declare -s name = value` marks a name secret; so does `declare -s tok = (cat /srv/app/token)`. Secrecy follows that binding, not the file and not the text. A value is secret when it is the bound name or is computed from it: an expression that reads it, a word built from it, a `template_file` render that sash links to it (below).
 
-- A secret prints as `***` everywhere: `echo`, `trace`, `declare -p`, `log`, `origin` hashes, errors, recordings.
-- A secret decides nothing: a condition that reads one (`if`, `while`, `do`, `filter`, `check`) is exit 2 `a secret cannot decide a branch`.
-- A secret does not leave sash: a verb argument, a path, or `>` is exit 2 `a secret cannot leave sash`. The one exit is `template_file`, which writes such a render with mode `0600`.
-- A secret in a plain word is exit 2 `a secret in a word: build it inside [ ]`.
-- An evaluation that reads a secret and fails (`[ int($tok) ]`) ends the line with `a secret ended the line`, which `try` cannot catch.
+For those values:
+
+- They print as `***`: `echo`, `trace`, `declare -p`, `log`, errors, and the `origin` hash.
+- They decide nothing: a condition that reads one (`if`, `while`, `do`, `filter`, `check`) is exit 2 `a secret cannot decide a branch`.
+- They cannot be a verb argument, a path, or the body of `>`: exit 2 `a secret cannot leave sash`. Only `template_file` writes a render it knows is secret, at mode `0600`.
+- One in a plain word is exit 2 `a secret in a word: build it inside [ ]`.
+- An evaluation that reads one and fails (`[ int($tok) ]`) ends the line with `a secret ended the line`, which `try` cannot catch.
 - The prompt does not keep a `declare -s` line in history, and `!!` cannot recall one.
 
-Never put a secret's text in source: a literal in `declare -s` is still in the script, the history of whoever pastes it, and the audit. Read it from a file the grant allows.
+What is not protected: the same secret reached any other way. Reading the token file again with `cat`, or the same text arriving inside another file, gives a plain value. It prints in clear, `>` writes it at the default mode, it passes as a verb argument, and lint says nothing. sash matches the text of bound secrets only in recordings, `template_file` renders, and `origin` hashes.
+
+So: read a secret file once, only into `declare -s`, and never `cat` it, or a file that holds the same secret, any other way. Never put a secret's text in source: a literal in `declare -s` is still in the script, in the history of whoever pastes it, and in the audit.
 
 ```sash
+# expect: host 0
+# stdout: ***
+# nostdout: s3cr3tvalue
 declare -s tok = (cat /srv/app/token)
-template_file /srv/app/app.yaml /srv/app/app.tpl /srv/app/app.conf
+echo $tok
 ```
 
 ```sash
-# expect: 2 a secret cannot leave sash
+# expect: host 0
+# stdout: s3cr3tvalue
+declare -s tok = (cat /srv/app/token)
+cat /srv/app/token
+```
+
+```sash
+# expect: host 0
+# call: file.write argv=> /var/tmp/leak path=/var/tmp/leak mode= body="s3cr3tvalue\n"
+# nolint: secret
+declare -s tok = (cat /srv/app/token)
+let c = (cat /srv/app/db.yaml | from yaml)
+echo $c.password > /var/tmp/leak
+```
+
+```sash
+# expect: empty 2 a secret cannot leave sash
 declare -s t = abcd
 unit status $t
 ```
@@ -72,7 +116,23 @@ unit status $t
 
 Template syntax: `{{ expr }}` (the `[ ]` language; lists and maps render as JSON), `{{ if expr }} ... {{ else if expr }} ... {{ else }} ... {{ end }}`, `{{ for x in expr }} ... {{ end }}`, `{{# comment }}`, and `{{-` / `-}}` to trim whitespace. Vars are `$name` per top-level key and `$vars` for the whole map. A template cannot run a verb, read a file, or include another template.
 
-Mode: a render that read a secret is written with mode `0600`, and its `--check` and plan diffs print `files differ (a secret is in the render or the file; not listed)`. An agent too old for the mode is exit 2 `agent too old for file.write mode`; sash never retries without the mode. Known limit: an encoding of a secret (base64, hex) is not its text and is written with the default mode.
+Mode: a render is secret, and written with mode `0600`, only when sash can link it to a secret bound earlier in the same run: the spec's or the template's response hashes the same as a response a secret was bound from, or holds a bound secret's text (four runes or more anywhere, or a shorter text as a whole field), or the rendered output or a decoded spec value holds one. A secret that was not bound with `declare -s` in this run is written at the agent's default mode, in clear. So bind the spec file itself as a secret before the render; lint reports that as `secret-file`:
+
+```sash
+# expect: host 0
+# call: path=/srv/app/db.conf mode=0600
+# lint: secret-file
+declare -s spec = (cat /srv/app/db.yaml)
+template_file /srv/app/db.yaml /srv/app/db.tpl /srv/app/db.conf
+```
+
+```sash
+# expect: host 0
+# call: path=/srv/app/db.conf mode= body="password=s3cr3tvalue\n"
+template_file /srv/app/db.yaml /srv/app/db.tpl /srv/app/db.conf
+```
+
+A secret render's `--check` and plan diffs print `files differ (a secret is in the render or the file; not listed)`. An agent too old for the mode is exit 2 `agent too old for file.write mode`; sash never retries without the mode. Known limits: an encoding of a secret (base64, hex) is not its text and is written with the default mode, and a secret bound after the write cannot reach back to it (lint `secret-after-write`).
 
 ```sash
 template_file /srv/app/app.yaml /srv/app/app.tpl /srv/app/app.conf --check
@@ -89,14 +149,30 @@ atomic deadline 120s {
 }
 ```
 
-The file writes inside either all stay or are all restored by the agent from its own journal. D is 1s to 600s (default the agent's 600 s).
+The block asks the agent to journal each file before it writes it, and on any failure to restore every journaled file. D is 1s to 600s (default the agent's 600 s). What that does and does not promise:
+
+- Writes land as they happen. Services and other readers see each file change before the block ends; there is no isolation.
+- A restore puts back only what the agent journaled, and leaves as found any file another writer changed meanwhile: `refused atomic: atomic_inconsistent`. The host is then half changed, and the agent keeps the journal for an operator.
+- If the session is lost mid-block (killed, the socket closed) and not by a hangup, sash sends no abort. The restore is the agent's, and the writes can stay until the transaction's deadline (up to 600 s); `refused atomic: atomic_restored` reports a restore the agent made at the deadline.
+- The agent refuses a write, which aborts the block, past 64 files (`atomic_files`), when the snapshots would pass 32 MiB (`atomic_size`), when a file's mode is not 0600, 0640, or 0644 (`atomic_mode`), or when another user owns the file (`owner_changed`). These limits are the agent's; sash prints its messages for them as `refused file.write: <code> (...)`.
 
 Refused statically, before the agent is asked anything, exit 2 `atomic_irreversible: <what>`: any `unit.restart`, `package.install`, or `sysctl.set` stage (a subcommand from a value counts), `use`, a nested `atomic`, and `par`, anywhere in the body or in a `fn` it calls by literal name. A `break`, `continue`, `return`, or `exit` that would leave the block is a parse error; `atomic` inside a `par` branch is too. A grant without `file.write` is `denied file.write` before begin.
 
-Rollback: a failed `check` (with or without `set -e`), a non-zero statement, an uncaught error, a timeout or the block's deadline, or a cap stops the block, prints `atomic: rolled back`, and aborts; the block fails with that status (2 when it was 0), which `try` catches. A rolled-back run never ends 0, even after `try` or `exit 0`, so rolled-back writes cannot pass for landed ones. If the agent cannot open a transaction the block does not run: `atomic unavailable: agent too old, or no file write targets in the grant`. `refused atomic: atomic_restored` and `refused atomic: atomic_inconsistent` report a restore at the deadline and files left as found. Plan mode prints `plan: would begin atomic`, the writes, then `plan: would commit atomic`.
+Rollback: a failed `check` (with or without `set -e`), a non-zero statement, an uncaught error, a timeout or the block's deadline, or a cap stops the block, prints `atomic: rolled back`, and aborts; the block fails with that status (2 when it was 0), which `try` catches. A rolled-back run never ends 0, even after `try` or `exit 0`, so rolled-back writes cannot pass for landed ones. If the agent cannot open a transaction the block does not run: `atomic unavailable: agent too old, or no file write targets in the grant`. Plan mode prints `plan: would begin atomic`, the writes, then `plan: would commit atomic`.
 
 ```sash
-# expect: 2 atomic_irreversible: unit.restart
+# expect: host 1 atomic: rolled back
+# call: file.write argv=> /srv/app/flag
+# call: atomic.abort
+# nocall: atomic.commit
+atomic {
+  echo on > /srv/app/flag
+  check "never" [ false ]
+}
+```
+
+```sash
+# expect: empty 2 atomic_irreversible: unit.restart
 atomic { unit restart nginx }
 ```
 
@@ -107,7 +183,14 @@ par 4 { unit status nginx; unit status sshd }
 par 4 as r for u in [ ["nginx", "sshd"] ] { unit status $u }
 ```
 
-Each top-level statement (or each iteration) is a branch; N is 1 to 16 (`usage par: N is 1 to 16`), and the agent's in-flight limit caps it further (1 against an agent without the multiplexed pipe). Output is buffered and printed in branch order after all finish. Branch bindings are discarded at the join; `checks` merge. `as r` binds rows `branch, item, status, message, key`. The first failure cancels the rest at their next statement or verb; a verb already started finishes, and a mutating one that finished after the cancel is reported. `par` fails with `par: branch N failed (exit S)`, which `try` catches. `verbmax` is shared. Under confirm, N is 1. Parse errors: `par inside par`, `atomic inside par`, and a jump that would leave a branch.
+Each top-level statement (or each iteration) is a branch; N is 1 to 16 (`usage par: N is 1 to 16`), and the agent's in-flight limit caps it further (1 against an agent without the multiplexed pipe). Output is buffered and printed in branch order after all finish. Branch bindings are discarded at the join; `checks` merge. `as r` binds rows `branch, item, status, message, key`. A branch fails when its last status is not 0, so an `egrep` that matches nothing fails the `par`. The first failure cancels the rest at their next statement or verb; a verb already started finishes, and a mutating one that finished after the cancel is reported (`branch 1: unit.restart nginx finished after cancel (exit 0)`). `par` fails with `par: branch N failed (exit S)`, which `try` catches; uncaught, a failed `par` stops the script whatever its status, 1 included. A first Ctrl-C cancels the branches and waits (`par: interrupted`, exit 130); a second stops waiting and prints `outcome unknown: <key> <target>` for each mutating verb still out, whose result only the agent audit then holds. `verbmax` is shared. Under confirm, N is 1. Parse errors: `par inside par`, `atomic inside par`, and a jump that would leave a branch.
+
+```sash
+# expect: host 1 par: branch 1 failed (exit 1)
+# nostdout: after
+par 2 { egrep zz <<< a; echo b }
+echo after
+```
 
 ## `retry` and `timeout`
 
@@ -159,7 +242,7 @@ with set -e, loopmax 1000, prefix /var/log { ls }
 
 ## `set -o record`
 
-`set -o record <path>` records every later statement (verb requests and responses, clock readings, sleeps, uuids) and writes the recording at the end through `file.write` with mode `0600`, through the agent. The path is a literal under a `file_write` root. `set +o record`, the end of the script, or logout ends it. Secrets are redacted (`***`). A recording past about 6 MiB is split into `<path>.1` .. `<path>.N` segments, each chained to the last. Refused in plan mode (`record: refused in plan mode (plan writes nothing)`), inside `with`, through `shopt`, in a `par` branch, and while one is open. Recordings are for test and debug: anyone can recompute the hash chain, so it proves consistency, not who made it.
+`set -o record <path>` records every later statement (verb requests and responses, clock readings, sleeps, uuids) and writes the recording at the end through `file.write` with mode `0600`, through the agent. The path is a literal under a `file_write` root. `set +o record`, the end of the script, or logout ends it. Only bound secrets are redacted (`***`): the response a `declare -s` read and any text equal to a bound secret. Every other response is in the recording as it came, including a credential file read with a plain `cat`, `config read` output, and `ps` command lines. A recording past about 6 MiB is split into `<path>.1` .. `<path>.N` segments, each chained to the last. Refused in plan mode (`record: refused in plan mode (plan writes nothing)`), inside `with`, through `shopt`, in a `par` branch, and while one is open. Recordings are for test and debug: anyone can recompute the hash chain, so it proves consistency, not who made it. Writing one is a `file.write`, so plan mode refuses it and confirm asks before it.
 
 ## Offline record and replay
 
@@ -187,6 +270,6 @@ Interactive only: `abbr name 'text'` defines one, `abbr -e name` erases it, `abb
 The shipped release binary is built without the `sashwasm` tag. There, a `wasm` statement or a module call exits 2 `wasm_unsupported` and reads nothing. Do not write `wasm` for a release host.
 
 ```sash
-# expect: 2 wasm_unsupported
+# expect: empty 2 wasm_unsupported
 wasm m = /srv/ops/fmt.wasm sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```

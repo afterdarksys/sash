@@ -45,10 +45,10 @@ unit status nginx |> where state == "failed"
 ps |> group by user |> count |> sort by count desc
 ```
 
-A byte stage before `|>` is a type error, exit 2, and nothing runs. `rows`, `lines`, `parse`, and the `from` formats lift text into rows; a byte pipeline never calls `rows` for you.
+A byte stage before `|>` is a type error, exit 2, and that statement does not run. `rows`, `lines`, `parse`, and the `from` formats lift text into rows; a byte pipeline never calls `rows` for you.
 
 ```sash
-# expect: 2 type |>
+# expect: empty 2 type |>
 echo hello |> where line == "hello"
 ```
 
@@ -74,11 +74,33 @@ A pipeline fails when any stage fails. `if` on a row pipeline is true when it yi
 | `> path` | write the rendered text through `file.write`; last stage only; stdout stays empty |
 | `<<< word` | here-string: the word and a newline as stdin, not a file read |
 
-There is no `>>`, no `2>`, and no `&`. `>` of rows writes the text table; `>` after `json` writes the JSON. A path is checked against the grant's roots before anything runs: outside them is exit 126 `denied file.read` or `denied file.write`.
+There is no `>>` and no `&`. There is no `2>` either: `2>` is the word `2` followed by `>`, so `echo a 2> x` writes `a 2` to `x`. `>` of rows writes the text table; `>` after `json` writes the JSON. Every stage and redirect path of a pipeline is checked against the grant before that pipeline starts: a path outside the roots is exit 126 `denied file.read` or `denied file.write`.
 
 ```sash
 unit status nginx |> json > /var/tmp/ops/nginx.json
 egrep error <<< "one error line"
+```
+
+```sash
+# expect: host 0
+# call: file.write argv=> /srv/app/x path=/srv/app/x mode= body="a 2\n"
+echo a 2> /srv/app/x
+```
+
+`>` writes whatever the pipeline produced, whatever its stages' statuses, also under `set -e`: a stage that fails or matches nothing still truncates the file to what came out, even nothing.
+
+```sash
+# expect: host 1
+# call: file.write argv=> /srv/app/out path=/srv/app/out mode= body=""
+set -e
+cat /etc/nginx/nginx.conf | egrep zzz > /srv/app/out
+```
+
+So write to a new path and check it, or put the writes in `atomic { }` (which rolls back on a non-zero statement), and read the byte count in the plan output before the real run:
+
+```sash
+# expect: plan 1 plan: would write /srv/app/out (0 bytes)
+cat /etc/nginx/nginx.conf | egrep zzz > /srv/app/out
 ```
 
 ## Expressions
@@ -136,10 +158,24 @@ do { let n = [ $n - 1 ] } while [ $n > 0 ]
 
 `for` walks a list, a map's keys (or key and value), rows, a pipeline, or a range. There is no C-style `for` and no `foreach`. `break` and `continue` act on the innermost loop.
 
-Caps: one loop runs at most `loopmax` iterations (default 100000) and one line calls at most `verbmax` agent verbs (default 10000). Past either the line ends with exit 2 `loop max` or `verb max`, and `try` does not catch it.
+Caps: one loop runs at most `loopmax` iterations (default 100000); the same cap bounds the rows of `filter` and `each`, the lines of `parse`, and the items of `par for`. One run (one prompt line, or a whole script) calls at most `verbmax` agent verbs (default 10000). Past either the run ends with exit 2 `loop max` or `verb max`, and `try` does not catch it.
 
 ```sash
-# expect: 2 loop max
+# expect: host 2 verb max
+set verbmax 2
+ps
+ps
+ps
+```
+
+```sash
+# expect: host 2 loop max
+set loopmax 1
+ps |> filter [ true ]
+```
+
+```sash
+# expect: empty 2 loop max
 let i = 0
 while [ true ] { let i = [ $i + 1 ] }
 ```
@@ -158,7 +194,7 @@ restart_if_failed nginx
 A function is a command: call it with words, one per parameter (a wrong count is exit 2 `usage <name>`). `return [value]` gives the call's value. Each call checks the grant again. A function cannot be named after a closed-table form (exit 2 `usage fn`), cannot be a pipe stage or take a redirect (exit 2 `type fn`), and there are no default parameters. A call deeper than eight is exit 2 `fn depth`.
 
 ```sash
-# expect: 2 fn depth
+# expect: empty 2 fn depth
 fn f() { f }
 f
 ```
@@ -170,7 +206,7 @@ try { echo "{bad" | from json } catch e { echo $e.status $e.message }
 try { unit status nginx } catch e { echo $e.key }
 ```
 
-`e` is a map: `status`, `message`, `key`. A denial can be caught: it already ran nothing. Catching does not retry. `try` without `catch` is a parse error; `catch { }` is the explicit way to ignore a failure, and lint reports it as `silent-catch`.
+`e` is a map: `status`, `message`, `key`. A denial can be caught: the denied statement ran nothing. Catching does not retry. `try` without `catch` is a parse error; `catch { }` is the explicit way to ignore a failure, and lint reports it as `silent-catch`.
 
 ```sash
 # expect: parse try needs catch
@@ -179,7 +215,35 @@ try { ps }
 
 What `try` cannot catch: `loop max`, `verb max`, `a secret ended the line`, and a jump. `return` outside a `fn` is exit 2 `usage return`; `break` outside a loop is `usage break`; `exit n` takes 0 to 255 (otherwise `usage exit`).
 
-How a script continues: a statement whose status is 1 (an `egrep` that keeps nothing, a `FAIL` check) does not stop it. Status 2, 126, or 127 stops the rest of the script, and the program status is that stopping status. With `set -e`, any failed stage ends the script.
+How a script continues: a statement whose status is 1 (an `egrep` that keeps nothing, a `FAIL` check) or any other status a verb returns (3 stays 3) does not stop it. Status 2, 126, or 127 stops the rest of the script, and the program status is that stopping status; a failed `par` stops it at any status. With `set -e`, any failed stage ends the script.
+
+The grant is checked statement by statement, when each is reached, not for the whole script first. Statements before a denial have already run, mutations included:
+
+```sash
+# expect: host 126 denied file.write
+# call: unit.restart argv=unit restart nginx
+# stdout: hi
+echo hi
+unit restart nginx
+echo a > /etc/x
+```
+
+Run `sash --needs` on a script to see every grant it needs before running it, and group file writes that must land together in `atomic { }` (`features.md`).
+
+A status that does not stop the script is still that statement's status; the script ends with the last statement's status, so here the run ends 0 and then 3:
+
+```sash
+# expect: host 0
+# stdout: after
+sysctl get fail.three
+echo after
+```
+
+```sash
+# expect: host 3
+echo before
+sysctl get fail.three
+```
 
 ## Options
 
@@ -195,14 +259,14 @@ How a script continues: a statement whose status is 1 (an `egrep` that keeps not
 | confirm | `set -o confirm` | off | ask before each mutating verb; terminal only |
 | pipefail | always on | on | `set +o pipefail` is exit 2 |
 | loopmax | `set loopmax N` | 100000 | iterations one loop may run |
-| verbmax | `set verbmax N` | 10000 | agent verbs one line may call |
+| verbmax | `set verbmax N` | 10000 | agent verbs one run (prompt line or script) may call |
 
 `+` turns a flag off (`set +e`, `set +o plan`). `shopt -s name` and `shopt -u name` are the long names. The long name needs `-o`: `set errexit` is exit 2 `usage set`.
 
 `set loopmax N` and `set verbmax N` take 1 up to the default. `set` may lower a cap and raise it back to its default, never past it; the same holds inside `with`.
 
 ```sash
-# expect: 2 above the ceiling
+# expect: empty 2 above the ceiling
 set loopmax 200000
 ```
 
@@ -216,7 +280,7 @@ Locks: under `sash --plan`, `set +o plan` is exit 2 `usage set: plan is locked o
 
 ## Globs and expansion
 
-`*` and `**` list through `file.read` (argv `ls`) under a read root; sash never opens the directory. `**` descends into child directories under the same root. `*(/)` and `**(/)` keep directories only; any other qualifier is exit 2 `type glob`. A quoted `*` is literal.
+`*` and `**` list through `file.read` (argv `ls`) under a read root; sash never opens the directory. `**` descends into child directories under the same root. `*(/)` and `**(/)` keep directories only; any other qualifier is exit 2 `type glob`, and so is a glob that matches nothing. A quoted `*` is literal.
 
 ```sash
 cat /var/log/nginx/*.log | egrep error
@@ -232,14 +296,19 @@ echo /srv/app/*(/)
 
 Globs, braces, and history expand once, before the line or script runs, against the prefix it starts with. In a script the prefix starts unset, so write globs as absolute paths: a relative glob is exit 2 `prefix_unset` even after a `cd`. A short name is never rewritten.
 
+```sash
+# expect: host 2 type glob
+echo /srv/app/*.nomatch
+```
+
 ## Exit statuses
 
 | status | meaning |
 | --- | --- |
 | 0 | success |
-| 1 | an ordinary failure: no match, a `FAIL` check, a verb's own non-zero result; the script goes on |
+| 1 | an ordinary failure: no match, a `FAIL` check; the script goes on. A verb's own status passes through unchanged (3 stays 3) |
 | 2 | parse, type, or usage error, a cap, a refusal (secret, atomic, wasm, `command_from_value`), a grant that does not verify; the script stops |
-| 126 | denied by the grant, or declined at a confirm prompt; nothing ran |
+| 126 | denied by the grant, or declined at a confirm prompt; that statement ran nothing, earlier ones did |
 | 127 | unknown name; no host binary is run |
 | 129 | hangup (SIGHUP) |
 | 130 | a `par` interrupted (Ctrl-C) |
@@ -251,7 +320,7 @@ Each is one line on stderr.
 | stderr | cause |
 | --- | --- |
 | `unknown <name>` | not in the closed table and not a `fn` (127) |
-| `denied <key>` | the grant lacks the key, or a path is outside the roots (126) |
+| `denied <key>` | the grant lacks the key, or a path is outside the roots; earlier statements already ran (126) |
 | `declined <key>` | answered no at a confirm prompt (126) |
 | `command_from_value` | a command word that comes from a value, `$x status nginx` (2) |
 | `type \|>` | bytes piped into `\|>` (2) |
@@ -262,7 +331,7 @@ Each is one line on stderr.
 | `timeout` | past a `timeout` deadline; `try` and `retry` can catch it (2) |
 | `readonly <name>` | rebinding a `declare -r` name (2) |
 | `prefix_unset` | a relative path or glob with no session prefix (2) |
-| `type glob` | a glob qualifier other than `(/)` (2) |
+| `type glob` | a glob qualifier other than `(/)`, or a glob that matches nothing (2) |
 | `parse: ...` | `parse: try needs catch`, `parse: too deep` (65 nested blocks), `parse: env not in this series` (2) |
 | `usage <form>...` | wrong arguments to a form (2) |
 | `a secret cannot decide a branch`, `a secret cannot leave sash`, `a secret ended the line` | secret rules, `features.md` (2) |
