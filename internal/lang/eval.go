@@ -1071,6 +1071,15 @@ func (m *machine) runUse(u *Use) (int, bool) {
 }
 
 func (m *machine) bindLet(name string, v value) (int, bool) {
+	// A name bound from redacted text is a secret from then on, so every
+	// secret rule (expressions, words, returns, capture, branches) holds
+	// for it, not only the pipeline taint. Its text is ***, so nothing is
+	// added to the recording's redaction set.
+	if v.redacted {
+		if d := toDatum(v); !isSecret(d) {
+			v = value{kind: valData, d: secretVal{d}, prov: v.prov}
+		}
+	}
 	if err := m.st.assign(name, m.withProv(v)); err != nil {
 		m.err.WriteString(err.Error() + "\n")
 		return exitType, true
@@ -1462,10 +1471,16 @@ func (m *machine) runJump(j *Jump) (int, bool) {
 		}
 		m.retVal = nil
 		if j.Word != nil {
+			m.sawSecret = false
 			v, err := m.wordValue(*j.Word)
 			if err != nil {
 				m.err.WriteString(err.Error() + "\n")
 				return exitType, true
+			}
+			// A word that expanded a secret returns a secret, never its
+			// *** text as plain data.
+			if d := toDatum(v); m.sawSecret && !isSecret(d) {
+				v = value{kind: valData, d: secretVal{d}, prov: v.prov}
 			}
 			m.retVal = &v
 		}

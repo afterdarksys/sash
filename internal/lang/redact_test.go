@@ -18,14 +18,24 @@ func TestRedactedTextNeverWrites(t *testing.T) {
 		"let x = (render | egrep pass)\necho \"c $x\" > /var/tmp/ops/app.conf",
 		"render | upper_in",
 		"fn outer() { render }\nouter > /var/tmp/ops/app.conf",
+		"let x = (echo $pw)\nlet y = [ $x ]\necho $y > /var/tmp/ops/app.conf",
+		"let x = (echo $pw)\necho [ upper($x) ] > /var/tmp/ops/app.conf",
+		"let x = (echo $pw)\nfor l in [ split($x, \"\\n\") ] { echo $l > /var/tmp/ops/app.conf }",
+		"let x = (echo $pw)\nlet m = [ {\"a\": $x} ]\necho $m.a > /var/tmp/ops/app.conf",
+		"let r = capture { echo \"k=$pw\" | egrep k }\necho $r.out > /var/tmp/ops/app.conf",
+		"fn ret() { return \"pass=$pw\" }\nret > /var/tmp/ops/app.conf",
+		"fn w() { let x = (echo $pw)\nreturn $x }\nw > /var/tmp/ops/app.conf",
+		"let x = (echo $pw)\nunit restart [ $x ]",
 	} {
 		f := &fake{}
 		out := Run(setup+src, allow(), f, Options{})
-		if out.Status != exitType || !strings.Contains(out.Stderr, "a secret cannot leave sash") {
+		// Refused before any write: a secret rule, or a field of a secret
+		// map (type value).
+		if out.Status != exitType || !strings.Contains(out.Stderr, "secret") && !strings.Contains(out.Stderr, "type value") {
 			t.Errorf("%q: %+v", src, out)
 		}
 		for _, c := range f.calls {
-			if c.Key == "file.write" {
+			if c.Key == "file.write" || c.Key == "unit.restart" {
 				t.Errorf("%q: wrote %q", src, c.Body)
 			}
 		}

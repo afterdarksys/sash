@@ -104,7 +104,7 @@ func (m *machine) runCapture(s *Let) (int, bool) {
 	o.set("out", out)
 	o.set("err", safeText(strings.TrimSpace(errText)))
 	var d any = o
-	if isSecret(toDatum(v)) {
+	if isSecret(toDatum(v)) || v.redacted {
 		d = secretVal{d: o}
 	}
 	return m.bindLet(s.Name, value{kind: valData, d: d})
