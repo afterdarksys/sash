@@ -2,7 +2,7 @@
 
 Read this before you write a script that changes a host, runs work in parallel, handles a secret, renders a config, or records a run; and for the command-line modes (`--plan`, `--needs`, `--lint`, `--record`, `--replay`).
 
-Contents: Plan mode · `--needs` · `--lint` · Confirm · Secrets · Templates · `atomic` · `par` · `retry` and `timeout` · `check` · `log` · `origin` · `with` · `use` · `set -o record` · Offline record and replay · `why` · Abbreviations · wasm
+Contents: Plan mode · `--needs` · `--lint` · Confirm · Secrets · Templates · `atomic` · `par` · `retry` and `timeout` · `await` · `check` · `log` · `origin` · `with` · `use` · `set -o record` · Offline record and replay · `why` · Abbreviations · wasm
 
 ## Plan mode
 
@@ -295,3 +295,17 @@ The shipped release binary is built without the `sashwasm` tag. There, a `wasm` 
 # expect: empty 2 wasm_unsupported
 wasm m = /srv/ops/fmt.wasm sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
+
+## `await`
+
+`await timeout D every I { pipeline }` polls one condition immediately and then at interval I, until true or its deadline. D is positive and at most 24h; I is positive and at most 1h. A row condition is true when it produces at least one row and exits 0; a byte condition is true on exit 0; a function's returned bool is true only when it is `true`. A function's typed return that is neither a bool nor rows (a string, a number) is exit 2 `type await: the condition returned data that is neither a bool nor rows`, and a typed return piped into a later stage is exit 2 `type await: a function's typed value must end the condition`, so `ready | cat` can never turn a returned `false` into text that passes. A recording keeps one sleep per interval. Ordinary nonzero statuses poll again; type errors, denials, unknown commands, caps, and control-flow jumps stop immediately. Output from observations is suppressed. The timeout is exit 2, catchable with `$e.code == "timeout"`.
+
+```sash
+# expect: host 0
+# call: unit.status argv=unit status nginx
+await timeout 5s every 100ms { unit status nginx |> where state == active }
+```
+
+The condition must be a single pipeline. Functions may be called, but mutations, atomic blocks, and session-option changes inside them are refused, even under plan mode and inside parallel branches. These refusals cannot be hidden with `catch`. Grant checks and verb/loop caps still apply. `--needs`, `--lint`, and preview inspect the condition through the ordinary static walkers. Reads still reach the host under plan mode.
+
+An outer, shorter timeout wins. Polling checks hangups and parallel cancellation between bounded sleeps. An already running parent call is not forcibly interrupted; if it returns after the deadline, even a successful observation times out. Clock and sleep operations participate in record/replay.

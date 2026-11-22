@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -33,16 +34,17 @@ func (closedParent) Do(parent.Verb) (parent.Result, error) {
 
 func main() {
 	args := os.Args[1:]
-	if skillMode(args) {
+	modeArgs, _ := splitScriptArgs(args)
+	if skillMode(modeArgs) {
 		os.Exit(runSkill(args, os.Stdout))
 	}
-	if flagMode(args, "--lint") {
+	if flagMode(modeArgs, "--lint") {
 		os.Exit(runLint(args))
 	}
-	if tapeMode(args) {
+	if tapeMode(modeArgs) {
 		os.Exit(runTape(args))
 	}
-	if needsMode(args) {
+	if needsMode(modeArgs) {
 		os.Exit(runNeeds(args))
 	}
 	g := grant.Grant{}
@@ -70,13 +72,14 @@ func main() {
 		}
 		os.Exit(line.Loop(os.Stdin, os.Stdout, os.Stderr, g, p))
 	}
-	src, err := readSource(args)
+	sourceArgs, scriptArgs := splitScriptArgs(args)
+	src, err := readSource(sourceArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		os.Exit(langExit(2))
 	}
 	stopHup := watchHangup(st, hupGrace, os.Exit)
-	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts})
+	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts, Args: scriptArgs, Source: scriptSource(sourceArgs)})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	// A recording set -o record started is written when the script ends,
@@ -172,7 +175,7 @@ func readSource(args []string) (string, error) {
 	return "", errors.New(usage)
 }
 
-const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"
+const usage = "usage: sash [--session] [--plan] [-c script | file] [-- --name value ...]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"
 
 // needsMode is true when --needs is among the leading flags.
 func needsMode(args []string) bool { return flagMode(args, "--needs") }
@@ -251,4 +254,34 @@ func langExit(code int) int {
 		return 1
 	}
 	return code
+}
+
+// An explicit separator keeps script arguments distinct from sash flags.
+func splitScriptArgs(args []string) ([]string, []string) {
+	start := 0
+	for start < len(args) && (args[start] == "--session" || args[start] == "--plan") {
+		start++
+	}
+	if start < len(args) {
+		if args[start] == "-c" {
+			start += 2
+		} else if args[start] != "--" {
+			start++
+		}
+	}
+	for i := start; i < len(args); i++ {
+		if args[i] == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
+// scriptSource is the script's base name for $e.source: the directory an
+// operator ran it from is theirs, not the script's to print or write.
+func scriptSource(args []string) string {
+	if len(args) == 1 {
+		return filepath.Base(args[0])
+	}
+	return "script"
 }

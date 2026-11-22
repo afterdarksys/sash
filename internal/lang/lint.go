@@ -286,6 +286,9 @@ func ownRefs(s Stmt, out map[string]bool) {
 		}
 	case *Timeout:
 		wordRefs(s.D, out)
+		if s.Every != nil {
+			wordRefs(*s.Every, out)
+		}
 	case *Par:
 		wordRefs(s.N, out)
 	case *Atomic:
@@ -367,6 +370,9 @@ func ownWords(s Stmt, w func(Word), x func(Expr)) {
 		}
 	case *Timeout:
 		w(s.D)
+		if s.Every != nil {
+			w(*s.Every)
+		}
 	case *Par:
 		w(s.N)
 	case *Atomic:
@@ -529,6 +535,10 @@ func (l *linter) collect(p *Program, top bool, tryNode string) {
 			return &l.bindings[len(l.bindings)-1]
 		}
 		switch s := s.(type) {
+		case *Arguments:
+			for _, f := range s.Fields {
+				bind(f.Name, "argument", nil)
+			}
 		case *Use:
 			l.hasUse = true
 		case *Let:
@@ -988,7 +998,12 @@ func (l *linter) sinks(p *Program) {
 				}
 			})
 		case *Timeout:
-			own("reaches a timeout", func(o map[string]bool) { wordRefs(s.D, o) })
+			own("reaches a timeout", func(o map[string]bool) {
+				wordRefs(s.D, o)
+				if s.Every != nil {
+					wordRefs(*s.Every, o)
+				}
+			})
 		case *Par:
 			own("reaches a par count", func(o map[string]bool) { wordRefs(s.N, o) })
 		case *Atomic:

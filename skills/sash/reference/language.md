@@ -2,7 +2,7 @@
 
 Read this when you write anything past a one-line pipeline: values, pipes, expressions, control flow, functions, options, globs, and the exit statuses and error strings a run prints.
 
-Contents: Values · Words and quoting · Pipes · Redirection · Expressions · Binding · Control flow · Functions · Errors and jumps · Options · Globs and expansion · Exit statuses · Error strings
+Contents: Values · Words and quoting · Pipes · Redirection · Expressions · Binding · Control flow · Functions · Script arguments · Errors and jumps · Options · Globs and expansion · Exit statuses · Error strings
 
 ## Values
 
@@ -74,7 +74,7 @@ A pipeline fails when any stage fails. `if` on a row pipeline is true when it yi
 | `> path` | write the rendered text through `file.write`; last stage only; stdout stays empty |
 | `<<< word` | here-string: the word and a newline as stdin, not a file read |
 
-There is no `>>` and no `&`. There is no `2>` either: `2>` is the word `2` followed by `>`, so `echo a 2> x` writes `a 2` to `x`. `>` of rows writes the text table; `>` after `json` writes the JSON. Every stage and redirect path of a pipeline is checked against the grant before that pipeline starts: a path outside the roots is exit 126 `denied file.read` or `denied file.write`.
+There is no `>>` and no `&`. There is no `2>` either: `2>` is the word `2` followed by `>`, so `echo a 2> x` writes `a 2` to `x`. `>` of rows writes the text table; `>` after `json` writes the JSON. Every explicit stage and redirect path of a pipeline is checked against the grant before that pipeline starts. A function body is checked as its statements are reached; earlier pipeline stages may already have run when its body is denied. For explicit stages and redirects: a path outside the roots is exit 126 `denied file.read` or `denied file.write`.
 
 ```sash
 unit status nginx |> json > /var/tmp/ops/nginx.json
@@ -158,6 +158,8 @@ do { let n = [ $n - 1 ] } while [ $n > 0 ]
 
 `for` walks a list, a map's keys (or key and value), rows, a pipeline, or a range. There is no C-style `for` and no `foreach`. `break` and `continue` act on the innermost loop.
 
+A pipeline condition (`if`, `while`, `await`) is decided by what it produced: rows by whether there is at least one; bytes by exit 0; a function's returned bool by its value (`fn up() { return [ false ] }; if up { ... }` takes the else branch); returned rows by whether there is one. A secret never decides a branch.
+
 Caps: one loop runs at most `loopmax` iterations (default 100000); the same cap bounds the rows of `filter` and `each`, the lines of `parse`, and the items of `par for`. One run (one prompt line, or a whole script) calls at most `verbmax` agent verbs (default 10000). Past either the run ends with exit 2 `loop max` or `verb max`, and `try` does not catch it.
 
 ```sash
@@ -191,12 +193,61 @@ let r = (add 2 3)
 restart_if_failed nginx
 ```
 
-A function is a command: call it with words, one per parameter (a wrong count is exit 2 `usage <name>`). `return [value]` gives the call's value. Each call checks the grant again. A function cannot be named after a closed-table form (exit 2 `usage fn`), cannot be a pipe stage or take a redirect (exit 2 `type fn`), and there are no default parameters. A call deeper than eight is exit 2 `fn depth`.
+A function is a command: call it with words, one per parameter (a wrong count is exit 2 `usage <name>`). `return [value]` gives the call's value. Each call checks the grant again. A function cannot be named after a closed-table form (exit 2 `usage fn`). Functions accept pipes and redirects; there are no default function parameters. A call deeper than eight is exit 2 `fn depth`.
 
 ```sash
 # expect: empty 2 fn depth
 fn f() { f }
 f
+```
+
+When a function participates in a pipeline or has a redirect, `$input` is its input value, scoped to that call. `|` supplies text; `|>` supplies rows. A function's stdout becomes its output, or an explicit `return` supplies a typed value. Mixing stdout with an explicit returned value is exit 2 `type fn: cannot mix stdout and return in a pipeline`; use `log` for diagnostics. `$input` is restored after the call, including nested calls. A parameter named `input`, or a read-only outer `input`, cannot be used for a piped call.
+
+```sash
+# stdout: HELLO
+fn loud() { return [ upper($input) ] }
+echo hello | loud | egrep HELLO
+```
+
+```sash
+# stdout: active
+fn services() { return [ [{"state": "active"}] ] }
+fn identity() { return $input }
+services |> identity |> where state == active |> select state
+```
+
+A function's output type is checked at runtime before the next row stage. `|>` refuses non-row output. Secrets cannot cross a piped function boundary or its output redirect. A plain standalone function retains its previous stdout and return behavior. Pipes remain buffered, not streaming.
+
+## Script arguments
+
+An optional `args { }` declaration must be the first top-level statement. Each entry is `name type required` or `name type default literal`, optionally followed by `choices "a,b,c"` and `help "description"`. Types are `string`, `int` (signed 64-bit), `bool` (`true` or `false`), and `duration` (positive, at most 24h; bound as its duration string). Names are letters, digits, and `_`, not starting with a digit, at most 64 characters (`parse: argument name ... is not an identifier`). Defaults, choices, and help must be literal, not expressions or variable references. `help` is reserved.
+
+```text
+args {
+  service string required help "Service to inspect"
+  wait duration default 30s
+  environment string default dev choices "dev,prod"
+}
+unit status $service
+```
+
+Invoke with an explicit separator:
+
+```text
+sash inspect.sash -- --service nginx --environment prod
+sash inspect.sash -- --help
+sash -c 'args { name string required }; echo $name' -- --name nginx
+```
+
+Every option takes a separate value, including booleans. Unknown, duplicate, missing, or invalid arguments are exit 2 before source expansion or host calls. Values are data and are never reparsed as source. Generated `--help` lists the schema and runs no script commands. These arguments apply to normal script execution, including `--plan` and `--session`; the analysis and offline tape command-line modes still take only their documented arguments. Do not put secrets in command-line arguments.
+
+```sash
+# stdout: nginx 3
+args {
+  service string default nginx
+  attempts int default 3
+}
+echo $service $attempts
 ```
 
 ## Errors and jumps
@@ -206,14 +257,14 @@ try { echo "{bad" | from json } catch e { echo $e.status $e.message }
 try { unit status nginx } catch e { echo $e.key }
 ```
 
-`e` is a map: `status`, `message`, `key`. A denial can be caught: the denied statement ran nothing. Catching does not retry. `try` without `catch` is a parse error; `catch { }` is the explicit way to ignore a failure, and lint reports it as `silent-catch`.
+`e` is a map: `status`, `message`, `key`, `code`, `source`, `line`. `code` is a stable category: `timeout`, `denied`, `declined`, `unknown_command`, `invalid_argument`, `type_error`, `parent_error`, `refused`, `limit_exceeded`, `secret_refused`, `hangup`, `await_mutation`, `runtime_error`, or `command_failed`. This does not expose new host-specific error details. `source` is the script filename (or `script`), or the file loaded with `use`; `line` is one-based in expanded source. Function errors identify the failing body statement. A denial can be caught: the denied statement ran nothing. Catching does not retry. `try` without `catch` is a parse error; `catch { }` is the explicit way to ignore a failure, and lint reports it as `silent-catch`.
 
 ```sash
 # expect: parse try needs catch
 try { ps }
 ```
 
-What `try` cannot catch: `loop max`, `verb max`, `a secret ended the line`, and a jump. `return` outside a `fn` is exit 2 `usage return`; `break` outside a loop is `usage break`; `exit n` takes 0 to 255 (otherwise `usage exit`).
+What `try` cannot catch: a mutation or session-option change attempted inside `await`, `loop max`, `verb max`, `a secret ended the line`, and a jump. `return` outside a `fn` is exit 2 `usage return`; `break` outside a loop is `usage break`; `exit n` takes 0 to 255 (otherwise `usage exit`).
 
 How a script continues: a statement whose status is 1 (an `egrep` that keeps nothing, a `FAIL` check) or any other status a verb returns (3 stays 3) does not stop it. Status 2, 126, or 127 stops the rest of the script, and the program status is that stopping status; a failed `par` stops it at any status. With `set -e`, any failed stage ends the script.
 

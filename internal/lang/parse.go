@@ -120,6 +120,8 @@ func (*Retry) stmt() {}
 type Timeout struct {
 	D    Word
 	Body Program
+	// Every makes this an await; Body contains its single condition.
+	Every *Word
 }
 
 func (*Timeout) stmt() {}
@@ -233,6 +235,9 @@ func (p *parser) program() (*Program, error) {
 		if err != nil {
 			return nil, err
 		}
+		if _, ok := s.(*Arguments); ok && (p.depth != 0 || len(stmts) != 0) {
+			return nil, fmt.Errorf("parse: args must be the first top-level statement")
+		}
 		stmts = append(stmts, s)
 		pos = append(pos, at)
 		if !p.atSep() && p.peek().kind != kEOF && p.peek().kind != kRBrace {
@@ -257,6 +262,10 @@ func (p *parser) skipSep() {
 func (p *parser) stmt() (Stmt, error) {
 	if p.peek().kind == kWord && len(p.peek().word.Parts) == 1 && !p.peek().word.Parts[0].Exp {
 		switch p.peek().word.Parts[0].Lit {
+		case "args":
+			return p.arguments()
+		case "await":
+			return p.await()
 		case "let":
 			return p.let()
 		case "if":

@@ -96,6 +96,8 @@ var builtins = []builtinRow{
 	{"use", "keyword", "file.read", "load fn and declare -r from a file", true},
 	{"template_file", "verb", "file.write", "render spec + tpl to out; --check diffs", true},
 	{"template", "verb", "file.read", "render tpl with the piped value", true},
+	{"await", "keyword", "", "poll a read-only condition until a deadline", true},
+	{"args", "keyword", "", "declare and validate script arguments", true},
 	{"retry", "keyword", "", "retry N [delay D] { }: again on failure", true},
 	{"timeout", "keyword", "", "timeout D { }: checked before each statement and verb", true},
 	{"atomic", "keyword", "file.write", "atomic [deadline D] { }: the file writes inside all stay or are all restored", true},

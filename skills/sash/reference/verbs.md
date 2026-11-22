@@ -143,6 +143,8 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `shopt` | builtin | - | no | `shopt -s name`, `shopt -u name`: the same option table by long name. |
 | `builtin` | builtin | - | no | Lists this table and the expression functions as rows; `builtin <name>` filters it. |
 | `retry` | keyword | - | no | `retry N [delay D] { }`: run again on failure. N 1 to 100, D up to 1h. |
+| `args` | keyword | - | no | Static script argument schema: required values, typed defaults, choices, and help. |
+| `await` | keyword | - | no | `await timeout D every D { pipeline }`: poll a read-only condition, bounded by deadline and caps. |
 | `timeout` | keyword | - | no | `timeout D { }`: D up to 24h, checked before each statement and verb. |
 | `atomic` | keyword | file.write | yes | `atomic [deadline D] { }`: on a failure the agent restores the file writes inside, except files another writer changed meanwhile; writes are visible as they land. The key is the writes it holds. |
 | `par` | keyword | - | no | `par N [as r] { }` or `par N [as r] for x in <src> { }`: branches at once, N 1 to 16. |

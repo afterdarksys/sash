@@ -427,6 +427,9 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 		return b
 	case *Jump:
 		return b
+	case *Arguments:
+		// A static schema: binds names, reads and writes nothing.
+		return b
 	default:
 		// A statement needs does not know: say so rather than skip it.
 		n.add("-", "-", noteNotGrantable, 0, "")

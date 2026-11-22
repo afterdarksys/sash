@@ -933,6 +933,35 @@ func (m *machine) sleep(d time.Duration) {
 	}
 }
 
+// sleepFor sleeps d in steps of at most 100ms, stopping early when stop says
+// so (a hangup, a cancelled parallel branch), so either is seen promptly. A
+// recording keeps one sleep event for the whole wait, not one per step, so a
+// long await stays within the tape caps; a replay does not sleep.
+func (m *machine) sleepFor(d time.Duration, stop func() bool) {
+	total := d
+	run := func() {
+		for d > 0 && !stop() {
+			step := d
+			if step > 100*time.Millisecond {
+				step = 100 * time.Millisecond
+			}
+			sleepFn(step)
+			d -= step
+		}
+	}
+	if m.tape == nil {
+		run()
+		return
+	}
+	m.tape.value("sleep", func() string {
+		run()
+		return total.String()
+	})
+	if m.tape.Err() != nil {
+		m.ctl = ctlHalt
+	}
+}
+
 func (m *machine) uuidPin() func() (string, error) {
 	if m.tape == nil {
 		return nil

@@ -53,7 +53,8 @@ type Outcome struct {
 	Stderr string
 	Prefix string
 	// Exit is true when the line ran exit: the prompt ends the session.
-	Exit bool
+	Exit    bool
+	Failure *Failure
 }
 
 // Loop and verb caps (language v2 contract). set may lower them and raise
@@ -84,6 +85,10 @@ const (
 // Options carries the session prefix and the history newest-last.
 // The process cwd is not this prefix. Trace prints each stage key.
 type Options struct {
+	// Args are explicit script arguments following -- on the command line.
+	Args   []string
+	Source string
+
 	Prefix  string
 	History []string
 	Trace   bool
@@ -131,6 +136,26 @@ func runTaped(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 }
 
 func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
+	bindings, help, argErr := scriptArguments(src, opt.Args)
+	if argErr != nil {
+		return Outcome{Status: exitType, Stderr: safeText(argErr.Error()) + "\n", Prefix: opt.Prefix}
+	}
+	if help != "" {
+		return Outcome{Stdout: help, Prefix: opt.Prefix}
+	}
+	if len(bindings) > 0 {
+		if opt.State == nil {
+			opt.State = NewState()
+		}
+		for name := range bindings {
+			if _, exists := opt.State.vars[name]; exists {
+				return Outcome{Status: exitType, Stderr: "args: binding already exists: " + name + "\n", Prefix: opt.Prefix}
+			}
+		}
+		for name, v := range bindings {
+			opt.State.vars[name] = v
+		}
+	}
 	expanded, prob := Expand(src, g, p, opt)
 	if prob != nil {
 		return Outcome{Status: prob.Status, Stderr: prob.Msg + "\n", Prefix: opt.Prefix}
@@ -152,6 +177,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
 	}
+	m.provSrc = opt.Source
 	m.nl = provNewlines(expanded)
 	m.provTop = true
 	m.drains = true
@@ -166,7 +192,10 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 			status = m.haltStatus
 		}
 	}
-	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: safeText(m.err.String()), Prefix: m.prefix()}
+	if status == 0 {
+		m.failure = nil
+	}
+	out := Outcome{Failure: m.failure, Status: status, Stdout: m.out.String(), Stderr: safeText(m.err.String()), Prefix: m.prefix()}
 	if m.ctl == ctlExit {
 		out.Status = m.exitCode
 		out.Exit = true
@@ -199,15 +228,21 @@ type value struct {
 }
 
 type machine struct {
-	g     grant.Grant
-	p     parent.Parent
-	stack []string
-	vars  map[string]value
-	fns   map[string]*Fn
-	out   strings.Builder
-	err   strings.Builder
-	trace bool
-	depth int
+	g       grant.Grant
+	p       parent.Parent
+	stack   []string
+	vars    map[string]value
+	fns     map[string]*Fn
+	out     strings.Builder
+	err     strings.Builder
+	trace   bool
+	depth   int
+	polling bool
+	// typedScalar: the last function stage returned a typed scalar (bool,
+	// number, string or null). Inside await it must end the condition, so a
+	// returned false is never turned into text a byte stage passes on.
+	typedScalar bool
+	failure     *Failure
 
 	ctl       ctl
 	retVal    *value
@@ -281,7 +316,7 @@ var (
 )
 
 func (m *machine) pastDeadline() bool {
-	return !m.deadline.IsZero() && m.now().After(m.deadline)
+	return !m.deadline.IsZero() && !m.now().Before(m.deadline)
 }
 
 // duration reads a retry delay or a timeout: a Go duration in (0, max].
@@ -298,6 +333,9 @@ func (m *machine) duration(w Word, max time.Duration, zeroOK bool) (time.Duratio
 }
 
 func (m *machine) runTimeout(t *Timeout) (int, bool) {
+	if t.Every != nil {
+		return m.runAwait(t)
+	}
 	d, err := m.duration(t.D, 24*time.Hour, false)
 	if err != nil {
 		m.err.WriteString(err.Error() + "\n")
@@ -379,6 +417,10 @@ var mutating = map[string]bool{"unit.restart": true, "package.install": true, "s
 // plan mode a mutating verb stops here: it prints what it would do and
 // succeeds without a call.
 func (m *machine) do(v parent.Verb) (parent.Result, error) {
+	if m.polling && (mutating[v.Key] || strings.HasPrefix(v.Key, "atomic.")) {
+		m.ctl = ctlHalt
+		return parent.Result{}, errAwaitMutation
+	}
 	if m.atomic != nil && irreversible[v.Key] {
 		// The static check found every literal stage; this catches the
 		// rest (unit $op).
@@ -508,6 +550,9 @@ func (m *machine) takeVerb() bool {
 func (m *machine) doFailed(key string, err error) int {
 	var te *TapeError
 	switch {
+	case errors.Is(err, errAwaitMutation):
+		m.err.WriteString(errAwaitMutation.Error() + "\n")
+		return exitType
 	case errors.As(err, &te):
 		// Run reports the tape's error once, at the end.
 		m.ctl = ctlHalt
@@ -607,7 +652,12 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		// nothing encloses it, so it is dropped.
 		outer, outerNames := m.prov, m.readNames
 		m.prov, m.readNames = nil, nil
+		m.failure = nil
+		mark := m.err.Len()
 		st, stop := m.runStmt(s)
+		if st != 0 && m.failure == nil {
+			m.noteFailure(st, m.err.String()[mark:])
+		}
 		if top {
 			m.prov, m.readNames = nil, nil
 		} else {
@@ -632,6 +682,8 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 
 func (m *machine) runStmt(s Stmt) (int, bool) {
 	switch s := s.(type) {
+	case *Arguments:
+		return 0, false
 	case *Let:
 		return m.runLet(s)
 	case *If:
@@ -663,6 +715,11 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		}
 		return m.runPar(s)
 	case *Atomic:
+		if m.polling {
+			m.ctl = ctlHalt
+			m.err.WriteString(errAwaitMutation.Error() + "\n")
+			return exitType, true
+		}
 		return m.runAtomic(s)
 	case *Fn:
 		return m.defFn(s)
@@ -998,9 +1055,11 @@ func (m *machine) runIf(s *If) (int, bool) {
 		if stop {
 			return st, true
 		}
-		take = st == 0
-		if v.kind == valRows {
-			take = len(v.rows) > 0
+		var err error
+		take, err = condOf(v, st, false)
+		if err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return exitType, true
 		}
 	}
 	var branch *Program
@@ -1180,7 +1239,7 @@ func (m *machine) loopBody(body *Program, iter *int) (status int, stop, brk bool
 }
 
 // test evaluates an if or while condition.
-func (m *machine) test(x Expr, pipe Pipeline) (bool, int, bool) {
+func (m *machine) test(x Expr, pipe Pipeline, strict bool) (bool, int, bool) {
 	if x != nil {
 		d, err := m.evalX(x)
 		var ok bool
@@ -1193,14 +1252,54 @@ func (m *machine) test(x Expr, pipe Pipeline) (bool, int, bool) {
 		}
 		return ok, 0, false
 	}
+	m.typedScalar = false
 	st, stop, v := m.runPipe(pipe)
 	if stop {
 		return false, st, true
 	}
-	if v.kind == valRows {
-		return len(v.rows) > 0, st, false
+	ok, err := condOf(v, st, strict)
+	if err != nil {
+		m.err.WriteString(err.Error() + "\n")
+		return false, exitType, true
 	}
-	return st == 0, st, false
+	return ok, st, false
+}
+
+// condOf decides a pipeline condition from its value and status, the same
+// way for if, while and await. A bool returned by a function decides by its
+// value (a returned false is false, whatever the status); data that is rows
+// (a list of maps, or a map) decides by whether it has a row; bytes and rows
+// output decide as before (rows by count, bytes by status). Other data (a
+// string, number, null, a list that is not rows) decides by status for if
+// and while, and is a type error for await (strict), where a readiness gate
+// must not pass on a value it cannot read. A secret never decides.
+func condOf(v value, st int, strict bool) (bool, error) {
+	if v.kind == valData {
+		if isSecret(v.d) {
+			return false, errSecretBranch
+		}
+		if b, isBool := v.d.(bool); isBool {
+			return b && st == 0, nil
+		}
+		if rows, isRows := datumRows(v.d); isRows {
+			return len(rows.rows) > 0 && st == 0, nil
+		}
+		if strict {
+			return false, fmt.Errorf("type await: the condition returned data that is neither a bool nor rows")
+		}
+		return st == 0, nil
+	}
+	if v.kind == valRows {
+		return len(v.rows) > 0, nil
+	}
+	if v.kind == valRow {
+		return st == 0, nil
+	}
+	// A plain string comes only from a function's typed return.
+	if v.kind == valStr && strict {
+		return false, fmt.Errorf("type await: the condition returned data that is neither a bool nor rows")
+	}
+	return st == 0, nil
 }
 
 func (m *machine) runWhile(s *While) (int, bool) {
@@ -1208,7 +1307,7 @@ func (m *machine) runWhile(s *While) (int, bool) {
 	first := s.Do
 	for {
 		if !first {
-			ok, st, stop := m.test(s.CondX, s.Cond)
+			ok, st, stop := m.test(s.CondX, s.Cond, false)
 			if stop {
 				return st, true
 			}
@@ -1327,6 +1426,14 @@ func (m *machine) runTry(t *Try) (int, bool) {
 		e.set("status", int64(st))
 		e.set("message", msg)
 		e.set("key", failKey(msg))
+		f := m.failure
+		if f == nil {
+			m.noteFailure(st, msg)
+			f = m.failure
+		}
+		e.set("code", f.Code)
+		e.set("source", f.Source)
+		e.set("line", int64(f.Line))
 		m.vars[t.Name] = m.withProv(value{kind: valData, d: e})
 	}
 	st, stop = m.runProg(t.Catch)
@@ -1516,9 +1623,6 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		// argument, a path, or a function argument.
 		if m.sawSecret && (info.key != "" || info.call != nil || inPath != "" || outPath != "" || len(st.Redirs) > 0) {
 			return nil, &problem{exitType, "a secret cannot leave sash"}, refusal{}
-		}
-		if info.call != nil && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
-			return nil, &problem{exitType, "type fn"}, refusal{}
 		}
 		if argv[0] == "template_file" && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
 			return nil, &problem{exitType, "type template_file"}, refusal{}
@@ -1779,7 +1883,7 @@ func typecheck(exp []expStage) *problem {
 			continue
 		}
 		if st.op == "|>" {
-			if kind != inRows || in == inBytes {
+			if (kind != inRows && kind != inAny) || in == inBytes {
 				return &problem{exitType, "type |>"}
 			}
 			if in == inFlex {
@@ -1800,7 +1904,7 @@ func typecheck(exp []expStage) *problem {
 
 func stageShape(st expStage) (int, int) {
 	if st.call != nil {
-		return inNone, inBytes
+		return inAny, inAny
 	}
 	if rowTools[st.argv[0]] {
 		return inRows, inRows
@@ -1932,7 +2036,7 @@ func (m *machine) traceStage(st expStage) error {
 }
 
 func (m *machine) execPrepared(exp []expStage) (int, value) {
-	if len(exp) == 1 && exp[0].call != nil {
+	if len(exp) == 1 && exp[0].call != nil && exp[0].inPath == "" && exp[0].outPath == "" && exp[0].here == nil {
 		if err := m.traceStage(exp[0]); err != nil {
 			return 1, value{}
 		}
@@ -1960,7 +2064,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 	}
 	exits := make([]int, len(exp))
 	for i, st := range exp {
-		if st.op == "|" && cur.kind == valRows {
+		if st.op == "|" && (cur.kind == valRows || st.call != nil) {
 			cur = value{kind: valBytes, b: []byte(render(cur))}
 		}
 		if st.op == "|>" && cur.kind == valData {
@@ -1970,6 +2074,10 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 				return exitType, value{}
 			}
 			cur = rows
+		}
+		if st.op == "|>" && cur.kind != valRows {
+			m.err.WriteString("type |>\n")
+			return exitType, value{}
 		}
 		if err := m.traceStage(st); err != nil {
 			return 1, cur
@@ -1986,7 +2094,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		v, code := m.execStage(st, cur)
 		exits[i] = code
 		cur = v
-		if code == exitType || code == exitDenied || code == exitUnknown {
+		if m.ctl != ctlNone || code == exitType || code == exitDenied || code == exitUnknown {
 			return code, cur
 		}
 	}
@@ -1998,6 +2106,10 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		}
 	}
 	if exp[len(exp)-1].outPath != "" {
+		if isSecret(toDatum(cur)) {
+			m.err.WriteString("a secret cannot leave sash\n")
+			return exitType, value{}
+		}
 		body := render(cur)
 		v := parent.Verb{
 			Key:  "file.write",
@@ -2060,6 +2172,21 @@ func (m *machine) callFn(st expStage) (int, bool) {
 }
 
 func (m *machine) execStage(st expStage, in value) (value, int) {
+	prevScalar := m.typedScalar
+	m.typedScalar = false
+	if m.polling && prevScalar && st.call == nil {
+		m.ctl = ctlHalt
+		m.err.WriteString("type await: a function's typed value must end the condition\n")
+		return value{}, exitType
+	}
+	if m.polling && (st.argv[0] == "set" || st.argv[0] == "shopt") {
+		m.ctl = ctlHalt
+		m.err.WriteString("await: session options refused\n")
+		return value{}, exitType
+	}
+	if st.call != nil {
+		return m.pipeFn(st, in)
+	}
 	if rowTools[st.argv[0]] {
 		return m.runRowTool(st, in)
 	}
@@ -2653,7 +2780,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic"} {
+		"retry", "timeout", "await", "args", "check", "checks", "log", "origin", "par", "atomic"} {
 		reservedNames[n] = true
 	}
 }

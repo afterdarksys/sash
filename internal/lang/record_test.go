@@ -114,6 +114,9 @@ func replay(t *testing.T, rec []byte, src string) (Outcome, error) {
 }
 
 var recScripts = []string{
+	"await timeout 30s every 1s { unit status nginx }",
+	"fn identity() { return $input }; ps |> identity |> select pid",
+	"args { count int default 3 }; echo $count",
 	"ps\nps |> where user == root",
 	"cat /var/log/a",
 	"unit status nginx; echo after",

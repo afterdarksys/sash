@@ -5,7 +5,8 @@ The login and emergency shell of the SAH fleet: one Go binary that runs a closed
 ## Command line
 
 ```text
-sash [--session] [--plan] [-c script | file]   run a script; a terminal with no script is the live prompt
+sash [--session] [--plan] [-c script | file] [-- --name value ...]
+                                              run a script; a terminal with no script is the live prompt
 sash --needs [--policy] [-c script | file]      the grant a script asks for; runs nothing
 sash --lint [-c script | file]                  advisory findings; runs nothing
 sash --record out.jsonl --fixture fixture.json [--expires D] [-c script | file]
@@ -15,6 +16,12 @@ sash --skill --list                             list the embedded skill files
 ```
 
 Without `--session` the grant is empty: verbs are denied and filters still run. `--session` reads the grant and the verb socket from fds 3 to 6, as the systemapi agent or `adssh` sets them up.
+
+## Script conveniences
+
+Functions can consume `$input` and return typed values in pipelines. Scripts can declare typed `args` with required values, defaults, choices, and generated help. Caught errors include stable `code`, `source`, and `line` fields. `await timeout 30s every 1s { unit status nginx |> where state == active }` polls readiness while refusing mutations.
+
+See [the language reference](skills/sash/reference/language.md) and [operational features](skills/sash/reference/features.md) for syntax and limits.
 
 ## Build and test
 
