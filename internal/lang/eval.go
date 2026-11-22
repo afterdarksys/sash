@@ -250,7 +250,9 @@ type machine struct {
 	// rows or data (see execPrepared); condOf decides it by being non-empty.
 	condRendered      bool
 	condRenderedReady bool
-	failure           *Failure
+	// condStalled: a value between two stages of the condition held nothing.
+	condStalled bool
+	failure     *Failure
 
 	ctl       ctl
 	retVal    *value
@@ -1262,6 +1264,7 @@ func (m *machine) test(x Expr, pipe Pipeline, strict bool) (bool, int, bool) {
 	}
 	m.typedScalar = false
 	m.condRendered = false
+	m.condStalled = false
 	st, stop, v := m.runPipe(pipe)
 	if stop {
 		return false, st, true
@@ -1269,6 +1272,9 @@ func (m *machine) test(x Expr, pipe Pipeline, strict bool) (bool, int, bool) {
 	ok, err := condOf(v, st, strict)
 	if err == nil && strict && m.condRendered && v.kind == valBytes {
 		ok = ok && m.condRenderedReady
+	}
+	if strict && m.condStalled {
+		ok = false
 	}
 	if err != nil {
 		m.err.WriteString(err.Error() + "\n")
@@ -1317,6 +1323,15 @@ func readyOf(v value) bool {
 		return true
 	}
 	return true
+}
+
+// flowReady is readyOf for a value between two condition stages, where
+// empty text counts as nothing too.
+func flowReady(v value) bool {
+	if v.kind == valBytes {
+		return len(strings.TrimSpace(string(v.b))) > 0
+	}
+	return readyOf(v)
 }
 
 func condOf(v value, st int, strict bool) (bool, error) {
@@ -2178,6 +2193,12 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if atCond {
 			m.condRendered = rendered && cur.kind == valBytes
 			m.condRenderedReady = renderedReady
+			// A value handed to a later stage that held nothing makes the
+			// condition not ready, whatever that stage produces: | ps,
+			// | unit status or |> builtin after an empty where must not pass.
+			if i < len(exp)-1 && !flowReady(v) {
+				m.condStalled = true
+			}
 		}
 		if m.ctl != ctlNone || code == exitType || code == exitDenied || code == exitUnknown {
 			return code, cur

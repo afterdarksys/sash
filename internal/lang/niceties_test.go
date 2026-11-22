@@ -293,7 +293,7 @@ func TestAwaitRecordsOneSleepPerInterval(t *testing.T) {
 // once the service is ready they do.
 func TestAwaitRenderedVerbRowsFailClosed(t *testing.T) {
 	fakeClock(t)
-	for _, tail := range []string{"| cat", "| head -n 1", "| cut -d , -f 1", "| cat | cat", "| rows | cat"} {
+	for _, tail := range []string{"| cat", "| head -n 1", "| cut -d , -f 1", "| cat | cat", "| rows | cat", "| unit status nginx", "|> unit status nginx", "| ps", "|> builtin", "| builtin echo", "| cat | ps"} {
 		src := "await timeout 3s every 1s { unit status nginx |> where state == active " + tail + " }; echo proceeded"
 		if out := Run(src, allow(), &readinessParent{ready: 99}, Options{}); out.Status != exitType || strings.Contains(out.Stdout, "proceeded") {
 			t.Errorf("never ready %q: %+v", tail, out)

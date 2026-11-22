@@ -300,7 +300,7 @@ wasm m = /srv/ops/fmt.wasm sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 `await timeout D every I { pipeline }` polls one condition immediately and then at interval I, until true or its deadline. D is positive and at most 24h; I is positive and at most 1h. The condition passes only on an explicit answer:
 
-- **A verb's rows**, at least one, usually filtered: `unit status nginx |> where state == active`. Rows turned into text on the way (`| cat`, `| head`) still decide by whether there was a row.
+- **A verb's rows**, at least one, usually filtered: `unit status nginx |> where state == active`. Rows turned into text on the way (`| cat`, `| head`) still decide by whether there was a row, and a value between two stages that held nothing (no rows, no text) makes the condition not ready whatever later stages produce, so `... |> where state == active | ps` cannot pass on an empty where. A bare `unit status nginx` always has a row, so it passes at once: filter it.
 - **Bytes straight from a verb or a byte filter**, by exit 0: `journal nginx | egrep started` waits for a match.
 - **A function's returned bool**, and only a bool: `fn up() { let r = (unit status app |> where state == active); return [ len($r) > 0 ] }` then `await ... { up }`. A function that returns rows, a map, a string, a number or `null` is exit 2 `type await: a function in the condition must return a bool`, because a value's shape is not an answer: one row of `{count: 0}` would look ready. A function that prints instead of returning is exit 2 (`printed text`), and a function's value may not be piped into a later stage.
 
