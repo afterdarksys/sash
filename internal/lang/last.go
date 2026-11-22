@@ -101,10 +101,15 @@ func (m *machine) runCapture(s *Let) (int, bool) {
 	default:
 		out = toDatum(v)
 	}
+	// Text that shows a secret as *** is a secret field; the statuses
+	// stay readable.
+	if v.redacted && !isSecret(toDatum(v)) {
+		out = secretVal{out}
+	}
 	o.set("out", out)
 	o.set("err", safeText(strings.TrimSpace(errText)))
 	var d any = o
-	if isSecret(toDatum(v)) || v.redacted {
+	if isSecret(toDatum(v)) {
 		d = secretVal{d: o}
 	}
 	return m.bindLet(s.Name, value{kind: valData, d: d})

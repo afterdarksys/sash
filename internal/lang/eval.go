@@ -1204,6 +1204,14 @@ func (m *machine) forItems(s *For) (items []forItem, isMap bool, status int, sto
 			m.err.WriteString("type for\n")
 			return nil, false, exitType, true
 		}
+		// Items of redacted text stay redacted: a field read prints, but
+		// counts as a secret for every exit (ref, expressions, words).
+		if v.redacted {
+			for i := range items {
+				items[i].a.redacted = true
+				items[i].b.redacted = true
+			}
+		}
 	}
 	return items, isMap, 0, false
 }
@@ -2678,6 +2686,9 @@ func (m *machine) ref(lit string) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("type value")
 	}
+	if v.redacted {
+		m.sawSecret = true
+	}
 	d := toDatum(v)
 	for _, s := range steps {
 		if o, ok := d.(*omap); ok && m.st.nounset {
@@ -2709,6 +2720,12 @@ func (m *machine) evalXRaw(x Expr) (any, error) {
 		v, ok := m.vars[name]
 		if !ok {
 			return nil, false
+		}
+		// Redacted text computes as a secret, so the result is one.
+		if v.redacted {
+			if d := toDatum(v); !isSecret(d) {
+				return secretVal{d}, true
+			}
 		}
 		return toDatum(v), true
 	})

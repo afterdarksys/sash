@@ -26,6 +26,13 @@ func TestRedactedTextNeverWrites(t *testing.T) {
 		"fn ret() { return \"pass=$pw\" }\nret > /var/tmp/ops/app.conf",
 		"fn w() { let x = (echo $pw)\nreturn $x }\nw > /var/tmp/ops/app.conf",
 		"let x = (echo $pw)\nunit restart [ $x ]",
+		"for r in echo $pw | lines { echo $r.line > /var/tmp/ops/app.conf }",
+		"for r in echo \"a=$pw\" | parse \"{k}={v}\" { echo $r.v > /var/tmp/ops/app.conf }",
+		"for r in echo $pw | lines { let z = $r.line\necho $z > /var/tmp/ops/app.conf }",
+		"for r in echo $pw | lines { echo [ $r.line ] > /var/tmp/ops/app.conf }",
+		"for r in echo $pw | lines { let z = [ $r.line ]\necho $z > /var/tmp/ops/app.conf }",
+		"fn f() { for r in echo $pw | lines { return $r.line } }\nf > /var/tmp/ops/app.conf",
+		"par 2 as r for u in echo $pw | lines { echo $u.line > /var/tmp/ops/app.conf }",
 	} {
 		f := &fake{}
 		out := Run(setup+src, allow(), f, Options{})
@@ -49,6 +56,10 @@ func TestRedactedTextNeverWrites(t *testing.T) {
 		if out.Status != 0 || out.Stdout != c.out {
 			t.Errorf("%q: %+v", c.src, out)
 		}
+	}
+	// A capture of redacted text keeps its statuses readable.
+	if out := Run(setup+"let r = capture { render | egrep pass }\necho $r.status $r.out", allow(), &fake{}, Options{}); out.Status != 0 || out.Stdout != "0 ***\n" {
+		t.Errorf("capture status: %+v", out)
 	}
 	// Without a secret the same forms write.
 	f := &fake{}
