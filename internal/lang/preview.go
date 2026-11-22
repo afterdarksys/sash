@@ -92,6 +92,7 @@ func Preview(src string, g grant.Grant, opt Options) LinePreview {
 	// prepare reads names and never writes them, so the session's own
 	// state is safe to show from.
 	m := newMachine(g, denyParent{}, opt.State)
+	m.prompt = opt.Prompt
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}

@@ -79,6 +79,7 @@ func (m *machine) runRecord(argv []string) int {
 		return fail(exitType, "record: "+err.Error())
 	}
 	tape.segMax = recSegMax
+	tape.header.Prompt = m.prompt
 	tape.begin(m.text)
 	tape.at = m.at
 	m.st.rec = &sessionRec{path: full, tape: tape}

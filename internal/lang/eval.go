@@ -103,6 +103,11 @@ type Options struct {
 	// State carries names, functions, and set options from line to line.
 	// nil is a fresh State: a script, or sash -c.
 	State *State
+	// Prompt is a line typed at the interactive prompt (the editor sets
+	// it). Otherwise the source is a script or sash -c, and a file verb
+	// refuses host text as its path (path.go). A State alone does not make
+	// a prompt: cmd/sash passes one to scripts too.
+	Prompt bool
 	// Interrupts, when set, is asked for an interrupt (Ctrl-C) channel
 	// while a par waits for its branches, and stop ends the watch. The
 	// first interrupt cancels the branches; a second stops the wait.
@@ -173,9 +178,14 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m.trace = opt.Trace
 	m.confirm = opt.Confirm
 	m.interrupts = opt.Interrupts
+	m.prompt = opt.Prompt
 	if opt.Tape != nil {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
+		// A session recording replays as the prompt it was typed at.
+		if m.tape.replay && m.tape.header.Prompt {
+			m.prompt = true
+		}
 	}
 	m.provSrc = opt.Source
 	m.nl = provNewlines(expanded)
@@ -230,7 +240,7 @@ type value struct {
 }
 
 type machine struct {
-	// prompt is a line at the prompt (a State carried from line to line);
+	// prompt is a line at the interactive prompt (Options.Prompt);
 	// otherwise a script or sash -c. A script's file verb refuses a string
 	// from host data as its path (path.go).
 	prompt bool
@@ -615,11 +625,10 @@ func (m *machine) doFailed(key string, err error) int {
 }
 
 func newMachine(g grant.Grant, p parent.Parent, st *State) *machine {
-	prompt := st != nil
 	if st == nil {
 		st = NewState()
 	}
-	return &machine{prompt: prompt, g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}, verbs: new(atomic.Int64)}
+	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}, verbs: new(atomic.Int64)}
 }
 
 func (m *machine) prefix() string {
@@ -994,9 +1003,14 @@ func (m *machine) runUse(u *Use) (int, bool) {
 		m.err.WriteString(msg + "\n")
 		return status, true
 	}
-	p, err := m.expand(u.Path)
+	ps, _, pdata, err := m.expandArgvData([]Word{u.Path})
 	if err != nil {
 		return fail(exitType, err.Error())
+	}
+	p := ps[0]
+	// A script's use path is literal text or a path (path.go).
+	if !m.prompt && pdata[0] {
+		return fail(exitType, "type path")
 	}
 	if !m.g.Has("file.read") {
 		return fail(exitDenied, "denied file.read")

@@ -706,19 +706,34 @@ func joinAlts(prefix string, alts []string, suffix string) (string, *ExpandProbl
 func expandGlobs(src string, g grant.Grant, p parent.Parent, opt Options) (string, *ExpandProblem) {
 	// A path literal (= path WORD, or the value of declare -P) is not a
 	// glob: it stays as written, and the parser refuses its "*" (path.go).
+	// The words are tracked within one statement only: a separator between
+	// two words starts over.
 	var prev, prev2 string
-	declP := false
-	return mapWords(src, func(word string) (string, *ExpandProblem) {
+	inDecl, declP := false, false
+	end := 0
+	return mapWordsAt(src, func(at int, word string) (string, *ExpandProblem) {
+		if end <= at && strings.ContainsAny(src[end:at], "\n;|&{}()") {
+			prev, prev2, inDecl, declP = "", "", false, false
+		}
+		end = at + len(word)
 		pathLit := prev2 == "=" && prev == "path" || declP && prev == "="
 		switch {
-		case word == "declare":
-			declP = false
-		case strings.HasPrefix(word, "-") && strings.Contains(word, "P") && prev != "=":
-			declP = true
-		case prev == "=":
-			declP = false
+		case word == "declare" && prev == "":
+			inDecl, declP = true, false
+		case inDecl && strings.HasPrefix(word, "-"):
+			if strings.Contains(word, "P") {
+				declP = true
+			}
+		default:
+			inDecl = false
+			if prev == "=" {
+				declP = false
+			}
 		}
 		prev2, prev = prev, word
+		if strings.ContainsAny(word, ";|&{}()") {
+			prev, prev2, inDecl, declP = "", "", false, false
+		}
 		if pathLit || !strings.Contains(word, "*") {
 			return word, nil
 		}

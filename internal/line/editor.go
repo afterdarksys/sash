@@ -143,6 +143,7 @@ func New(g grant.Grant, p parent.Parent) *Editor {
 	// One State for the session: names, functions, and set options carry
 	// from line to line.
 	e.opt.State = lang.NewState()
+	e.opt.Prompt = true
 	e.runLock = make(chan struct{}, 1)
 	e.run = func(src string) lang.Outcome {
 		e.runLock <- struct{}{}
@@ -989,6 +990,7 @@ func (e *Editor) explain() {
 		return
 	}
 	e.Last = lang.Why(target, e.g, lang.Options{
+		Prompt:  true,
 		State:   e.opt.State,
 		Prefix:  e.opt.Prefix,
 		History: append([]string(nil), e.history...),

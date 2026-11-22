@@ -44,6 +44,7 @@ func Why(src string, g grant.Grant, opt Options) Outcome {
 	// A copy: whyFns registers the line's functions, and why must not
 	// change the session.
 	m := newMachine(g, denyParent{}, opt.State.clone())
+	m.prompt = opt.Prompt
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}

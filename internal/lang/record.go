@@ -76,6 +76,9 @@ type recHeader struct {
 	Segment     int    `json:"segment,omitempty"`
 	Segments    int    `json:"segments,omitempty"`
 	PrevSegment string `json:"prev_segment,omitempty"`
+	// Prompt marks a session recording: its lines were typed at the
+	// prompt, so a replay runs them under the prompt's rules (path.go).
+	Prompt bool `json:"prompt,omitempty"`
 }
 
 // recSegMax is the largest session recording segment: file.write sends

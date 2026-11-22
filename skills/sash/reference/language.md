@@ -146,13 +146,13 @@ At the prompt, names, functions, and options carry from line to line. A script a
 
 ### Paths
 
-A path is its own kind of value, not a string. Make one with `let p = path /etc/nginx`, `declare -P p = /etc/nginx`, or `[ path("/etc/nginx") ]`. It is checked once, when it is made: absolute, clean (no `.`, `..`, `//` or trailing `/`), no control character, at most 4096 bytes. A violation is exit 2 `path: <reason>`. A relative path (`path conf.d` or `path ./conf.d`) joins the current prefix; with none it is exit 2 `prefix_unset`. A glob in a path literal is exit 2 `parse: a glob is not a path`.
+A path is its own kind of value, not a string. Make one with `let p = path /etc/nginx`, `declare -P p = /etc/nginx`, or `[ path("/etc/nginx") ]`. It is checked once, when it is made: absolute, clean (no `.`, `..`, `//` or trailing `/`), valid UTF-8 with no control, format or line-separator character, at most 4096 bytes. A violation is exit 2 `path: <reason>`. A relative path (`path conf.d` or `path ./conf.d`) joins the current prefix; with none it is exit 2 `prefix_unset`. A glob in a path literal is exit 2 `parse: a glob is not a path`.
 
 - Join with `/` inside `[ ]`: `[ $p / "conf.d" / $name ]`. Each right-hand part is one component: not empty, not `.` or `..`, no `/`. Otherwise it is exit 2 `path: join component`, so a join cannot climb out of `$p`.
 - Accessors: `$p.name`, `$p.dir` (a path), `$p.ext`, `$p.parts` (a list).
 - `starts($p, $root)` compares whole components: `/etc/nginx2` does not start with `/etc/nginx`. A path never equals a string; `str($p)` is its text.
 - A path prints as its text, and `to json` writes it as a string.
-- In a script, a file verb's path (`cat`, `ls`, `cd`, `pushd`, `config`, `template`, `template_file`, `<` and `>`) must be literal text or a path. Text that came from the host (`cat $r.name` after `ls`, or a value from `from json`) is exit 2 `type path`: build it with `path(...)` or a join, which checks it. At the prompt, words keep working.
+- In a script (a file or `sash -c`), a file path given to `cat`, `ls`, `cd`, `pushd`, `config`, `template`, `template_file`, `use`, `<` or `>` must be literal text or a path. A word that expands text read from a host response, such as `cat $r.name` after `ls` or a field of `from json` over `cat` output, is exit 2 `type path`: build it with `path(...)` or a join, which checks it. Text the script wrote itself (a literal, an argument) is not from the host. At the interactive prompt, and when a session recording replays, words keep working.
 
 ```sash
 let conf = path /etc/nginx

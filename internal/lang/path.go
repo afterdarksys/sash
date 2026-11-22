@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // pathMax is the longest path, in bytes (Linux PATH_MAX).
@@ -31,13 +33,18 @@ type pathV string
 
 func pathErr(reason string) error { return fmt.Errorf("path: %s", reason) }
 
-// pathTextOK refuses NUL, control characters and over-long text.
+// pathTextOK refuses over-long text, invalid UTF-8, control characters
+// (C0, DEL, C1), format characters such as bidi overrides, and line and
+// paragraph separators, which would make a path print as something else.
 func pathTextOK(s string) error {
 	if len(s) > pathMax {
 		return pathErr("too long")
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] == 0x7f {
+	if !utf8.ValidString(s) {
+		return pathErr("invalid utf-8")
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return pathErr("control character")
 		}
 	}

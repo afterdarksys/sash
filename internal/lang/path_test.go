@@ -3,6 +3,8 @@ package lang
 import (
 	"strings"
 	"testing"
+
+	"github.com/afterdarksys/sash/internal/parent"
 )
 
 func TestMakePath(t *testing.T) {
@@ -125,9 +127,71 @@ func TestScriptFileVerbRefusesHostText(t *testing.T) {
 		t.Errorf("outside the roots: %+v", out)
 	}
 	// At the prompt, words keep working.
-	out = Run("for r in unit status { cat /etc/$r.name }", allow(), &fake{}, Options{State: NewState()})
+	out = Run("for r in unit status { cat /etc/$r.name }", allow(), &fake{}, Options{State: NewState(), Prompt: true})
 	if out.Status != 0 {
 		t.Errorf("prompt: %+v", out)
+	}
+}
+
+// cmd/sash gives every script a State: a State alone is not the prompt,
+// so a script still refuses host text there (review finding 1). Every
+// path-taking form refuses it before any file call.
+func TestScriptWithStateRefusesHostText(t *testing.T) {
+	g := allow()
+	g.FileWrite = append(g.FileWrite, "/etc")
+	for _, src := range []string{
+		"for r in unit status { cat /etc/$r.name }",
+		"for r in unit status { cd /etc/$r.name }",
+		"for r in unit status { pushd /etc/$r.name }",
+		"for r in unit status { ps < /etc/$r.name }",
+		"for r in unit status { echo x > /etc/$r.name }",
+		"for r in unit status { config read /etc/$r.name }",
+		"for r in unit status { use /etc/$r.name }",
+		"for r in unit status { template_file /etc/s.json /etc/$r.name /etc/c }",
+		"fn show(p) { cat $p }\nfor r in unit status { show /etc/$r.name }",
+		"let c = capture { unit status }\ncat /etc/$c.out",
+	} {
+		f := &fake{}
+		out := Run(src, g, f, Options{State: NewState()})
+		if out.Status != exitType || !strings.Contains(out.Stderr, "type path") {
+			t.Errorf("%q: %+v, want exit 2 type path", src, out)
+		}
+		for _, c := range f.calls {
+			if c.Key == "file.read" || c.Key == "file.write" {
+				t.Errorf("%q: called %s %v", src, c.Key, c.Argv)
+			}
+		}
+	}
+}
+
+func TestPathRefusesUnicodeTricks(t *testing.T) {
+	for _, in := range []string{"/etc/a\u0085b", "/etc/a\u202eb", "/etc/a\u200db", "/etc/\xff", "/etc/a\u2028b", "/etc/a\u2029b"} {
+		if _, err := makePath("", in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+		if _, err := joinPath("/etc", strings.TrimPrefix(in, "/etc/")); err == nil {
+			t.Errorf("join %q accepted", in)
+		}
+	}
+	if _, err := makePath("", "/etc/caf\u00e9"); err != nil {
+		t.Errorf("plain unicode refused: %v", err)
+	}
+}
+
+// The glob tracker for path literals never reaches past a statement: a
+// -P word on one line does not stop the next line's glob from expanding
+// (and being checked).
+func TestPathLiteralGlobTrackingIsPerStatement(t *testing.T) {
+	for _, src := range []string{
+		"echo -P x\nlet g = /etc/h*",
+		"echo -P x; let g = /etc/h*",
+		"let q = path\nlet g = /etc/h*",
+		"declare -P p = /etc\nlet g = /etc/h*",
+	} {
+		got, prob := expandGlobs(src, allow(), &listParent{rows: map[string][]parent.Row{"/etc": {{"name": "hosts", "type": "file"}}}}, Options{})
+		if prob != nil || !strings.Contains(got, "/etc/hosts") || strings.Contains(got, "/etc/h*") {
+			t.Errorf("%q: %q %v", src, got, prob)
+		}
 	}
 }
 
@@ -139,5 +203,20 @@ func TestSecretPathNeverLeaves(t *testing.T) {
 	out = Run("declare -s s = /etc/hosts\nlet p = path $s", allow(), &fake{}, Options{})
 	if out.Status != exitType || !strings.Contains(out.Stderr, "secret") {
 		t.Errorf("%+v", out)
+	}
+}
+
+// A session recording is marked as typed at the prompt, so its replay
+// runs under the prompt's rules; a script's recording is not.
+func TestSessionRecordingMarksPrompt(t *testing.T) {
+	for _, prompt := range []bool{true, false} {
+		st := NewState()
+		out := Run("set -o record /var/tmp/ops/r.jsonl", allow(), &fake{}, Options{State: st, Prompt: prompt})
+		if out.Status != 0 || st.rec == nil {
+			t.Fatalf("prompt %v: %+v", prompt, out)
+		}
+		if st.rec.tape.header.Prompt != prompt {
+			t.Errorf("prompt %v: header %v", prompt, st.rec.tape.header.Prompt)
+		}
 	}
 }
