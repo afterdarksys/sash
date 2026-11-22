@@ -220,3 +220,34 @@ func TestSessionRecordingMarksPrompt(t *testing.T) {
 		}
 	}
 }
+
+// A session recording typed at the prompt, which used host text as a
+// path, replays under the prompt's rules (review gap A).
+func TestSessionRecordingReplaysAsPrompt(t *testing.T) {
+	clocks(t)
+	p := &writeParent{}
+	st := NewState()
+	src := "set -o record /tmp/s.jsonl\nfor r in ps { cat /tmp/$r.user }"
+	out := Run(src, recGrant(), p, Options{State: st, Prompt: true})
+	fin := FinishRecording(recGrant(), p, Options{State: st})
+	if out.Status != 0 || fin.Status != 0 || len(p.writes) != 1 {
+		t.Fatalf("%+v %+v %+v", out, fin, p.writes)
+	}
+	got, err := replay(t, p.writes[0].Body, src)
+	if err != nil || got.Status != 0 || got.Stdout != out.Stdout {
+		t.Fatalf("replay: %+v %v, want %q", got, err, out.Stdout)
+	}
+}
+
+// The prompt flag reaches par branches (review gap B). Preview and why
+// call no host, so no value there carries provenance and the flag cannot
+// change what they report.
+func TestPromptReachesPar(t *testing.T) {
+	line := "let rows = (unit status)\npar 2 { cat /etc/$rows[0].name; echo x }"
+	if out := Run(line, allow(), &fake{}, Options{State: NewState(), Prompt: true}); out.Status != 0 {
+		t.Errorf("par at the prompt: %+v", out)
+	}
+	if out := Run(line, allow(), &fake{}, Options{State: NewState()}); out.Status == 0 || !strings.Contains(out.Stderr, "type path") {
+		t.Errorf("par in a script: %+v", out)
+	}
+}
