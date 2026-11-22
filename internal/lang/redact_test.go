@@ -112,3 +112,32 @@ func TestCaptureMapWithSecretOutNeverWrites(t *testing.T) {
 		t.Errorf("status: %+v %v", out, keys(f))
 	}
 }
+
+// str(), join() and comparisons over a map holding a secret yield a
+// secret (re-check of 8a72ae1).
+func TestSerializingSecretMapIsSecret(t *testing.T) {
+	const setup = "declare -s pw = hunter2\nfn render() { echo \"pass=$pw\" }\nlet r = capture { render | egrep p }\nlet r2 = capture { echo $pw }\n"
+	for _, src := range []string{
+		"echo [ str($r) ] > /var/tmp/ops/a",
+		"let j = [ str($r) ]\necho $j > /var/tmp/ops/a",
+		"let j = [ str([$r]) ]\necho $j > /var/tmp/ops/a",
+		"unit restart [ str($r) ]",
+		"let j = [ str($r2) ]\necho $j > /var/tmp/ops/a",
+		"let j = [ join(values($r), \",\") ]\necho $j > /var/tmp/ops/a",
+		"if [ $r == $r2 ] { echo x }",
+	} {
+		f := &fake{}
+		out := Run(setup+src, allow(), f, Options{})
+		if out.Status != exitType {
+			t.Errorf("%q: %+v", src, out)
+		}
+		for _, c := range f.calls {
+			if c.Key == "file.write" || c.Key == "unit.restart" {
+				t.Errorf("%q: called %s %q", src, c.Key, c.Body)
+			}
+		}
+	}
+	if out := Run(setup+"if [ $r.status == 0 ] { echo ok }", allow(), &fake{}, Options{}); out.Status != 0 || out.Stdout != "ok\n" {
+		t.Errorf("status: %+v", out)
+	}
+}

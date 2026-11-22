@@ -133,6 +133,12 @@ func evalCall(x exprCall, lookup func(string) (any, bool), c *evalCtx) (any, err
 			return nil, err
 		}
 		args[i] = d
+		// A list or map holding a secret inside (a capture map) makes the
+		// result a secret: str() or join() would otherwise turn its ***
+		// into plain text that could leave sash.
+		if containsSecret(d) {
+			c.tainted = true
+		}
 	}
 	return f.fn(args, c)
 }

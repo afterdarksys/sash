@@ -822,6 +822,11 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 		if err != nil {
 			return nil, err
 		}
+		// Comparing or combining a value that holds a secret inside
+		// decides or builds from it: the result is a secret.
+		if containsSecret(l) || containsSecret(r) {
+			c.tainted = true
+		}
 		return binary(x.op, l, r, c)
 	}
 	return nil, fmt.Errorf("type expr")

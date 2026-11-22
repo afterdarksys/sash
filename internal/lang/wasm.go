@@ -164,6 +164,9 @@ func evalWasmCall(x exprWasmCall, lookup func(string) (any, bool), c *evalCtx) (
 			return nil, err
 		}
 		args[i] = d
+		if containsSecret(d) {
+			c.tainted = true
+		}
 	}
 	if c.tainted {
 		return nil, errWasmSecret
