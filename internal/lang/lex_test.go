@@ -99,3 +99,27 @@ func TestLexStarIsLiteral(t *testing.T) {
 		t.Fatalf("star %+v", toks[1])
 	}
 }
+
+// Bash descriptor redirections are parse errors, never a silent misparse
+// (before v7, `echo a 2> x` wrote "a 2" to x).
+func TestLexRefusesBashRedirections(t *testing.T) {
+	for src, want := range map[string]string{
+		"echo a 2> /tmp/x": "2> is not sash redirection",
+		"echo a 2>&1":      "2>&1 is not sash redirection",
+		"echo a 1>/tmp/x":  "1> is not sash redirection",
+		"echo a &> /tmp/x": "&> is not sash redirection",
+		"echo a >& /tmp/x": ">& is not sash redirection",
+		"echo a >> /tmp/x": "use template_file or atomic for appends",
+		"cat 0< /tmp/x":    "0< is not sash redirection",
+		"echo a <& 3":      "<& is not sash redirection",
+	} {
+		if _, err := lex(src); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", src, err, want)
+		}
+	}
+	for _, src := range []string{"echo 2 > /tmp/x", "echo a > /tmp/x", "echo [ 2 > 1 ]", "x >= 2", "cat <<< hi", "ps |> where pid > 1"} {
+		if _, err := lex(src); err != nil {
+			t.Errorf("%q: %v", src, err)
+		}
+	}
+}

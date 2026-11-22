@@ -74,7 +74,7 @@ A pipeline fails when any stage fails. `if` on a row pipeline is true when it yi
 | `> path` | write the rendered text through `file.write`; last stage only; stdout stays empty |
 | `<<< word` | here-string: the word and a newline as stdin, not a file read |
 
-There is no `>>` and no `&`. There is no `2>` either: `2>` is the word `2` followed by `>`, so `echo a 2> x` writes `a 2` to `x`. `>` of rows writes the text table; `>` after `json` writes the JSON. Every explicit stage and redirect path of a pipeline is checked against the grant before that pipeline starts. A function body is checked as its statements are reached; earlier pipeline stages may already have run when its body is denied. For explicit stages and redirects: a path outside the roots is exit 126 `denied file.read` or `denied file.write`.
+There is no `>>`, no `&`, and no file descriptor redirection: `2>`, `2>&1`, `1>`, `&>`, `>&`, `<&` and `N<` are exit 2 `parse: <form> is not sash redirection: use capture { } for errors`, and `>>` says `use template_file or atomic for appends`. A word and `>` need a space between them to be a word and a redirect: `echo 2 > x` writes `2`. `>` of rows writes the text table; `>` after `json` writes the JSON. Every explicit stage and redirect path of a pipeline is checked against the grant before that pipeline starts. A function body is checked as its statements are reached; earlier pipeline stages may already have run when its body is denied. For explicit stages and redirects: a path outside the roots is exit 126 `denied file.read` or `denied file.write`.
 
 ```sash
 unit status nginx |> json > /var/tmp/ops/nginx.json
@@ -82,8 +82,7 @@ egrep error <<< "one error line"
 ```
 
 ```sash
-# expect: host 0
-# call: file.write argv=> /srv/app/x path=/srv/app/x mode= body="a 2\n"
+# expect: parse 2> is not sash redirection: use capture { } for errors
 echo a 2> /srv/app/x
 ```
 

@@ -70,6 +70,34 @@ type comment struct {
 
 func lex(src string) ([]token, error) { return lexComments(src, nil) }
 
+// errBashRedir refuses a bash descriptor redirection. sash has no file
+// descriptors: before v7, `echo a 2> x` silently wrote "a 2" to x.
+func errBashRedir(form string) error {
+	return fmt.Errorf("parse: %s is not sash redirection: use capture { } for errors", form)
+}
+
+// fdBefore reports a word of only digits ending right at i (no space), as
+// in 2> or 1<: the digits, and true.
+func fdBefore(out []token, i int) (string, bool) {
+	if len(out) == 0 {
+		return "", false
+	}
+	t := out[len(out)-1]
+	if t.kind != kWord || t.end != i || len(t.word.Parts) != 1 || t.word.Parts[0].X != nil {
+		return "", false
+	}
+	lit := t.word.Parts[0].Lit
+	if lit == "" || t.word.Parts[0].Exp {
+		return "", false
+	}
+	for _, r := range lit {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return lit, true
+}
+
 // lexComments is lex, and appends each dropped comment to comments when
 // it is not nil. The tokens are the same either way.
 func lexComments(src string, comments *[]comment) ([]token, error) {
@@ -154,12 +182,31 @@ func lexComments(src string, comments *[]comment) ([]token, error) {
 				i += 2
 				continue
 			}
+			if i+1 < len(src) && src[i+1] == '>' {
+				return nil, errBashRedir("&>")
+			}
 			return nil, fmt.Errorf("lex: & is not in this series")
 		case '>':
 			if i+1 < len(src) && src[i+1] == '=' {
 				emit(&out, kWord, Word{Parts: []Part{{Lit: ">="}}}, i, 2)
 				i += 2
 				continue
+			}
+			if n, ok := fdBefore(out, i); ok {
+				form := n + ">"
+				if i+1 < len(src) && src[i+1] == '&' {
+					form += "&"
+					for j := i + 2; j < len(src) && src[j] >= '0' && src[j] <= '9'; j++ {
+						form += string(src[j])
+					}
+				}
+				return nil, errBashRedir(form)
+			}
+			if i+1 < len(src) && src[i+1] == '>' {
+				return nil, fmt.Errorf("parse: >> is not sash redirection: use template_file or atomic for appends")
+			}
+			if i+1 < len(src) && src[i+1] == '&' {
+				return nil, errBashRedir(">&")
 			}
 			emit(&out, kGT, Word{}, i, 1)
 			i++
@@ -173,6 +220,12 @@ func lexComments(src string, comments *[]comment) ([]token, error) {
 				emit(&out, kWord, Word{Parts: []Part{{Lit: "<="}}}, i, 2)
 				i += 2
 				continue
+			}
+			if i+1 < len(src) && src[i+1] == '&' {
+				return nil, errBashRedir("<&")
+			}
+			if n, ok := fdBefore(out, i); ok {
+				return nil, errBashRedir(n + "<")
 			}
 			emit(&out, kLT, Word{}, i, 1)
 			i++
