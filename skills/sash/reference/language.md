@@ -295,6 +295,21 @@ echo before
 sysctl get fail.three
 ```
 
+## `defer` and `finally`
+
+There is no `trap`. `defer { block }` runs when the enclosing function, or the script, ends: on success, `return`, `exit`, an error, a `set -e` stop or a cap, last deferred first. A hangup stops the session at once, defers included. A defer that fails is reported, the others still run, and the first failure keeps its status. A defer body is checked, planned and denied like any statement, and cannot `break`, `continue` or `return` (exit 2). At most 64 pending defers per function (exit 2 `defer max`).
+
+`try { } catch e { } finally { }` runs `finally` after the body and any catch, on every way out, a `return` or `break` included. A `finally` that fails replaces the status.
+
+```sash
+# stdout: body
+# stdout: second
+# stdout: first
+defer { echo first }
+defer { echo second }
+echo body
+```
+
 ## `$last` and `capture`
 
 sash has no file descriptors: a verb answers with output, an exit status, and an error message. After every statement `$last` is a read-only map: `status`, `stages` (each stage's status, like bash `${PIPESTATUS[@]}`), `keys` (each stage's verb), `failed_stage` (index of the first failing stage, or `null`), `code` and `message` (as `$e`). `let last = ...` is exit 2 `readonly last`.

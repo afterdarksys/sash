@@ -124,6 +124,11 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 		case *Try:
 			whyFns(&s.Body, fns)
 			whyFns(s.Catch, fns)
+			if s.Finally != nil {
+				whyFns(s.Finally, fns)
+			}
+		case *Defer:
+			whyFns(&s.Body, fns)
 		case *With:
 			whyFns(&s.Body, fns)
 		case *Retry:

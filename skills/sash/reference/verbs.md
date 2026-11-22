@@ -143,6 +143,8 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `shopt` | builtin | - | no | `shopt -s name`, `shopt -u name`: the same option table by long name. |
 | `builtin` | builtin | - | no | Lists this table and the expression functions as rows; `builtin <name>` filters it. |
 | `capture` | keyword | - | no | `let x = capture { pipeline }`: the output, error text and statuses as a map; refusals are not captured. |
+| `defer` | keyword | - | no | `defer { block }`: runs when the enclosing function or script ends, last first, on every way out but a hangup. |
+| `finally` | keyword | - | no | `try { } catch e { } finally { }`: runs after the body and any catch, on every way out; a failing finally replaces the status. |
 | `retry` | keyword | - | no | `retry N [delay D] { }`: run again on failure. N 1 to 100, D up to 1h. |
 | `args` | keyword | - | no | Static script argument schema: required values, typed defaults, choices, and help. |
 | `await` | keyword | - | no | `await timeout D every D { pipeline }`: poll a read-only condition, bounded by deadline and caps. |

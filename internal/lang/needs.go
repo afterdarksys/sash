@@ -392,7 +392,13 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 		if n.progMoves(&s.Body) {
 			in = b.plus("?")
 		}
-		return body.union(n.prog(s.Catch, in))
+		out := body.union(n.prog(s.Catch, in))
+		if s.Finally != nil {
+			out = out.union(n.prog(s.Finally, in))
+		}
+		return out
+	case *Defer:
+		return b.union(n.prog(&s.Body, b.plus("?")))
 	case *With:
 		inner := b
 		if s.Prefix != nil {
@@ -695,6 +701,11 @@ func needsEachStmt(p *Program, fn func(Stmt)) {
 		case *Try:
 			needsEachStmt(&s.Body, fn)
 			needsEachStmt(s.Catch, fn)
+			if s.Finally != nil {
+				needsEachStmt(s.Finally, fn)
+			}
+		case *Defer:
+			needsEachStmt(&s.Body, fn)
 		case *With:
 			needsEachStmt(&s.Body, fn)
 		case *Retry:

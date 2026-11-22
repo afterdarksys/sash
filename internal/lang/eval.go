@@ -185,7 +185,9 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if opt.Prefix != "" {
 		m.stack = []string{path.Clean(opt.Prefix)}
 	}
-	status, _ := m.runProg(prog)
+	m.defers = [][]*Program{nil}
+	status, stop := m.runProg(prog)
+	status = m.runDefers(status, stop)
 	if m.ctl == ctlHalt {
 		status = exitType
 		if m.haltStatus != 0 {
@@ -238,6 +240,9 @@ type machine struct {
 	trace   bool
 	depth   int
 	polling bool
+	// defers: one frame per running function, and one for the script; each
+	// holds the bodies of its defer statements in the order they ran.
+	defers [][]*Program
 	// stages and stageKeys: the last pipeline's per-stage statuses and
 	// verb keys, for $last and capture.
 	stages    []int
@@ -712,6 +717,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runJump(s)
 	case *Try:
 		return m.runTry(s)
+	case *Defer:
+		return m.pushDefer(&s.Body)
 	case *Declare:
 		return m.runDeclare(s)
 	case *Use:
@@ -1482,14 +1489,14 @@ func (m *machine) runTry(t *Try) (int, bool) {
 	mark := m.err.Len()
 	st, stop := m.runProg(&t.Body)
 	if !stop || m.ctl != ctlNone {
-		return st, stop
+		return m.runFinally(t, st, stop)
 	}
 	all := m.err.String()
 	msg := strings.TrimSpace(all[mark:])
 	m.err.Reset()
 	m.err.WriteString(all[:mark])
 	if t.Catch == nil {
-		return st, false
+		return m.runFinally(t, st, false)
 	}
 	var saved []savedVar
 	if !m.bindable(t.Name) {
@@ -1515,7 +1522,7 @@ func (m *machine) runTry(t *Try) (int, bool) {
 	if saved != nil {
 		m.restoreVars(saved)
 	}
-	return st, stop
+	return m.runFinally(t, st, stop)
 }
 
 func (m *machine) runChain(c *Chain) (int, bool) {
@@ -2277,7 +2284,11 @@ func (m *machine) callFn(st expStage) (int, bool) {
 		m.provSrc, m.nl = fs.src, fs.nl
 		defer func() { m.provSrc, m.nl, m.at = src, nl, at }()
 	}
+	m.defers = append(m.defers, nil)
 	status, stop := m.runProg(&fn.Body)
+	ret := m.retVal
+	status = m.runDefers(status, stop)
+	m.retVal = ret
 	m.loopDepth = loops
 	if stop && m.ctl == ctlReturn {
 		m.ctl = ctlNone

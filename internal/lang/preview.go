@@ -244,6 +244,11 @@ func collectUses(prog *Program, out *[]*Use) {
 		case *Try:
 			collectUses(&s.Body, out)
 			collectUses(s.Catch, out)
+			if s.Finally != nil {
+				collectUses(s.Finally, out)
+			}
+		case *Defer:
+			collectUses(&s.Body, out)
 		case *With:
 			collectUses(&s.Body, out)
 		case *Retry:

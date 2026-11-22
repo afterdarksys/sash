@@ -150,7 +150,12 @@ func lintBodies(s Stmt) []*Program {
 	case *While:
 		return []*Program{&s.Body}
 	case *Try:
+		if s.Finally != nil {
+			return []*Program{&s.Body, s.Catch, s.Finally}
+		}
 		return []*Program{&s.Body, s.Catch}
+	case *Defer:
+		return []*Program{&s.Body}
 	case *With:
 		return []*Program{&s.Body}
 	case *Retry:
@@ -1206,6 +1211,9 @@ func (l *linter) mutates(p *Program, depth int) string {
 		switch s := s.(type) {
 		case *Try:
 			bodies = []*Program{s.Catch}
+			if s.Finally != nil {
+				bodies = append(bodies, s.Finally)
+			}
 		case *Fn:
 		default:
 			bodies = lintBodies(s)

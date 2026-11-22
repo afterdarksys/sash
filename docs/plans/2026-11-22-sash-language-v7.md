@@ -35,12 +35,12 @@ A path is a value kind of its own, not a string.
 
 ## 2. `defer` and `finally` (in place of `trap`)
 
-- **`defer { block }`** runs when the enclosing function or script ends, in last-in, first-out order. It runs on a normal end, `return`, `exit`, an error, a stop under `set -e`, and a hangup. It does not run when the grant check refuses the script before it starts.
-  - A defer's own failure is reported (`defer: <message>`) and the remaining defers still run. The script's exit status stays that of the first failure.
+- **`defer { block }`** runs when the enclosing function or script ends, in last-in, first-out order. It runs on a normal end, `return`, `exit`, an error, a stop under `set -e`, and a cap. A hangup stops the session at its next statement, defer bodies included (as built: a hung-up session must not keep running). It does not run when the grant check refuses the script before it starts.
+  - A defer's own failure is reported (its own error line) and the remaining defers still run. The script's exit status stays that of the first failure.
   - The defer body is checked like any statement: a mutation in it is planned under plan mode and denied without a grant.
   - At most 64 pending defers per function. More is exit 2 `defer max`.
-- **`try { } catch e { } finally { }`**: `finally` runs after `try` and any `catch`, on every exit path, `return` and `break` included. A failure inside `finally` replaces the pending status, as Go and Python do, and `--lint` flags it (`finally-masks`).
-- **No `trap` and no signal handlers.** A hangup runs the defers and then exits 129. For a service, the init calls `fn stop()`.
+- **`try { } catch e { } finally { }`**: `finally` runs after `try` and any `catch`, on every exit path, `return` and `break` included. A failure inside `finally` replaces the pending status, as Go and Python do. (A `finally-masks` lint rule is left for later.)
+- **No `trap` and no signal handlers.** A hangup exits 129 without running defers. For a service, the init calls `fn stop()`.
 
 ## 3. `$last` and `capture` (stderr and per-stage status)
 

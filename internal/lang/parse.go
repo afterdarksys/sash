@@ -84,9 +84,19 @@ type Try struct {
 	Body  Program
 	Name  string
 	Catch *Program
+	// Finally runs after the body and any catch, on every way out (v7).
+	Finally *Program
 }
 
 func (*Try) stmt() {}
+
+// Defer runs Body when the enclosing function or script ends, last in first
+// out, whichever way it ends (v7).
+type Defer struct {
+	Body Program
+}
+
+func (*Defer) stmt() {}
 
 // Declare sets flags on a name and may bind it: declare -r name = value.
 // With no name it lists; -p name shows one value.
@@ -285,6 +295,8 @@ func (p *parser) stmt() (Stmt, error) {
 			return p.jump()
 		case "try":
 			return p.try()
+		case "defer":
+			return p.deferStmt()
 		case "declare":
 			return p.declare()
 		case "with":
@@ -437,7 +449,15 @@ func jumpLeaves(s Stmt, inLoop bool, what string) string {
 		if msg := jumpsIn(&s.Body, inLoop, what); msg != "" {
 			return msg
 		}
-		return jumpsIn(s.Catch, inLoop, what)
+		if msg := jumpsIn(s.Catch, inLoop, what); msg != "" {
+			return msg
+		}
+		if s.Finally != nil {
+			return jumpsIn(s.Finally, inLoop, what)
+		}
+		return ""
+	case *Defer:
+		return jumpsIn(&s.Body, false, what)
 	case *With:
 		return jumpsIn(&s.Body, inLoop, what)
 	case *Retry:
@@ -506,7 +526,15 @@ func parBranchCheck(s Stmt, inLoop bool) string {
 		if msg := parBodyCheck(&s.Body, inLoop); msg != "" {
 			return msg
 		}
-		return parBodyCheck(s.Catch, inLoop)
+		if msg := parBodyCheck(s.Catch, inLoop); msg != "" {
+			return msg
+		}
+		if s.Finally != nil {
+			return parBodyCheck(s.Finally, inLoop)
+		}
+		return ""
+	case *Defer:
+		return parBodyCheck(&s.Body, inLoop)
 	case *With:
 		return parBodyCheck(&s.Body, inLoop)
 	case *Retry:
@@ -842,7 +870,31 @@ func (p *parser) try() (Stmt, error) {
 	if t.Catch, err = p.block(); err != nil {
 		return nil, err
 	}
+	// finally may follow on the next line.
+	save := p.i
+	p.skipSep()
+	if p.peek().kind == kWord && plain(p.peek().word) == "finally" {
+		p.i++
+		if t.Finally, err = p.block(); err != nil {
+			return nil, err
+		}
+	} else {
+		p.i = save
+	}
 	return t, nil
+}
+
+func (p *parser) deferStmt() (Stmt, error) {
+	p.i++
+	body, err := p.block()
+	if err != nil {
+		return nil, err
+	}
+	// A jump out of a defer has nowhere to go: the function has ended.
+	if msg := jumpsIn(body, false, "defer"); msg != "" {
+		return nil, fmt.Errorf("%s", msg)
+	}
+	return &Defer{Body: *body}, nil
 }
 
 func (p *parser) fn() (Stmt, error) {
