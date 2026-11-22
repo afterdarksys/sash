@@ -20,6 +20,8 @@ type dirsParent struct {
 	marks map[string]string
 	calls []string
 	stats []string
+	// statExit answers file.read stat (a missing directory is nonzero).
+	statExit int
 }
 
 func (p *dirsParent) Do(v parent.Verb) (parent.Result, error) {
@@ -60,6 +62,7 @@ func (p *dirsParent) Do(v parent.Verb) (parent.Result, error) {
 	}
 	if v.Key == "file.read" && len(v.Argv) > 0 && v.Argv[0] == "stat" {
 		p.stats = append(p.stats, v.Path)
+		return parent.Result{Kind: parent.KindBytes, Exit: p.statExit}, nil
 	}
 	return parent.Result{Kind: parent.KindBytes}, nil
 }
@@ -123,6 +126,12 @@ func TestCdRecordsVisitsAndPrivateRecordsNothing(t *testing.T) {
 	if p.dirs["/srv"][0] != 1 || p.dirs["/etc/nope_denied_by_nothing"][0] != 1 {
 		t.Fatalf("dirs %v", p.dirs)
 	}
+	// A cd that fails records nothing.
+	p.statExit = 1
+	e.Feed([]byte("cd /etc/missing\n"))
+	if _, ok := p.dirs["/etc/missing"]; ok {
+		t.Fatalf("failed cd recorded: %v", p.dirs)
+	}
 	g := dirsGrant()
 	g.AllowPrivate = true
 	pp := newDirsParent()
@@ -168,6 +177,25 @@ func TestJumpBookmarks(t *testing.T) {
 	if !strings.Contains(e.note, "path: not clean") || e.opt.Prefix != "/etc" {
 		t.Fatalf("not clean: %q %q", e.note, e.opt.Prefix)
 	}
+	// jump list shows only bookmarks inside today's roots.
+	e.Feed([]byte("jump list\n"))
+	if strings.Contains(e.note, "/root") {
+		t.Fatalf("list shows outside the roots: %q", e.note)
+	}
+	// A full store refuses a save; the store stays in use.
+	full := newDirsParent()
+	for i := 0; i < marksMax; i++ {
+		full.marks["m"+strconv.Itoa(i)] = "/srv"
+	}
+	ef := New(dirsGrant(), full)
+	ef.Feed([]byte("cd /etc\njump save extra\n"))
+	if ef.note != "jump: too many bookmarks" {
+		t.Fatalf("full: %q", ef.note)
+	}
+	ef.Feed([]byte("jump m3\n"))
+	if ef.opt.Prefix != "/srv" {
+		t.Fatalf("store dropped after a refusal: %q %q", ef.opt.Prefix, ef.note)
+	}
 	// No prefix: nothing to save.
 	e2 := New(dirsGrant(), newDirsParent())
 	e2.Feed([]byte("jump save x\n"))
@@ -183,12 +211,8 @@ func TestDirsFallBackWithoutTheStore(t *testing.T) {
 	p := newDirsParent()
 	p.old = true
 	e := New(dirsGrant(), p)
-	e.Feed([]byte("cd /srv/app\n"))
-	if e.note != "z: history store unavailable, this session only" {
-		t.Fatalf("notice %q", e.note)
-	}
-	e.Feed([]byte("cd /etc\nz app\n"))
-	if e.opt.Prefix != "/srv/app" {
+	e.Feed([]byte("cd /srv/app\ncd /etc\nz app\n"))
+	if e.opt.Prefix != "/srv/app" || e.note != "z: history store unavailable, this session only" {
 		t.Fatalf("prefix %q note %q", e.opt.Prefix, e.note)
 	}
 	e.Feed([]byte("jump save a\ncd /etc\njump a\n"))

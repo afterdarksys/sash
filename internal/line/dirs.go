@@ -65,7 +65,9 @@ func markNameOK(n string) bool {
 	return true
 }
 
-// storeNotice marks the agent's store missing, noting it once.
+// storeNotice marks the agent's store missing, noting it once. Only a
+// refused read calls it: an old agent refuses every form, while a store
+// that refuses one write (a full bookmark set) is still there.
 func (e *Editor) storeNotice() {
 	d := e.dirsState()
 	d.noStore = true
@@ -88,9 +90,9 @@ func (e *Editor) recordVisit(dir string) {
 	if d.noStore {
 		return
 	}
-	if _, err := e.parent.Do(parent.Verb{Key: "history", Argv: []string{"visit"}, Body: []byte(dir)}); err != nil {
-		e.storeNotice()
-	}
+	// A refused visit is not a missing store: only a refused read is
+	// (candidates, loadMarks).
+	_, _ = e.parent.Do(parent.Verb{Key: "history", Argv: []string{"visit"}, Body: []byte(dir)})
 }
 
 // candidates are the stored and session visits, merged by directory.
@@ -217,9 +219,11 @@ func (e *Editor) zCommand(line string) {
 		e.note = strings.TrimSuffix(b.String(), "\n")
 		return
 	}
-	for _, r := range e.ranked(words[1:]) {
+	cands := e.ranked(words[1:])
+	notice := e.note // the store notice, if this read raised it
+	for _, r := range cands {
 		if e.moveTo(r.dir) {
-			e.note = ""
+			e.note = notice
 			return
 		}
 	}
@@ -260,8 +264,11 @@ func (e *Editor) jumpCommand(line string) {
 	case len(words) == 2 && words[1] == "list":
 		marks := e.loadMarks()
 		names := make([]string, 0, len(marks))
-		for n := range marks {
-			names = append(names, n)
+		for n, dir := range marks {
+			// A bookmark outside today's roots is never shown.
+			if e.g.Has("file.read") && e.g.AllowsRead(dir) {
+				names = append(names, n)
+			}
 		}
 		sort.Strings(names)
 		var b strings.Builder
@@ -282,13 +289,15 @@ func (e *Editor) jumpCommand(line string) {
 			e.note = "prefix_unset"
 			return
 		}
-		if _, have := d.marks[name]; !have && len(d.marks) >= marksMax {
+		marks := e.loadMarks()
+		if _, have := marks[name]; !have && len(marks) >= marksMax {
 			e.note = "jump: too many bookmarks"
 			return
 		}
 		if !e.g.AllowPrivate && !d.noStore {
 			if _, err := e.parent.Do(parent.Verb{Key: "history", Argv: []string{"mark"}, Body: []byte(name + "\t" + e.opt.Prefix)}); err != nil {
-				e.storeNotice()
+				e.note = "jump: not saved"
+				return
 			}
 		}
 		d.marks[name] = e.opt.Prefix
@@ -303,7 +312,8 @@ func (e *Editor) jumpCommand(line string) {
 		}
 		if !e.g.AllowPrivate && !d.noStore {
 			if _, err := e.parent.Do(parent.Verb{Key: "history", Argv: []string{"unmark"}, Body: []byte(name)}); err != nil {
-				e.storeNotice()
+				e.note = "jump: not removed"
+				return
 			}
 		}
 		delete(d.marks, name)
@@ -320,13 +330,14 @@ func (e *Editor) jumpCommand(line string) {
 		if !have {
 			dir, have = d.marks[name]
 		}
+		notice := e.note
 		if !have {
 			e.note = "jump: no bookmark " + name
 			e.Last = lang.Outcome{Status: 1, Prefix: e.opt.Prefix}
 			return
 		}
 		if e.moveTo(dir) {
-			e.note = ""
+			e.note = notice
 		}
 	default:
 		e.note = jumpUsage
