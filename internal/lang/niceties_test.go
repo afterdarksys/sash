@@ -212,46 +212,40 @@ func TestArgumentsValidatedBeforeGlobs(t *testing.T) {
 // typed value await cannot read is a type error, never "ready".
 func TestAwaitTypedReturnsFailClosed(t *testing.T) {
 	fakeClock(t)
+	const mustBool = "must return a bool"
 	for _, tc := range []struct {
 		src    string
 		status int
 		stderr string
 	}{
+		// A function answers readiness with a bool; false never passes.
 		{`fn ready() { return [ false ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "timeout"},
+		{`fn ready() { return [ true ] }; await timeout 3s every 1s { ready }; echo proceeded`, 0, ""},
+		{`fn ready() { let r = [ [{"ok": false}] ]; return [ len($r) > 5 ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "timeout"},
+		// Anything but a bool is refused, whatever follows it.
+		{`fn ready() { return [ "x" ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ 3 ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ null ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ [] ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ [false] ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true }; echo proceeded`, exitType, mustBool},
+		{`fn ready() { return [ [{"a": 1}] ] }; await timeout 3s every 1s { ready |> where a == 1 }; echo proceeded`, exitType, mustBool},
 		{`fn ready() { return [ false ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, "typed value must end the condition"},
-		{`fn ready() { return [ "x" ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "neither a bool nor rows"},
-		{`fn ready() { return [ 3 ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "neither a bool nor rows"},
-		{`fn ready() { return [ [] ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "timeout"},
-		{`fn ready() { return [ false ] }; fn w() { echo $input }; await timeout 3s every 1s { ready | w }; echo proceeded`, exitType, "typed value must end the condition"},
-		{`fn ready() { return [ [false] ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, "typed value must end the condition"},
-		{`fn ready() { return [ [false, false] ] }; await timeout 3s every 1s { ready | egrep . }; echo proceeded`, exitType, "typed value must end the condition"},
-		{`fn ready() { return [ [false] ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "neither a bool nor rows"},
-		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "returned one map"},
-		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, "typed value must end the condition"},
-		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true }; echo proceeded`, exitType, "timeout"},
-		// A wrapper prints the inner false; rendering stages turn no rows into text.
+		// Wrappers that print, and computed rows, cannot stand in for a bool.
 		{`fn ready() { return [ false ] }; fn g() { ready }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
 		{`fn ready() { return [ false ] }; fn g() { try { ready } catch { } }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
-		{`fn ready() { return [ false ] }; fn g() { retry 2 { ready } }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
-		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true |> count }; echo proceeded`, exitType, "count turns the condition"},
-		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true |> to json }; echo proceeded`, exitType, "to turns the condition"},
-		{`fn ready() { return [ [] ] }; await timeout 3s every 1s { ready |> count }; echo proceeded`, exitType, "count turns the condition"},
-		{`fn ready() { return [ [{"ok": false}] ] }; fn g() { ready |> where ok == true }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
-		{`let flag = false; await timeout 3s every 1s { echo $flag }; echo proceeded`, exitType, "echo turns the condition"},
-		// Rows or data rendered to text by | decide by being non-empty.
-		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | cat }; echo proceeded`, exitType, "timeout"},
-		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | head -n 1 }; echo proceeded`, exitType, "timeout"},
-		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f | cat }; echo proceeded`, exitType, "timeout"},
-		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | cut -d , -f 1 }; echo proceeded`, exitType, "timeout"},
-		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | rows | cat }; echo proceeded`, exitType, "timeout"},
-		{`await timeout 3s every 1s { log info notready }; echo proceeded`, exitType, "log turns the condition"},
-		{`fn f() { return [ [{"ok": true}] ] }; await timeout 3s every 1s { f |> where ok == true | cat }; echo proceeded`, 0, ""},
-		// A wrapper that returns its value is fine.
+		{`fn ready() { return [ false ] }; fn w() { echo $input }; await timeout 3s every 1s { ready | w }; echo proceeded`, exitType, "typed value must end the condition"},
+		{`fn f() { let x = (unit status nginx |> where state == active |> count); return $x }; await timeout 3s every 1s { f }; echo proceeded`, exitType, mustBool},
+		{`fn f() { let x = (unit status nginx |> where state == active | to json | lines); return $x }; await timeout 3s every 1s { f }; echo proceeded`, exitType, mustBool},
+		{`fn f() { par 2 as r { unit status nginx }; return $r }; await timeout 3s every 1s { f }; echo proceeded`, exitType, mustBool},
 		{`fn ready() { return [ true ] }; fn g() { let r = (ready); return $r }; await timeout 3s every 1s { g }; echo proceeded`, 0, ""},
-		{`fn ready() { return [ true ] }; await timeout 3s every 1s { ready }; echo proceeded`, 0, ""},
-		{`fn ready() { return [ [{"a": 1}] ] }; await timeout 3s every 1s { ready |> where a == 1 }; echo proceeded`, 0, ""},
+		// Renderers at the condition's own depth.
+		{`let flag = false; await timeout 3s every 1s { echo $flag }; echo proceeded`, exitType, "echo turns the condition"},
+		{`await timeout 3s every 1s { log info notready }; echo proceeded`, exitType, "log turns the condition"},
+		{`await timeout 3s every 1s { unit status nginx |> where state == active |> count }; echo proceeded`, exitType, "count turns the condition"},
 	} {
-		out := Run(tc.src, allow(), &fake{}, Options{})
+		out := Run(tc.src, allow(), &readinessParent{ready: 99}, Options{})
 		if out.Status != tc.status || strings.Contains(out.Stdout, "proceeded") != (tc.status == 0) || !strings.Contains(out.Stderr, tc.stderr) {
 			t.Errorf("%s: %+v", tc.src, out)
 		}

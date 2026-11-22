@@ -2099,6 +2099,11 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if m.retVal != nil {
 			v := *m.retVal
 			m.retVal = nil
+			if atCond && st == 0 && !isBoolValue(v) {
+				m.ctl = ctlHalt
+				m.err.WriteString(errAwaitFnBool + "\n")
+				return exitType, value{}
+			}
 			return st, v
 		}
 		// The await condition is this call: a function that returns nothing

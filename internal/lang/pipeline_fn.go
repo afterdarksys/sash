@@ -16,6 +16,7 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 		m.err.WriteString("a secret cannot leave sash\n")
 		return value{}, exitType
 	}
+	atCond := m.polling && m.depth == m.pollDepth
 	saved := m.saveVars([]string{"input"})
 	m.vars["input"] = in
 	defer m.restoreVars(saved)
@@ -42,6 +43,11 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 			m.err.WriteString("a secret cannot leave sash\n")
 			return value{}, exitType
 		}
+		if atCond && code == 0 && !isBoolValue(v) {
+			m.ctl = ctlHalt
+			m.err.WriteString(errAwaitFnBool + "\n")
+			return value{}, exitType
+		}
 		m.typedScalar = typedScalar(v)
 		return v, code
 	}
@@ -65,4 +71,17 @@ func typedScalar(v value) bool {
 		return true
 	}
 	return false
+}
+
+// errAwaitFnBool: a function in an await condition answers readiness
+// explicitly. Rows or any other value would be judged by their shape (one
+// row of {count: 0} looks ready), so only a bool is accepted.
+const errAwaitFnBool = "type await: a function in the condition must return a bool: return [ <test> ], for example return [ len($rows) > 0 ]"
+
+func isBoolValue(v value) bool {
+	if v.kind != valData {
+		return false
+	}
+	_, ok := v.d.(bool)
+	return ok
 }
