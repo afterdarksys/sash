@@ -12,7 +12,7 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 			return value{}, exitType
 		}
 	}
-	if isSecret(toDatum(in)) {
+	if containsSecret(toDatum(in)) {
 		m.err.WriteString("a secret cannot leave sash\n")
 		return value{}, exitType
 	}
@@ -43,7 +43,7 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 		}
 		// Match the existing restriction on secret function arguments: a return
 		// must not smuggle a secret into a later stage or a redirect.
-		if isSecret(toDatum(v)) {
+		if containsSecret(toDatum(v)) {
 			m.err.WriteString("a secret cannot leave sash\n")
 			return value{}, exitType
 		}

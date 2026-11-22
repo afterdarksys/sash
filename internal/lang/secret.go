@@ -89,6 +89,36 @@ func isSecret(d any) bool {
 	return ok
 }
 
+// containsSecret is isSecret anywhere inside a list or map: a capture's
+// map holds a secret out while its statuses stay readable, and the whole
+// map must still not leave sash.
+func containsSecret(d any) bool {
+	return containsSecretAt(d, 0)
+}
+
+func containsSecretAt(d any, depth int) bool {
+	if depth > exprDepthMax {
+		return true
+	}
+	switch x := d.(type) {
+	case secretVal:
+		return true
+	case []any:
+		for _, e := range x {
+			if containsSecretAt(e, depth+1) {
+				return true
+			}
+		}
+	case *omap:
+		for _, k := range x.keys {
+			if containsSecretAt(x.m[k], depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // unsecret is the inner value, for computing with it. The caller marks its
 // result secret.
 func unsecret(d any) (any, bool) {

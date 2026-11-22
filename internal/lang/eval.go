@@ -2311,7 +2311,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		}
 	}
 	if exp[len(exp)-1].outPath != "" {
-		if tainted || isSecret(toDatum(cur)) {
+		if tainted || containsSecret(toDatum(cur)) {
 			m.err.WriteString("a secret cannot leave sash\n")
 			return exitType, value{}
 		}
@@ -2638,7 +2638,7 @@ func (m *machine) expand(w Word) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			if isSecret(d) {
+			if containsSecret(d) {
 				m.sawSecret = true
 			}
 			if !pathOnly(d) {
@@ -2663,7 +2663,7 @@ func (m *machine) expand(w Word) (string, error) {
 			return "", fmt.Errorf("type value")
 		}
 		name, _ := pathSteps(part.Lit)
-		if isSecret(d) || m.vars[name].redacted {
+		if containsSecret(d) || m.vars[name].redacted {
 			m.sawSecret = true
 		}
 		if !pathOnly(d) {
