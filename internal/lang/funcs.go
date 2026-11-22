@@ -91,6 +91,7 @@ func init() {
 			return charged(c, string(b))
 		}},
 		"uuid": {0, 0, fnUUID},
+		"path": {1, 1, fnPath},
 	}
 }
 
@@ -235,6 +236,16 @@ func fnReplace(a []any, c *evalCtx) (any, error) {
 }
 
 func fnStarts(a []any, _ *evalCtx) (any, error) {
+	// Two paths compare whole components; a path and a string do not mix.
+	if p, ok := a[0].(pathV); ok {
+		if root, ok := a[1].(pathV); ok {
+			return pathStarts(p, root), nil
+		}
+		return nil, fnErr("starts", a...)
+	}
+	if _, ok := a[1].(pathV); ok {
+		return nil, fnErr("starts", a...)
+	}
 	s, p, err := twoStrings("starts", a)
 	if err != nil {
 		return nil, err

@@ -15,6 +15,7 @@ A value is a string, bytes, rows, one row, or data. Data comes from `[ ]` expres
 | list | `[1, "a", $x]` |
 | map | `{"port": 8080}`; keys are strings, insertion order is kept |
 | null | `null` |
+| path | `path("/etc/nginx")`, or `let p = path /etc/nginx` (see Paths below) |
 
 Outside `[ ]` a bare `42` is a string. Rows are a list of maps that keeps its column order.
 
@@ -120,6 +121,7 @@ Functions, pure and in process (`builtin` lists them; a name not here is exit 2 
 | list | `len` `sum` `min` `max` `avg` `sort` `uniq` `reverse` `first(l, n)` `last(l, n)` `range(a, b)` `contains(list, x)` |
 | map | `keys` `values` `has(m, k)` `get(m, k, default)` `merge(a, b)` |
 | encode | `sha256(s)` `base64(s)` `unbase64(s)` `hex(s)` `uuid()` |
+| path | `path(s)` `starts(p, root)` (two paths compare whole components) |
 
 ```sash
 let n = [ 1 + 2 ]
@@ -138,9 +140,26 @@ declare -i count = 0
 echo $b.port $b.hosts[1]
 ```
 
-`declare` flags: `-r` read-only (rebinding is exit 2 `readonly <name>`), `-i` number, `-a` list, `-A` map (a wrong type is exit 2 `type <name> <type>`), `-s` secret (see `features.md`). `declare` alone lists names, types, and flags, never values; `declare -p name` shows one. There is no `-x` and no `export`: sash starts no process.
+`declare` flags: `-r` read-only (rebinding is exit 2 `readonly <name>`), `-i` number, `-a` list, `-A` map, `-P` path (a wrong type is exit 2 `type <name> <type>`), `-s` secret (see `features.md`). `declare` alone lists names, types, and flags, never values; `declare -p name` shows one. There is no `-x` and no `export`: sash starts no process.
 
 At the prompt, names, functions, and options carry from line to line. A script and `sash -c` start fresh.
+
+### Paths
+
+A path is its own kind of value, not a string. Make one with `let p = path /etc/nginx`, `declare -P p = /etc/nginx`, or `[ path("/etc/nginx") ]`. It is checked once, when it is made: absolute, clean (no `.`, `..`, `//` or trailing `/`), no control character, at most 4096 bytes. A violation is exit 2 `path: <reason>`. A relative path (`path conf.d` or `path ./conf.d`) joins the current prefix; with none it is exit 2 `prefix_unset`. A glob in a path literal is exit 2 `parse: a glob is not a path`.
+
+- Join with `/` inside `[ ]`: `[ $p / "conf.d" / $name ]`. Each right-hand part is one component: not empty, not `.` or `..`, no `/`. Otherwise it is exit 2 `path: join component`, so a join cannot climb out of `$p`.
+- Accessors: `$p.name`, `$p.dir` (a path), `$p.ext`, `$p.parts` (a list).
+- `starts($p, $root)` compares whole components: `/etc/nginx2` does not start with `/etc/nginx`. A path never equals a string; `str($p)` is its text.
+- A path prints as its text, and `to json` writes it as a string.
+- In a script, a file verb's path (`cat`, `ls`, `cd`, `pushd`, `config`, `template`, `template_file`, `<` and `>`) must be literal text or a path. Text that came from the host (`cat $r.name` after `ls`, or a value from `from json`) is exit 2 `type path`: build it with `path(...)` or a join, which checks it. At the prompt, words keep working.
+
+```sash
+let conf = path /etc/nginx
+for r in ls /etc/nginx/conf.d {
+  cat [ $conf / "conf.d" / $r.name ]
+}
+```
 
 ## Control flow
 
@@ -414,6 +433,7 @@ Each is one line on stderr.
 | `timeout` | past a `timeout` deadline; `try` and `retry` can catch it (2) |
 | `readonly <name>` | rebinding a `declare -r` name (2) |
 | `prefix_unset` | a relative path or glob with no session prefix (2) |
+| `path: <reason>`, `type path` | a path that is not absolute and clean, a bad join, or host text used as a script's file path (2) |
 | `type glob` | a glob qualifier other than `(/)`, or a glob that matches nothing (2) |
 | `parse: ...` | `parse: try needs catch`, `parse: too deep` (65 nested blocks), `parse: env not in this series` (2) |
 | `usage <form>...` | wrong arguments to a form (2) |

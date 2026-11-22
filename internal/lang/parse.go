@@ -31,6 +31,9 @@ type Let struct {
 	// Capture: let x = capture { pipeline } binds a map of the pipeline's
 	// output, error text and statuses instead of its output.
 	Capture bool
+	// Path: let x = path WORD (or declare -P) binds Word as a path value
+	// (path.go), checked once, here.
+	Path bool
 }
 
 func (*Let) stmt() {}
@@ -590,6 +593,15 @@ func (p *parser) letValue(name string) (*Let, error) {
 		p.i++
 		return &Let{Name: name, Pipe: &pipe, Capture: true}, nil
 	}
+	if p.peek().kind == kWord && plain(p.peek().word) == "path" && p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kWord {
+		p.i++
+		w := p.peek().word
+		p.i++
+		if err := pathLiteralOK(w); err != nil {
+			return nil, err
+		}
+		return &Let{Name: name, Word: &w, Path: true}, nil
+	}
 	if p.peek().kind == kLParen {
 		p.i++
 		pipe, err := p.pipeline()
@@ -759,8 +771,8 @@ func (p *parser) declare() (Stmt, error) {
 	d := &Declare{}
 	for p.peek().kind == kWord && strings.HasPrefix(plain(p.peek().word), "-") {
 		f := plain(p.peek().word)[1:]
-		if f == "" || strings.Trim(f, "riaAps") != "" {
-			return nil, fmt.Errorf("usage declare: -r -i -a -A -s -p; there is no export")
+		if f == "" || strings.Trim(f, "riaApsP") != "" {
+			return nil, fmt.Errorf("usage declare: -r -i -a -A -P -s -p; there is no export")
 		}
 		d.Flags += f
 		p.i++
@@ -779,6 +791,17 @@ func (p *parser) declare() (Stmt, error) {
 	if p.peek().kind == kEq {
 		if d.Value, err = p.letValue(name); err != nil {
 			return nil, err
+		}
+		if strings.Contains(d.Flags, "P") {
+			if d.Value.Word == nil || d.Value.Capture {
+				return nil, fmt.Errorf("usage declare -P: name = word")
+			}
+			if !d.Value.Path {
+				if err := pathLiteralOK(*d.Value.Word); err != nil {
+					return nil, err
+				}
+			}
+			d.Value.Path = true
 		}
 	}
 	return d, nil

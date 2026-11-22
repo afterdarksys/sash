@@ -53,13 +53,13 @@ var secretCalls = map[string]string{
 	"first": "first($l, 1)", "last": "last($l, 1)", "range": "range($n, 5)", "keys": "keys($m)",
 	"values": "values($m)", "has": `has($m, "a")`, "get": `get($m, "a", 0)`, "merge": `merge($m, {"b": 2})`,
 	"sha256": "sha256($s)", "base64": "base64($s)", "hex": "hex($s)", "unbase64": "unbase64($b)",
-	"contains": `contains($s, "b")`,
+	"contains": `contains($s, "b")`, "path": `path($p)`,
 }
 
 // Every expression function returns a secret for a secret argument, and
 // used as an if condition the line exits 2: no function is an oracle.
 func TestEveryFunctionTaints(t *testing.T) {
-	const setup = "declare -s s = abc\ndeclare -s n = [ 3 ]\ndeclare -s l = [ [1, 2, 3] ]\ndeclare -s m = [ {\"a\": 1} ]\ndeclare -s b = YWJj\n"
+	const setup = "declare -s s = abc\ndeclare -s n = [ 3 ]\ndeclare -s l = [ [1, 2, 3] ]\ndeclare -s m = [ {\"a\": 1} ]\ndeclare -s b = YWJj\ndeclare -s p = /etc\n"
 	for name := range exprFuncs {
 		if name == "uuid" {
 			continue
@@ -69,10 +69,10 @@ func TestEveryFunctionTaints(t *testing.T) {
 			t.Errorf("%s has no secret-taint case", name)
 			continue
 		}
-		for _, arg := range []string{"$s", "$n", "$l", "$m", "$b"} {
+		for _, arg := range []string{"$s", "$n", "$l", "$m", "$b", "$p"} {
 			if strings.Contains(call, arg) {
 				// The plain call works, so a failure below is the taint.
-				plain := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(call, "$s", `"abc"`), "$n", "3"), "$l", "[1, 2, 3]"), "$m", `{"a": 1}`), "$b", `"YWJj"`)
+				plain := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(call, "$s", `"abc"`), "$n", "3"), "$l", "[1, 2, 3]"), "$m", `{"a": 1}`), "$b", `"YWJj"`), "$p", `"/etc"`)
 				if out := Run("let r = [ "+plain+" ]", grant.Grant{}, &countParent{}, Options{}); out.Status != 0 {
 					t.Errorf("%s plain: %+v", plain, out)
 				}
@@ -80,7 +80,7 @@ func TestEveryFunctionTaints(t *testing.T) {
 		}
 		st := NewState()
 		out := Run(setup+"let r = [ "+call+" ]\necho [ $r ]", grant.Grant{}, &countParent{}, Options{State: st})
-		if out.Status != 0 || out.Stdout != redacted+"\n" || st.SecretCount() != 6 {
+		if out.Status != 0 || out.Stdout != redacted+"\n" || st.SecretCount() != 7 {
 			t.Errorf("%s: result not secret: %+v (secrets %d)", call, out, st.SecretCount())
 		}
 		out = Run(setup+"if [ "+call+" ] { echo yes } else { echo no }", grant.Grant{}, &countParent{}, Options{})

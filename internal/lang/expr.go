@@ -641,13 +641,13 @@ func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, erro
 }
 
 func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
-	return evalExprPinned(x, strict, nil, nil, lookup)
+	return evalExprPinned(x, strict, nil, nil, "", lookup)
 }
 
 // evalExprPinned is evalExprStrict with uuid() answered by pin when it is
 // set (a recording or a replay).
-func evalExprPinned(x Expr, strict bool, pin func() (string, error), wasm func(string, string, []any, *evalCtx) (any, error), lookup func(string) (any, bool)) (any, error) {
-	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin, wasm: wasm}
+func evalExprPinned(x Expr, strict bool, pin func() (string, error), wasm func(string, string, []any, *evalCtx) (any, error), prefix string, lookup func(string) (any, bool)) (any, error) {
+	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin, wasm: wasm, prefix: prefix}
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
 		// A secret refused at a wasm call is that refusal, not a fault.
@@ -689,6 +689,8 @@ type evalCtx struct {
 	uuid func() (string, error)
 	// wasm, when set, runs a module call (wasm.go); nil refuses it.
 	wasm func(mod, fn string, args []any, c *evalCtx) (any, error)
+	// prefix is the current directory a relative path(...) joins to.
+	prefix string
 }
 
 // taintLookup unwraps a secret for computing and marks the evaluation.
@@ -829,6 +831,8 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 // is null; an index out of range is an error.
 func indexData(base, key any) (any, error) {
 	switch b := base.(type) {
+	case pathV:
+		return pathField(b, key)
 	case *omap:
 		k, ok := key.(string)
 		if !ok {
@@ -919,6 +923,10 @@ func binary(op string, l, r any, c *evalCtx) (any, error) {
 		return c >= 0, nil
 	case "in":
 		return contains(r, l)
+	}
+	// path / "component" joins (path.go).
+	if p, ok := l.(pathV); ok && op == "/" {
+		return joinPath(p, r)
 	}
 	// Arithmetic reads numeric strings: arguments are text, and add 2 3
 	// is 5. Comparison does not (dataEqual, dataCompare): two strings

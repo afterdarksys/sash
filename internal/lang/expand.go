@@ -704,8 +704,22 @@ func joinAlts(prefix string, alts []string, suffix string) (string, *ExpandProbl
 }
 
 func expandGlobs(src string, g grant.Grant, p parent.Parent, opt Options) (string, *ExpandProblem) {
+	// A path literal (= path WORD, or the value of declare -P) is not a
+	// glob: it stays as written, and the parser refuses its "*" (path.go).
+	var prev, prev2 string
+	declP := false
 	return mapWords(src, func(word string) (string, *ExpandProblem) {
-		if !strings.Contains(word, "*") {
+		pathLit := prev2 == "=" && prev == "path" || declP && prev == "="
+		switch {
+		case word == "declare":
+			declP = false
+		case strings.HasPrefix(word, "-") && strings.Contains(word, "P") && prev != "=":
+			declP = true
+		case prev == "=":
+			declP = false
+		}
+		prev2, prev = prev, word
+		if pathLit || !strings.Contains(word, "*") {
 			return word, nil
 		}
 		// A glob runs before $ expansion, so it would match the name

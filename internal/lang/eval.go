@@ -230,6 +230,13 @@ type value struct {
 }
 
 type machine struct {
+	// prompt is a line at the prompt (a State carried from line to line);
+	// otherwise a script or sash -c. A script's file verb refuses a string
+	// from host data as its path (path.go).
+	prompt bool
+	// wordData is set by expand when a part it expanded was not a path.
+	wordData bool
+
 	g       grant.Grant
 	p       parent.Parent
 	stack   []string
@@ -608,10 +615,11 @@ func (m *machine) doFailed(key string, err error) int {
 }
 
 func newMachine(g grant.Grant, p parent.Parent, st *State) *machine {
+	prompt := st != nil
 	if st == nil {
 		st = NewState()
 	}
-	return &machine{g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}, verbs: new(atomic.Int64)}
+	return &machine{prompt: prompt, g: g, p: p, vars: st.vars, fns: st.fns, st: st, scoped: map[string]int{}, verbs: new(atomic.Int64)}
 }
 
 func (m *machine) prefix() string {
@@ -770,6 +778,9 @@ func (m *machine) defFn(fn *Fn) (int, bool) {
 }
 
 func (m *machine) runLet(s *Let) (int, bool) {
+	if s.Path {
+		return m.runLetPath(s)
+	}
 	if s.Word != nil {
 		if x := exprOf(*s.Word); x != nil {
 			d, err := m.evalX(x)
@@ -833,17 +844,17 @@ func (m *machine) runDeclare(d *Declare) (int, bool) {
 	if err := m.st.checkBind(d.Name); err != nil {
 		return fail(err)
 	}
-	if m.scoped[d.Name] > 0 && strings.ContainsAny(d.Flags, "riaA") {
+	if m.scoped[d.Name] > 0 && strings.ContainsAny(d.Flags, "riaAP") {
 		return fail(fmt.Errorf("usage declare: %s is a loop, catch, or parameter name here", d.Name))
 	}
 	typ := ""
 	for _, f := range d.Flags {
-		t := map[rune]string{'i': "number", 'a': "list", 'A': "map"}[f]
+		t := map[rune]string{'i': "number", 'a': "list", 'A': "map", 'P': "path"}[f]
 		if t == "" {
 			continue
 		}
 		if typ != "" && typ != t {
-			return fail(fmt.Errorf("usage declare: one of -i -a -A"))
+			return fail(fmt.Errorf("usage declare: one of -i -a -A -P"))
 		}
 		typ = t
 	}
@@ -1573,6 +1584,8 @@ type expStage struct {
 	argv []string
 	// argProv is each word's provenance, for a fn's parameters.
 	argProv [][]uint32
+	// argData marks words holding text from host data (expandArgvData).
+	argData []bool
 	inPath  string
 	outPath string
 	here    []byte
@@ -1623,6 +1636,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		var rowX Expr
 		var argv []string
 		var argProv [][]uint32
+		var argData []bool
 		var err error
 		name := plainFirst(st)
 		last := len(st.Argv) - 1
@@ -1642,7 +1656,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 				return nil, &problem{exitType, err.Error()}, refusal{}
 			}
 			argv = append(argv, exprMark)
-		} else if argv, argProv, err = m.expandArgvProv(st.Argv); err != nil {
+		} else if argv, argProv, argData, err = m.expandArgvData(st.Argv); err != nil {
 			return nil, &problem{exitType, err.Error()}, refusal{}
 		}
 		type redirText struct {
@@ -1652,9 +1666,14 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		var texts []redirText
 		reads, heres := 0, 0
 		for _, r := range st.Redirs {
-			text, err := m.expand(r.Path)
+			rtext, _, rdata, err := m.expandArgvData([]Word{r.Path})
 			if err != nil {
 				return nil, &problem{exitType, err.Error()}, refusal{}
+			}
+			text := rtext[0]
+			// A script's redirect path is literal text or a path (path.go).
+			if !m.prompt && rdata[0] && r.Kind != "<<<" {
+				return nil, &problem{exitType, "type path"}, refusal{}
 			}
 			texts = append(texts, redirText{r.Kind, text})
 			switch r.Kind {
@@ -1719,7 +1738,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
-			argProv: argProv,
+			argProv: argProv, argData: argData,
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -2042,6 +2061,9 @@ func stageShape(st expStage) (int, int) {
 // returns the argv index of the word refused: 0 when the path is the
 // prefix itself (ls with no argument), -1 when no word is to blame.
 func (m *machine) bindPaths(st *expStage) (int, *problem) {
+	if i, prob := m.pathArgsTyped(st); prob != nil {
+		return i, prob
+	}
 	switch st.argv[0] {
 	case "cat":
 		for i, a := range st.argv[1:] {
@@ -2504,12 +2526,23 @@ func (m *machine) runHead(argv []string, in value) (value, int) {
 // expandArgvProv is expandArgv plus the provenance each word read; the
 // statement's provenance gathers all of it as well.
 func (m *machine) expandArgvProv(words []Word) ([]string, [][]uint32, error) {
+	out, prov, _, err := m.expandArgvData(words)
+	return out, prov, err
+}
+
+// expandArgvData is expandArgvProv plus, per word, whether it holds text
+// from host data: a part that is not a path, in a word that read a value
+// with provenance (path.go).
+func (m *machine) expandArgvData(words []Word) ([]string, [][]uint32, []bool, error) {
 	out := make([]string, len(words))
 	var prov [][]uint32
+	data := make([]bool, len(words))
 	for i, w := range words {
 		outer := m.prov
 		m.prov = nil
+		m.wordData = false
 		s, err := m.expand(w)
+		data[i] = m.wordData && len(m.prov) > 0
 		if len(m.prov) > 0 {
 			if prov == nil {
 				prov = make([][]uint32, len(words))
@@ -2518,11 +2551,11 @@ func (m *machine) expandArgvProv(words []Word) ([]string, [][]uint32, error) {
 		}
 		m.prov = unionProv(outer, m.prov)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		out[i] = s
 	}
-	return out, prov, nil
+	return out, prov, data, nil
 }
 
 func (m *machine) expandArgv(words []Word) ([]string, error) {
@@ -2548,6 +2581,9 @@ func (m *machine) expand(w Word) (string, error) {
 			if isSecret(d) {
 				m.sawSecret = true
 			}
+			if !pathOnly(d) {
+				m.wordData = true
+			}
 			b.WriteString(textOf(d))
 			if b.Len() > dataMaxBytes {
 				return "", fmt.Errorf("type value too large")
@@ -2568,6 +2604,9 @@ func (m *machine) expand(w Word) (string, error) {
 		}
 		if isSecret(d) {
 			m.sawSecret = true
+		}
+		if !pathOnly(d) {
+			m.wordData = true
 		}
 		b.WriteString(textOf(d))
 		if b.Len() > dataMaxBytes {
@@ -2612,7 +2651,7 @@ func (m *machine) evalX(x Expr) (any, error) {
 }
 
 func (m *machine) evalXRaw(x Expr) (any, error) {
-	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), func(name string) (any, bool) {
+	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), m.prefix(), func(name string) (any, bool) {
 		m.readProv(name)
 		v, ok := m.vars[name]
 		if !ok {

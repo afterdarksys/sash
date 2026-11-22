@@ -95,6 +95,8 @@ func typeName(d any) string {
 		return "number"
 	case string:
 		return "string"
+	case pathV:
+		return "path"
 	case []any:
 		return "list"
 	case *omap:
@@ -118,6 +120,8 @@ func textOf(d any) string {
 		return formatFloat(x)
 	case string:
 		return x
+	case pathV:
+		return string(x)
 	case secretVal:
 		return redacted
 	}
@@ -142,6 +146,8 @@ func writeJSON(b *strings.Builder, d any) {
 		b.WriteString(textOf(x))
 	case string:
 		b.WriteString(jsonString(x))
+	case pathV:
+		b.WriteString(jsonString(string(x)))
 	case secretVal:
 		b.WriteString(jsonString(redacted))
 	case []any:
@@ -191,6 +197,8 @@ func truthy(d any) bool {
 		return x != 0
 	case string:
 		return x != ""
+	case pathV:
+		return true
 	case []any:
 		return len(x) > 0
 	case *omap:
@@ -276,6 +284,9 @@ func dataEqual(a, b any) bool {
 	case string:
 		y, ok := b.(string)
 		return ok && x == y
+	case pathV:
+		y, ok := b.(pathV)
+		return ok && x == y
 	case []any:
 		y, ok := b.([]any)
 		if !ok || len(x) != len(y) {
@@ -327,6 +338,11 @@ func dataCompare(a, b any) (int, error) {
 	if aok && bok {
 		return strings.Compare(sa, sb), nil
 	}
+	pa, aok := a.(pathV)
+	pb, bok := b.(pathV)
+	if aok && bok {
+		return strings.Compare(string(pa), string(pb)), nil
+	}
 	return 0, fmt.Errorf("type expr compare %s %s", typeName(a), typeName(b))
 }
 
@@ -347,6 +363,8 @@ func dataSize(d any, depth int) int {
 	}
 	switch x := d.(type) {
 	case string:
+		return len(x) + 2
+	case pathV:
 		return len(x) + 2
 	case []any:
 		n := 2

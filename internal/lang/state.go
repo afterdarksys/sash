@@ -414,6 +414,13 @@ func (s *State) typed(name string, v value) (value, error) {
 		if _, ok := d.(*omap); !ok {
 			return value{}, fmt.Errorf("type %s map", name)
 		}
+	case "path":
+		if p, ok := d.(secretVal); ok {
+			d = p.d
+		}
+		if _, ok := d.(pathV); !ok {
+			return value{}, fmt.Errorf("type %s path", name)
+		}
 	}
 	return v, nil
 }
