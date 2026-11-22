@@ -116,6 +116,8 @@ var builtins = []builtinRow{
 	{"logout", "session", "", "end the session", false},
 	{"bind", "session", "", "vi or emacs keys", false},
 	{"abbr", "session", "", "abbr name 'text' or abbr -e name: a visible rewrite", false},
+	{"z", "session", "", "z part...: go to the most used matching directory; z -l part... lists", false},
+	{"jump", "session", "", "jump name, jump save name, jump list, jump rm name: bookmarks", false},
 	{"syntax", "session", "", "line colors on or off", false},
 	{"trace", "session", "", "print each stage key first", false},
 	{"prompt", "session", "", "menu or line", false},

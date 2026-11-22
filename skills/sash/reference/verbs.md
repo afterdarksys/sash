@@ -167,6 +167,8 @@ The interactive editor handles these; they never reach a script. In a script, un
 | `logout` | session | - | no | Ends the session, like Ctrl-D. A bare `exit` at the prompt does the same. |
 | `bind` | session | - | no | `bind vi` or `bind emacs`. |
 | `abbr` | session | - | no | `abbr name 'text'`, `abbr -e name`, `abbr`: visible rewrites of a command word. |
+| `z` | session | - | no | `z part...` goes to the most used and most recent visited directory containing each part in order, inside the `file_read` roots; `z -l part...` lists candidates. Exit 1 `z: no match`. In a script, exit 2 `z: prompt only`. |
+| `jump` | session | - | no | `jump name`, `jump save name`, `jump list`, `jump rm name`: bookmarks (`[a-z0-9_-]{1,32}`, at most 64), checked against the roots on every use. In a script, exit 2 `jump: prompt only`. |
 | `syntax` | session | - | no | `syntax on` or `syntax off`. The denial color stays either way. |
 | `trace` | session | - | no | `trace on` or `trace off`: print each stage key before it runs. In a script use `set -x`. |
 | `prompt` | session | - | no | `prompt line` (default) or `prompt menu`. |

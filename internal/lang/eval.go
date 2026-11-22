@@ -1821,6 +1821,11 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{}, &problem{exitType, "usage empty"}
 	}
 	name := argv[0]
+	// z and jump are the editor's (line/dirs.go): a script must not
+	// depend on someone's history.
+	if name == "z" || name == "jump" {
+		return classified{}, &problem{exitType, name + ": prompt only"}
+	}
 	if rowTools[name] {
 		if prob := classifyRowTool(argv); prob != nil {
 			return classified{}, prob

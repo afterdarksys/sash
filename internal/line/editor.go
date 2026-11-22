@@ -101,6 +101,8 @@ type Editor struct {
 
 	// abbrs are this session's abbreviations (abbr.go); never stored.
 	abbrs map[string]string
+	// dirs is the session's z and jump state (dirs.go).
+	dirs *dirState
 
 	// width reports the terminal width; nil is unknown.
 	width func() int
@@ -907,6 +909,20 @@ func (e *Editor) submit() {
 		e.browseAt = -1
 		return
 	}
+	if f := strings.Fields(e.line); len(f) > 0 && (f[0] == "z" || f[0] == "jump") {
+		e.hold = ""
+		e.note = ""
+		if f[0] == "z" {
+			e.zCommand(e.line)
+		} else {
+			e.jumpCommand(e.line)
+		}
+		e.pushHist(e.line)
+		e.line = ""
+		e.cursor = 0
+		e.browseAt = -1
+		return
+	}
 	if e.expandLine() {
 		e.hold = ""
 		return
@@ -965,6 +981,9 @@ func (e *Editor) submit() {
 		e.done = true
 		e.status = out.Status
 		return
+	}
+	if out.Status == 0 && out.Prefix != "" && out.Prefix != e.opt.Prefix {
+		e.recordVisit(out.Prefix)
 	}
 	e.opt.Prefix = out.Prefix
 	e.pushHist(e.line)
@@ -1080,7 +1099,7 @@ func sessionKind(line string) (paint bool, exact string) {
 		return true, ""
 	}
 	switch f[0] {
-	case "abbr":
+	case "abbr", "z", "jump":
 		return true, ""
 	case "confirm":
 		// confirm off is the only way to clear the latch, and only as

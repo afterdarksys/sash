@@ -53,7 +53,9 @@ The existing `history` verb (`sash_verb.go`, `sash_history.go`) gains these form
 
 The agent does not check roots. sash checks them on every use, and the grant is what decides. Storing a directory reveals nothing the actor did not already see.
 
-**Capability.** The agent advertises `sash_dirs_v1`. Against an agent without it, `z`, `jump` and visit recording fall back to the session alone: `z` ranks the directories visited in this session, bookmarks last until logout, and sash prints one notice per session, `z: history store unavailable, this session only`.
+**No new capability.** An agent without these forms denies them, as it denies any unknown history argv, and sash takes the denial as "no store". `z`, `jump` and visit recording then fall back to the session alone: `z` ranks this session's visits, bookmarks last until logout, and sash prints one notice per session, `z: history store unavailable, this session only`.
+
+**Recording.** `z` and `jump` change the prefix through `lang.MoveTo` (same path checks, grant check and stat as `cd`, with no line of source made from a stored value). A session that is recording refuses them with exit 2 `z: not while recording`, because its replay runs lines and these are not lines.
 
 ## Threats
 
@@ -62,7 +64,7 @@ The agent does not check roots. sash checks them on every use, and the grant is 
 - **A bookmark cannot carry a command.** It is a path value, checked with `makePath`, so it is never parsed as source.
 - **A bookmark name is never a path component.** No `/`, `.` or `..` reaches the store as a name.
 - **Private sessions leave no trace,** as with history today.
-- **Recording and replay.** A session recording records `history dirs` and `history marks` responses like any door call, and replay reads them from the tape.
+- **Recording and replay.** The store calls are the editor's, like history get and append, and are never part of a recording.
 
 ## Tests (both ways)
 
