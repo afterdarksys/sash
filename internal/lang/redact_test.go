@@ -125,6 +125,9 @@ func TestSerializingSecretMapIsSecret(t *testing.T) {
 		"let j = [ str($r2) ]\necho $j > /var/tmp/ops/a",
 		"let j = [ join(values($r), \",\") ]\necho $j > /var/tmp/ops/a",
 		"if [ $r == $r2 ] { echo x }",
+		"let j = [ !$r[\"out\"] ]\necho $j > /var/tmp/ops/a",
+		"let j = [ $r[\"out\"] && true ]\necho $j > /var/tmp/ops/a",
+		"let j = [ false || $r[\"out\"] ]\necho $j > /var/tmp/ops/a",
 	} {
 		f := &fake{}
 		out := Run(setup+src, allow(), f, Options{})

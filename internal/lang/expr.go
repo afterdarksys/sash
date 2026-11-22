@@ -756,6 +756,9 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 		if err != nil {
 			return nil, err
 		}
+		if containsSecret(d) {
+			c.tainted = true
+		}
 		if x.op == "!" {
 			return !truthy(d), nil
 		}
@@ -799,6 +802,12 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 			return nil, err
 		}
 		switch x.op {
+		case "&&", "||":
+			if containsSecret(l) {
+				c.tainted = true
+			}
+		}
+		switch x.op {
 		case "&&":
 			if !truthy(l) {
 				return false, nil
@@ -806,6 +815,9 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 			r, err := evalNode(x.r, lookup, c)
 			if err != nil {
 				return nil, err
+			}
+			if containsSecret(r) {
+				c.tainted = true
 			}
 			return truthy(r), nil
 		case "||":
@@ -815,6 +827,9 @@ func evalNode(x Expr, lookup func(string) (any, bool), c *evalCtx) (any, error) 
 			r, err := evalNode(x.r, lookup, c)
 			if err != nil {
 				return nil, err
+			}
+			if containsSecret(r) {
+				c.tainted = true
 			}
 			return truthy(r), nil
 		}
