@@ -247,6 +247,8 @@ func copyMap[K comparable, V any](m map[K]V) map[K]V {
 func (m *machine) branchMachine(ctx context.Context, i int) *machine {
 	bm := newMachine(m.g, m.p, m.st.branchClone())
 	bm.polling = m.polling
+	// A branch's statements are never the condition's own stages.
+	bm.pollDepth = -1
 	bm.verbs = m.verbs
 	bm.stack = append([]string(nil), m.stack...)
 	bm.deadline = m.deadline

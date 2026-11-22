@@ -242,7 +242,11 @@ type machine struct {
 	// number, string or null). Inside await it must end the condition, so a
 	// returned false is never turned into text a byte stage passes on.
 	typedScalar bool
-	failure     *Failure
+	// pollDepth: the function depth of the await condition being polled; its
+	// own stages (not the statements of a function it calls) are held to
+	// the condition rules in execStage. -1 when no condition is at a depth.
+	pollDepth int
+	failure   *Failure
 
 	ctl       ctl
 	retVal    *value
@@ -1273,6 +1277,14 @@ func (m *machine) test(x Expr, pipe Pipeline, strict bool) (bool, int, bool) {
 // string, number, null, a list that is not rows) decides by status for if
 // and while, and is a type error for await (strict), where a readiness gate
 // must not pass on a value it cannot read. A secret never decides.
+// awaitRenders are stages that exit 0 whatever their input, turning rows or
+// data into text: as an await condition's own stage they would pass on
+// nothing.
+var awaitRenders = map[string]bool{
+	"count": true, "sum": true, "avg": true, "min": true, "max": true,
+	"json": true, "to": true, "echo": true, "wc": true,
+}
+
 func condOf(v value, st int, strict bool) (bool, error) {
 	if v.kind == valData {
 		if isSecret(v.d) {
@@ -2045,6 +2057,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if err := m.traceStage(exp[0]); err != nil {
 			return 1, value{}
 		}
+		atCond := m.polling && m.depth == m.pollDepth
 		st, stop := m.callFn(exp[0])
 		if stop && m.ctl == ctlNone && st == 0 {
 			st = exitType
@@ -2053,6 +2066,13 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			v := *m.retVal
 			m.retVal = nil
 			return st, v
+		}
+		// The await condition is this call: a function that returns nothing
+		// decides by status, so its printed false or empty rows would pass.
+		if atCond && st == 0 {
+			m.ctl = ctlHalt
+			m.err.WriteString("type await: a function in the condition printed text; return a bool or rows\n")
+			return exitType, value{}
 		}
 		return st, value{kind: valBytes}
 	}
@@ -2184,13 +2204,28 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		m.err.WriteString("type await: a function's typed value must end the condition\n")
 		return value{}, exitType
 	}
+	// The await condition's own stages must end in a verb's status, rows, or
+	// a bool: a stage that always exits 0 while turning data into text, or
+	// a function whose result is printed text, would make "not ready" pass.
+	atCond := m.polling && m.depth == m.pollDepth
+	if atCond && awaitRenders[st.argv[0]] {
+		m.ctl = ctlHalt
+		m.err.WriteString("type await: " + st.argv[0] + " turns the condition into text that always passes; test rows or a bool\n")
+		return value{}, exitType
+	}
 	if m.polling && (st.argv[0] == "set" || st.argv[0] == "shopt") {
 		m.ctl = ctlHalt
 		m.err.WriteString("await: session options refused\n")
 		return value{}, exitType
 	}
 	if st.call != nil {
-		return m.pipeFn(st, in)
+		v, code := m.pipeFn(st, in)
+		if atCond && code == 0 && v.kind == valBytes {
+			m.ctl = ctlHalt
+			m.err.WriteString("type await: a function in the condition printed text; return a bool or rows\n")
+			return value{}, exitType
+		}
+		return v, code
 	}
 	if rowTools[st.argv[0]] {
 		return m.runRowTool(st, in)

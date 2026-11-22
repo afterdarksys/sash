@@ -229,6 +229,17 @@ func TestAwaitTypedReturnsFailClosed(t *testing.T) {
 		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "returned one map"},
 		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, "typed value must end the condition"},
 		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true }; echo proceeded`, exitType, "timeout"},
+		// A wrapper prints the inner false; rendering stages turn no rows into text.
+		{`fn ready() { return [ false ] }; fn g() { ready }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
+		{`fn ready() { return [ false ] }; fn g() { try { ready } catch { } }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
+		{`fn ready() { return [ false ] }; fn g() { retry 2 { ready } }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
+		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true |> count }; echo proceeded`, exitType, "count turns the condition"},
+		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true |> to json }; echo proceeded`, exitType, "to turns the condition"},
+		{`fn ready() { return [ [] ] }; await timeout 3s every 1s { ready |> count }; echo proceeded`, exitType, "count turns the condition"},
+		{`fn ready() { return [ [{"ok": false}] ] }; fn g() { ready |> where ok == true }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
+		{`let flag = false; await timeout 3s every 1s { echo $flag }; echo proceeded`, exitType, "echo turns the condition"},
+		// A wrapper that returns its value is fine.
+		{`fn ready() { return [ true ] }; fn g() { let r = (ready); return $r }; await timeout 3s every 1s { g }; echo proceeded`, 0, ""},
 		{`fn ready() { return [ true ] }; await timeout 3s every 1s { ready }; echo proceeded`, 0, ""},
 		{`fn ready() { return [ [{"a": 1}] ] }; await timeout 3s every 1s { ready |> where a == 1 }; echo proceeded`, 0, ""},
 	} {

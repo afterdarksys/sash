@@ -55,13 +55,14 @@ func (m *machine) runAwait(t *Timeout) (int, bool) {
 	if err != nil {
 		return fail(err.Error())
 	}
-	prev, polling := m.deadline, m.polling
+	prev, polling, pollDepth := m.deadline, m.polling, m.pollDepth
 	end := m.now().Add(d)
 	if prev.IsZero() || end.Before(prev) {
 		m.deadline = end
 	}
 	m.polling = true
-	defer func() { m.deadline, m.polling = prev, polling }()
+	m.pollDepth = m.depth
+	defer func() { m.deadline, m.polling, m.pollDepth = prev, polling, pollDepth }()
 	pipe := t.Body.Stmts[0].(*Chain).Pipes[0]
 	for attempt := 0; ; attempt++ {
 		if m.ctl != ctlNone {
