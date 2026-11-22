@@ -1281,6 +1281,11 @@ func condOf(v value, st int, strict bool) (bool, error) {
 		if b, isBool := v.d.(bool); isBool {
 			return b && st == 0, nil
 		}
+		// One map is not a readiness answer: {"ok": false} would count as a
+		// row and pass. await wants a bool, or rows filtered with |> where.
+		if _, isMap := v.d.(*omap); isMap && strict {
+			return false, fmt.Errorf("type await: the condition returned one map; return a bool, or rows through |> where")
+		}
 		if rows, isRows := datumRows(v.d); isRows {
 			return len(rows.rows) > 0 && st == 0, nil
 		}
@@ -2174,7 +2179,7 @@ func (m *machine) callFn(st expStage) (int, bool) {
 func (m *machine) execStage(st expStage, in value) (value, int) {
 	prevScalar := m.typedScalar
 	m.typedScalar = false
-	if m.polling && prevScalar && st.call == nil {
+	if m.polling && prevScalar {
 		m.ctl = ctlHalt
 		m.err.WriteString("type await: a function's typed value must end the condition\n")
 		return value{}, exitType

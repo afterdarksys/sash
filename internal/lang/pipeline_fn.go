@@ -49,18 +49,20 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 	return value{kind: valBytes, b: []byte(output)}, code
 }
 
-// typedScalar is a typed return that is not rows: a bool, number, string or
-// null (await refuses it anywhere but the end of its condition).
+// typedScalar is a typed return that is not a list of rows: a bool, number,
+// string, null, one map, or a list that is not all maps. await refuses it
+// anywhere but the end of its condition, so no later stage, function or
+// not, can turn a returned false into text that passes.
 func typedScalar(v value) bool {
 	switch v.kind {
 	case valStr:
 		return true
 	case valData:
-		if _, isRows := datumRows(v.d); isRows {
-			return false
+		if list, isList := v.d.([]any); isList {
+			_, isRows := datumRows(list)
+			return !isRows
 		}
-		_, isList := v.d.([]any)
-		return !isList
+		return true
 	}
 	return false
 }

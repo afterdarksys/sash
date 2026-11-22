@@ -222,6 +222,13 @@ func TestAwaitTypedReturnsFailClosed(t *testing.T) {
 		{`fn ready() { return [ "x" ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "neither a bool nor rows"},
 		{`fn ready() { return [ 3 ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "neither a bool nor rows"},
 		{`fn ready() { return [ [] ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "timeout"},
+		{`fn ready() { return [ false ] }; fn w() { echo $input }; await timeout 3s every 1s { ready | w }; echo proceeded`, exitType, "typed value must end the condition"},
+		{`fn ready() { return [ [false] ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, "typed value must end the condition"},
+		{`fn ready() { return [ [false, false] ] }; await timeout 3s every 1s { ready | egrep . }; echo proceeded`, exitType, "typed value must end the condition"},
+		{`fn ready() { return [ [false] ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "neither a bool nor rows"},
+		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready }; echo proceeded`, exitType, "returned one map"},
+		{`fn ready() { return [ {"ok": false} ] }; await timeout 3s every 1s { ready | cat }; echo proceeded`, exitType, "typed value must end the condition"},
+		{`fn ready() { return [ [{"ok": false}] ] }; await timeout 3s every 1s { ready |> where ok == true }; echo proceeded`, exitType, "timeout"},
 		{`fn ready() { return [ true ] }; await timeout 3s every 1s { ready }; echo proceeded`, 0, ""},
 		{`fn ready() { return [ [{"a": 1}] ] }; await timeout 3s every 1s { ready |> where a == 1 }; echo proceeded`, 0, ""},
 	} {
