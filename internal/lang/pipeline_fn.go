@@ -22,11 +22,15 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 	defer m.restoreVars(saved)
 	// Do not copy a nonzero strings.Builder: save its text instead.
 	outer := m.out.String()
+	outerTaint := m.outTaint
 	m.out.Reset()
+	m.outTaint = false
 	code, stop := m.callFn(st)
 	output := m.out.String()
+	redacted := m.outTaint
 	m.out.Reset()
 	m.out.WriteString(outer)
+	m.outTaint = outerTaint
 	if stop && m.ctl == ctlNone && code == 0 {
 		code = exitType
 	}
@@ -52,7 +56,7 @@ func (m *machine) pipeFn(st expStage, in value) (value, int) {
 		return v, code
 	}
 	m.typedScalar = false
-	return value{kind: valBytes, b: []byte(output)}, code
+	return value{kind: valBytes, b: []byte(output), redacted: redacted}, code
 }
 
 // typedScalar is a typed return that is not a list of rows: a bool, number,

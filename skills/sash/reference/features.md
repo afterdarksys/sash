@@ -82,6 +82,7 @@ For those values:
 - They print as `***`: `echo`, `trace`, `declare -p`, `log`, errors, and the `origin` hash.
 - They decide nothing: a condition that reads one (`if`, `while`, `do`, `filter`, `check`) is exit 2 `a secret cannot decide a branch`.
 - They cannot be a verb argument, a path, or the body of `>`: exit 2 `a secret cannot leave sash`. Only `template_file` writes a render it knows is secret, at mode `0600`.
+- Text that shows a secret as `***` (an `echo` of one, a function that printed one, or a name bound from either) prints, but it cannot reach `>`, a verb, or a function's input either: exit 2 `a secret cannot leave sash`, so a file is never overwritten with the placeholder.
 - One in a plain word is exit 2 `a secret in a word: build it inside [ ]`.
 - An evaluation that reads one and fails (`[ int($tok) ]`) ends the line with `a secret ended the line`, which `try` cannot catch.
 - The prompt does not keep a `declare -s` line in history, and `!!` cannot recall one.

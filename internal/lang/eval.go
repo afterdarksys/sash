@@ -237,6 +237,11 @@ type value struct {
 	// whose cells are already through needsCell (origin).
 	prov    []uint32
 	escaped bool
+	// redacted: text that holds a secret's *** rendering (an echo of a
+	// secret, or a function that printed one). It may print, but like a
+	// secret it never reaches a redirect, a verb or a function's input:
+	// the write would silently replace a file with a placeholder.
+	redacted bool
 }
 
 type machine struct {
@@ -287,6 +292,9 @@ type machine struct {
 	// verbs counts door calls against verbmax; par branches share it.
 	verbs *atomic.Int64
 	st    *State
+	// outTaint is set when a pipeline printed redacted text to out; a
+	// pipeline function's captured output carries it (pipeFn).
+	outTaint bool
 	// sawSecret is set when a word expanded a secret, so prepare can keep
 	// it from reaching a verb or a file.
 	sawSecret bool
@@ -1575,6 +1583,9 @@ func (m *machine) runChain(c *Chain) (int, bool) {
 		}
 		if exp[len(exp)-1].outPath == "" && (exp[0].call == nil || v.kind != valBytes || len(v.b) > 0) {
 			m.out.WriteString(display(v))
+			if v.redacted {
+				m.outTaint = true
+			}
 		}
 		if st == exitDenied || st == exitUnknown || st == exitType {
 			return st, true
@@ -1600,6 +1611,9 @@ type expStage struct {
 	argProv [][]uint32
 	// argData marks words holding text from host data (expandArgvData).
 	argData []bool
+	// secret: a word of this stage expanded a secret (or redacted text),
+	// so its output holds ***.
+	secret  bool
 	inPath  string
 	outPath string
 	here    []byte
@@ -1752,7 +1766,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
-			argProv: argProv, argData: argData,
+			argProv: argProv, argData: argData, secret: m.sawSecret,
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -2204,7 +2218,14 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		rendered = true
 		renderedReady = renderedReady && readyOf(v)
 	}
+	tainted := false
 	for i, st := range exp {
+		// Redacted text from an earlier stage reaches no verb and no
+		// function input (value.redacted).
+		if tainted && (st.key != "" || st.call != nil) {
+			m.err.WriteString("a secret cannot leave sash\n")
+			return exitType, value{}
+		}
 		if st.op == "|" && (cur.kind == valRows || st.call != nil) {
 			if cur.kind != valBytes {
 				noteRender(cur)
@@ -2237,6 +2258,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		}
 		in := cur
 		v, code := m.execStage(st, cur)
+		tainted = tainted || st.secret || v.redacted
 		exits[i] = code
 		m.noteStages(exp[:i+1], exits[:i+1])
 		cur = v
@@ -2266,7 +2288,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		}
 	}
 	if exp[len(exp)-1].outPath != "" {
-		if isSecret(toDatum(cur)) {
+		if tainted || isSecret(toDatum(cur)) {
 			m.err.WriteString("a secret cannot leave sash\n")
 			return exitType, value{}
 		}
@@ -2289,6 +2311,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			return m.doFailed("file.write", err), cur
 		}
 	}
+	cur.redacted = cur.redacted || tainted
 	return status, cur
 }
 
@@ -2616,7 +2639,8 @@ func (m *machine) expand(w Word) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("type value")
 		}
-		if isSecret(d) {
+		name, _ := pathSteps(part.Lit)
+		if isSecret(d) || m.vars[name].redacted {
 			m.sawSecret = true
 		}
 		if !pathOnly(d) {

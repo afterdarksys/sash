@@ -35,6 +35,12 @@ func (p *parser) arguments() (Stmt, error) {
 		if t.kind != kWord || len(t.word.Parts) != 1 || t.word.Parts[0].Exp || t.word.Parts[0].X != nil {
 			return "", fmt.Errorf("parse: args needs literal values")
 		}
+		// Expand would glob or brace-expand an unquoted * or { } before the
+		// run, reading the host from a declaration that reads nothing; the
+		// declaration takes neither, quoted or not.
+		if strings.ContainsAny(t.word.Parts[0].Lit, "*{}") {
+			return "", fmt.Errorf("parse: args needs literal values without * { }")
+		}
 		p.i++
 		return t.word.Parts[0].Lit, nil
 	}

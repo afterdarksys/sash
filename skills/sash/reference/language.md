@@ -238,7 +238,7 @@ A function's output type is checked at runtime before the next row stage. `|>` r
 
 ## Script arguments
 
-An optional `args { }` declaration must be the first top-level statement. Each entry is `name type required` or `name type default literal`, optionally followed by `choices "a,b,c"` and `help "description"`. Types are `string`, `int` (signed 64-bit), `bool` (`true` or `false`), and `duration` (positive, at most 24h; bound as its duration string). Names are letters, digits, and `_`, not starting with a digit, at most 64 characters (`parse: argument name ... is not an identifier`). Defaults, choices, and help must be literal, not expressions or variable references. `help` is reserved.
+An optional `args { }` declaration must be the first top-level statement. Each entry is `name type required` or `name type default literal`, optionally followed by `choices "a,b,c"` and `help "description"`. Types are `string`, `int` (signed 64-bit), `bool` (`true` or `false`), and `duration` (positive, at most 24h; bound as its duration string). Names are letters, digits, and `_`, not starting with a digit, at most 64 characters (`parse: argument name ... is not an identifier`). Defaults, choices, and help must be literal, not expressions or variable references, and hold no `*`, `{` or `}` (a declaration reads nothing, so it never globs). `help` is reserved.
 
 ```text
 args {
