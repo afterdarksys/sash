@@ -238,6 +238,10 @@ type machine struct {
 	trace   bool
 	depth   int
 	polling bool
+	// stages and stageKeys: the last pipeline's per-stage statuses and
+	// verb keys, for $last and capture.
+	stages    []int
+	stageKeys []string
 	// typedScalar: the last function stage returned a typed scalar (bool,
 	// number, string or null). Inside await it must end the condition, so a
 	// returned false is never turned into text a byte stage passes on.
@@ -664,10 +668,12 @@ func (m *machine) runProg(prog *Program) (int, bool) {
 		m.prov, m.readNames = nil, nil
 		m.failure = nil
 		mark := m.err.Len()
+		m.stages, m.stageKeys = nil, nil
 		st, stop := m.runStmt(s)
 		if st != 0 && m.failure == nil {
 			m.noteFailure(st, m.err.String()[mark:])
 		}
+		m.setLast(st)
 		if top {
 			m.prov, m.readNames = nil, nil
 		} else {
@@ -782,6 +788,9 @@ func (m *machine) runLet(s *Let) (int, bool) {
 			return exitType, true
 		}
 		return m.bindLet(s.Name, value{kind: valStr, s: text})
+	}
+	if s.Capture {
+		return m.runCapture(s)
 	}
 	st, stop, v := m.runPipe(*s.Pipe)
 	if stop {
@@ -2186,6 +2195,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		in := cur
 		v, code := m.execStage(st, cur)
 		exits[i] = code
+		m.noteStages(exp[:i+1], exits[:i+1])
 		cur = v
 		if in.kind != valBytes && v.kind == valBytes {
 			noteRender(in)
@@ -2204,6 +2214,7 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			return code, cur
 		}
 	}
+	m.noteStages(exp, exits)
 	status := 0
 	for i := len(exits) - 1; i >= 0; i-- {
 		if exits[i] != 0 {

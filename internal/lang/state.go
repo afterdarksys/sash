@@ -379,6 +379,10 @@ func (s *State) setLong(name string, on bool) error {
 
 // checkBind refuses to rebind a read-only name.
 func (s *State) checkBind(name string) error {
+	// $last is set by sash after every statement (v7 item 3).
+	if name == "last" {
+		return fmt.Errorf("readonly last")
+	}
 	if s.readonly[name] {
 		return fmt.Errorf("readonly %s", name)
 	}

@@ -98,6 +98,7 @@ var builtins = []builtinRow{
 	{"template", "verb", "file.read", "render tpl with the piped value", true},
 	{"await", "keyword", "", "poll a read-only condition until a deadline", true},
 	{"args", "keyword", "", "declare and validate script arguments", true},
+	{"capture", "keyword", "", "let x = capture { pipeline }: output, error text and statuses as a map", false},
 	{"retry", "keyword", "", "retry N [delay D] { }: again on failure", true},
 	{"timeout", "keyword", "", "timeout D { }: checked before each statement and verb", true},
 	{"atomic", "keyword", "file.write", "atomic [deadline D] { }: the file writes inside all stay or are all restored", true},

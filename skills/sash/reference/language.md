@@ -295,6 +295,24 @@ echo before
 sysctl get fail.three
 ```
 
+## `$last` and `capture`
+
+sash has no file descriptors: a verb answers with output, an exit status, and an error message. After every statement `$last` is a read-only map: `status`, `stages` (each stage's status, like bash `${PIPESTATUS[@]}`), `keys` (each stage's verb), `failed_stage` (index of the first failing stage, or `null`), `code` and `message` (as `$e`). `let last = ...` is exit 2 `readonly last`.
+
+`let r = capture { pipeline }` binds a map of `out` (the output: text, rows or data), `err` (the error text, which is not printed), `status`, `stages`, `keys`, `failed_stage`, `code` and `message`, and an ordinary failure (a failed command, bad data, a timeout) does not fail the statement. A refusal is not captured: a denial, an unknown name, a secret refusal, a cap, or a hangup fails exactly as it would without `capture`. A secret stays `***` in the map.
+
+```sash
+# stdout: 1 [0,1,0] 1
+echo hi | egrep zz | head -n 1
+echo $last.status $last.stages $last.failed_stage
+```
+
+```sash
+# stdout: 2 json syntax
+let r = capture { echo x | from json }
+echo $r.status $r.err
+```
+
 ## Options
 
 `set` and `shopt` write one option table; `set` alone lists it as rows. No option touches the grant, the roots, or the agent re-check.

@@ -142,6 +142,7 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `set` | builtin | - | no | Session options: `-e -u -x -f`, `-o name`, `+o name`, `loopmax N`, `verbmax N`. `set -o record <path>` also writes a file (a `file.write` at mode 0600 at the end; refused in plan mode, asked under confirm). |
 | `shopt` | builtin | - | no | `shopt -s name`, `shopt -u name`: the same option table by long name. |
 | `builtin` | builtin | - | no | Lists this table and the expression functions as rows; `builtin <name>` filters it. |
+| `capture` | keyword | - | no | `let x = capture { pipeline }`: the output, error text and statuses as a map; refusals are not captured. |
 | `retry` | keyword | - | no | `retry N [delay D] { }`: run again on failure. N 1 to 100, D up to 1h. |
 | `args` | keyword | - | no | Static script argument schema: required values, typed defaults, choices, and help. |
 | `await` | keyword | - | no | `await timeout D every D { pipeline }`: poll a read-only condition, bounded by deadline and caps. |

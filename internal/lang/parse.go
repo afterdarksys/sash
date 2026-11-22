@@ -28,6 +28,9 @@ type Let struct {
 	Name string
 	Word *Word
 	Pipe *Pipeline
+	// Capture: let x = capture { pipeline } binds a map of the pipeline's
+	// output, error text and statuses instead of its output.
+	Capture bool
 }
 
 func (*Let) stmt() {}
@@ -541,6 +544,24 @@ func (p *parser) letValue(name string) (*Let, error) {
 		return nil, fmt.Errorf("parse: let needs =")
 	}
 	p.i++
+	if p.peek().kind == kWord && plain(p.peek().word) == "capture" && p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kLBrace {
+		p.i += 2
+		for p.peek().kind == kNL {
+			p.i++
+		}
+		pipe, err := p.pipeline()
+		if err != nil {
+			return nil, err
+		}
+		for p.peek().kind == kNL {
+			p.i++
+		}
+		if p.peek().kind != kRBrace {
+			return nil, fmt.Errorf("parse: capture holds one pipeline")
+		}
+		p.i++
+		return &Let{Name: name, Pipe: &pipe, Capture: true}, nil
+	}
 	if p.peek().kind == kLParen {
 		p.i++
 		pipe, err := p.pipeline()
