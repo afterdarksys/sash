@@ -246,7 +246,11 @@ type machine struct {
 	// own stages (not the statements of a function it calls) are held to
 	// the condition rules in execStage. -1 when no condition is at a depth.
 	pollDepth int
-	failure   *Failure
+	// condRendered: the await condition just run ended in text rendered from
+	// rows or data (see execPrepared); condOf decides it by being non-empty.
+	condRendered      bool
+	condRenderedReady bool
+	failure           *Failure
 
 	ctl       ctl
 	retVal    *value
@@ -1257,11 +1261,15 @@ func (m *machine) test(x Expr, pipe Pipeline, strict bool) (bool, int, bool) {
 		return ok, 0, false
 	}
 	m.typedScalar = false
+	m.condRendered = false
 	st, stop, v := m.runPipe(pipe)
 	if stop {
 		return false, st, true
 	}
 	ok, err := condOf(v, st, strict)
+	if err == nil && strict && m.condRendered && v.kind == valBytes {
+		ok = ok && m.condRenderedReady
+	}
 	if err != nil {
 		m.err.WriteString(err.Error() + "\n")
 		return false, exitType, true
@@ -1282,7 +1290,33 @@ func (m *machine) test(x Expr, pipe Pipeline, strict bool) (bool, int, bool) {
 // nothing.
 var awaitRenders = map[string]bool{
 	"count": true, "sum": true, "avg": true, "min": true, "max": true,
-	"json": true, "to": true, "echo": true, "wc": true,
+	"json": true, "to": true, "echo": true, "wc": true, "log": true,
+}
+
+// readyOf is whether a value turned into text inside an await condition
+// held anything: empty rows, an empty list, false, null and "" did not.
+func readyOf(v value) bool {
+	switch v.kind {
+	case valRows:
+		return len(v.rows) > 0
+	case valRow:
+		return true
+	case valStr:
+		return v.s != ""
+	case valData:
+		switch d := v.d.(type) {
+		case nil:
+			return false
+		case bool:
+			return d
+		case []any:
+			return len(d) > 0
+		case string:
+			return d != ""
+		}
+		return true
+	}
+	return true
 }
 
 func condOf(v value, st int, strict bool) (bool, error) {
@@ -1302,7 +1336,7 @@ func condOf(v value, st int, strict bool) (bool, error) {
 			return len(rows.rows) > 0 && st == 0, nil
 		}
 		if strict {
-			return false, fmt.Errorf("type await: the condition returned data that is neither a bool nor rows")
+			return false, fmt.Errorf("type await: the condition returned data that is neither a bool nor rows (write [ true ], not true)")
 		}
 		return st == 0, nil
 	}
@@ -2088,8 +2122,21 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		cur = fromResult(res)
 	}
 	exits := make([]int, len(exp))
+	// In an await condition: whether its rows or data became text on the
+	// way (a | after rows, or a stage that takes data and prints). Such
+	// text decides by being non-empty, not by status, since cat, head, cut
+	// and the like exit 0 on nothing.
+	atCond := m.polling && m.depth == m.pollDepth
+	rendered, renderedReady := false, true
+	noteRender := func(v value) {
+		rendered = true
+		renderedReady = renderedReady && readyOf(v)
+	}
 	for i, st := range exp {
 		if st.op == "|" && (cur.kind == valRows || st.call != nil) {
+			if cur.kind != valBytes {
+				noteRender(cur)
+			}
 			cur = value{kind: valBytes, b: []byte(render(cur))}
 		}
 		if st.op == "|>" && cur.kind == valData {
@@ -2116,9 +2163,17 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			m.ctl = ctlHalt
 			return exitType, value{}
 		}
+		in := cur
 		v, code := m.execStage(st, cur)
 		exits[i] = code
 		cur = v
+		if in.kind != valBytes && v.kind == valBytes {
+			noteRender(in)
+		}
+		if atCond {
+			m.condRendered = rendered && cur.kind == valBytes
+			m.condRenderedReady = renderedReady
+		}
 		if m.ctl != ctlNone || code == exitType || code == exitDenied || code == exitUnknown {
 			return code, cur
 		}

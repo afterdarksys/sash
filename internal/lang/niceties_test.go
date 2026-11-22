@@ -238,6 +238,14 @@ func TestAwaitTypedReturnsFailClosed(t *testing.T) {
 		{`fn ready() { return [ [] ] }; await timeout 3s every 1s { ready |> count }; echo proceeded`, exitType, "count turns the condition"},
 		{`fn ready() { return [ [{"ok": false}] ] }; fn g() { ready |> where ok == true }; await timeout 3s every 1s { g }; echo proceeded`, exitType, "printed text"},
 		{`let flag = false; await timeout 3s every 1s { echo $flag }; echo proceeded`, exitType, "echo turns the condition"},
+		// Rows or data rendered to text by | decide by being non-empty.
+		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | cat }; echo proceeded`, exitType, "timeout"},
+		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | head -n 1 }; echo proceeded`, exitType, "timeout"},
+		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f | cat }; echo proceeded`, exitType, "timeout"},
+		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | cut -d , -f 1 }; echo proceeded`, exitType, "timeout"},
+		{`fn f() { return [ [] ] }; await timeout 3s every 1s { f |> where ok == true | rows | cat }; echo proceeded`, exitType, "timeout"},
+		{`await timeout 3s every 1s { log info notready }; echo proceeded`, exitType, "log turns the condition"},
+		{`fn f() { return [ [{"ok": true}] ] }; await timeout 3s every 1s { f |> where ok == true | cat }; echo proceeded`, 0, ""},
 		// A wrapper that returns its value is fine.
 		{`fn ready() { return [ true ] }; fn g() { let r = (ready); return $r }; await timeout 3s every 1s { g }; echo proceeded`, 0, ""},
 		{`fn ready() { return [ true ] }; await timeout 3s every 1s { ready }; echo proceeded`, 0, ""},
@@ -284,5 +292,20 @@ func TestAwaitRecordsOneSleepPerInterval(t *testing.T) {
 	rec, _ := record(t, "await timeout 10m every 5m { ps |> where pid == 999999 }")
 	if n := bytes.Count(rec, []byte(`"kind":"sleep"`)); n == 0 || n > 3 {
 		t.Fatalf("%d sleep events:\n%s", n, rec)
+	}
+}
+
+// Verb rows emptied by where, then turned into text, never pass an await;
+// once the service is ready they do.
+func TestAwaitRenderedVerbRowsFailClosed(t *testing.T) {
+	fakeClock(t)
+	for _, tail := range []string{"| cat", "| head -n 1", "| cut -d , -f 1", "| cat | cat", "| rows | cat"} {
+		src := "await timeout 3s every 1s { unit status nginx |> where state == active " + tail + " }; echo proceeded"
+		if out := Run(src, allow(), &readinessParent{ready: 99}, Options{}); out.Status != exitType || strings.Contains(out.Stdout, "proceeded") {
+			t.Errorf("never ready %q: %+v", tail, out)
+		}
+		if out := Run(src, allow(), &readinessParent{ready: 0}, Options{}); out.Status != 0 || !strings.Contains(out.Stdout, "proceeded") {
+			t.Errorf("ready %q: %+v", tail, out)
+		}
 	}
 }
