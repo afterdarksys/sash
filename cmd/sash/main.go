@@ -6,6 +6,9 @@
 // and prints advisory findings; it runs nothing either. --record and
 // --replay run a script offline against a fixture or a recording (tape.go).
 // --skill prints the embedded Claude skill for the language (skill.go).
+// --describe prints a service file's block and per-entry needs as JSON,
+// runs nothing and takes no grant; --entry runs one lifecycle function of
+// a service file (docs/plans/2026-11-21-sash-init-contract.md).
 package main
 
 import (
@@ -47,6 +50,9 @@ func main() {
 	if needsMode(modeArgs) {
 		os.Exit(runNeeds(args))
 	}
+	if flagMode(modeArgs, "--describe") {
+		os.Exit(runDescribe(args))
+	}
 	g := grant.Grant{}
 	var p parent.Parent = closedParent{}
 	if len(args) > 0 && args[0] == "--session" {
@@ -65,9 +71,17 @@ func main() {
 		args = args[1:]
 		st.LockPlan()
 	}
+	entry := ""
+	if len(args) > 0 && args[0] == "--entry" {
+		if len(args) < 3 || strings.HasPrefix(args[1], "-") {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		entry, args = args[1], args[2:]
+	}
 	if len(args) == 0 && line.IsTerm(os.Stdin) {
-		if plan {
-			fmt.Fprintln(os.Stderr, "usage: sash --plan needs a script")
+		if plan || entry != "" || g.Purpose == grant.PurposeService {
+			fmt.Fprintln(os.Stderr, "usage: sash --plan and --entry need a script")
 			os.Exit(2)
 		}
 		os.Exit(line.Loop(os.Stdin, os.Stdout, os.Stderr, g, p))
@@ -79,7 +93,7 @@ func main() {
 		os.Exit(langExit(2))
 	}
 	stopHup := watchHangup(st, hupGrace, os.Exit)
-	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts, Args: scriptArgs, Source: scriptSource(sourceArgs)})
+	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts, Args: scriptArgs, Source: scriptSource(sourceArgs), Entry: entry})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	// A recording set -o record started is written when the script ends,
@@ -175,7 +189,7 @@ func readSource(args []string) (string, error) {
 	return "", errors.New(usage)
 }
 
-const usage = "usage: sash [--session] [--plan] [-c script | file] [-- --name value ...]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"
+const usage = "usage: sash [--session] [--plan] [--entry start|stop|reload|check|run] [-c script | file] [-- --name value ...]; sash --needs [--policy] [-c script | file]; sash --describe [--grant-request] file; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"
 
 // needsMode is true when --needs is among the leading flags.
 func needsMode(args []string) bool { return flagMode(args, "--needs") }
@@ -244,6 +258,38 @@ func runNeeds(args []string) int {
 		return 2
 	}
 	got := lang.Needs(src, lang.NeedsOptions{Policy: policy})
+	fmt.Fprint(os.Stdout, got.Stdout)
+	fmt.Fprint(os.Stderr, got.Stderr)
+	return got.Status
+}
+
+// runDescribe prints a service file's description, or with
+// --grant-request the unsigned sash/2 body its literal needs ask for. It
+// calls no parent and takes no grant, so every other flag is refused, and
+// so is anything after the file.
+func runDescribe(args []string) int {
+	request := false
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch args[0] {
+		case "--describe":
+		case "--grant-request":
+			request = true
+		default:
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		args = args[1:]
+	}
+	if len(args) == 0 && line.IsTerm(os.Stdin) {
+		fmt.Fprintln(os.Stderr, "usage: sash --describe needs a script")
+		return 2
+	}
+	src, err := readSource(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
+		return 2
+	}
+	got := lang.Describe(src, lang.DescribeOptions{GrantRequest: request})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	return got.Status

@@ -412,3 +412,15 @@ func norm(s []string) []string {
 	}
 	return s
 }
+
+// Request is the unsigned sash/2 body for g, in the signed field order,
+// for a fleet signer to complete (host, lease_id, serial) and sign. sash
+// never signs it.
+func Request(g Grant) ([]byte, error) {
+	g.V, g.Purpose = "sash/2", PurposeService
+	b, err := json.MarshalIndent(v2Fields(g), "", "  ")
+	if err != nil {
+		return nil, ErrBadShape
+	}
+	return append(b, '\n'), nil
+}

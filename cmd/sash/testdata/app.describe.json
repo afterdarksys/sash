@@ -1,0 +1,111 @@
+{
+  "v": "sash-describe/1",
+  "service": {
+    "name": "app",
+    "description": "App server",
+    "requires": [
+      "postgres"
+    ],
+    "after": [
+      "postgres",
+      "network-online"
+    ],
+    "wants": [],
+    "user": "app",
+    "group": "app",
+    "run": [],
+    "ready": {
+      "kind": "tcp",
+      "target": "127.0.0.1:8080",
+      "timeout_ms": 60000
+    },
+    "stop": {
+      "signal": "TERM",
+      "timeout_ms": 30000
+    },
+    "restart": {
+      "policy": "on-failure",
+      "delay_ms": 5000,
+      "burst": 3,
+      "within_ms": 120000
+    }
+  },
+  "entries": [
+    "start",
+    "stop",
+    "check"
+  ],
+  "needs": {
+    "check": [
+      {
+        "key": "svc.probe",
+        "target": "tcp 127.0.0.1:8080",
+        "mutates": false,
+        "lines": [
+          26
+        ],
+        "note": ""
+      }
+    ],
+    "start": [
+      {
+        "key": "file.read",
+        "target": "/etc/app/db.secret",
+        "mutates": false,
+        "lines": [
+          15
+        ],
+        "note": ""
+      },
+      {
+        "key": "file.write",
+        "target": "/run/app",
+        "mutates": true,
+        "lines": [
+          14
+        ],
+        "note": ""
+      },
+      {
+        "key": "svc.spawn",
+        "target": "/opt/app/bin/server",
+        "mutates": true,
+        "lines": [
+          17
+        ],
+        "note": ""
+      },
+      {
+        "key": "svc.status",
+        "target": "postgres",
+        "mutates": false,
+        "lines": [
+          16
+        ],
+        "note": ""
+      }
+    ],
+    "stop": [
+      {
+        "key": "svc.signal",
+        "target": "main",
+        "mutates": true,
+        "lines": [
+          21,
+          22
+        ],
+        "note": ""
+      },
+      {
+        "key": "svc.wait",
+        "target": "main",
+        "mutates": false,
+        "lines": [
+          22
+        ],
+        "note": ""
+      }
+    ]
+  },
+  "complete": true
+}

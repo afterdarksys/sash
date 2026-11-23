@@ -1,0 +1,27 @@
+service {
+  name app
+  description "App server"
+  requires postgres
+  after postgres network-online
+  user app
+  group app
+  ready tcp 127.0.0.1:8080 timeout 60s
+  stop signal TERM timeout 30s
+  restart on-failure delay 5s burst 3 within 120s
+}
+
+fn start() {
+  mkdir /run/app mode 0750 owner app:app
+  declare -s dbpass = (cat /etc/app/db.secret)
+  await timeout 30s every 1s { service status postgres |> where state == ready }
+  spawn main /opt/app/bin/server "--port" 8080 opts [ {"env": {"DB_PASS": $dbpass}, "stdout": "journal"} ]
+}
+
+fn stop() {
+  signal main TERM
+  try { wait main timeout 25s } catch e { signal main KILL }
+}
+
+fn check() {
+  probe tcp 127.0.0.1:8080
+}

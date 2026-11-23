@@ -1,0 +1,31 @@
+{
+  "v": "sash/2",
+  "actor": "service:app",
+  "host": "",
+  "purpose": "service",
+  "exp": 0,
+  "lease_id": "",
+  "entitlements": [
+    "file.read",
+    "file.write",
+    "svc.probe",
+    "svc.signal",
+    "svc.spawn",
+    "svc.status",
+    "svc.wait"
+  ],
+  "file_read": [
+    "/etc/app/db.secret"
+  ],
+  "file_write": [
+    "/run/app"
+  ],
+  "allow_private": false,
+  "service": "app",
+  "exec": [
+    "/opt/app/bin/server"
+  ],
+  "caps": [],
+  "mounts": [],
+  "serial": 0
+}
