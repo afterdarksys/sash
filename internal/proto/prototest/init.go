@@ -9,6 +9,7 @@ package prototest
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,6 +190,26 @@ func (in *Init) Do(v parent.Verb) (parent.Result, error) {
 			if !in.G.AllowsMountSource(argv[1]) {
 				return parent.Result{}, errInitDenied
 			}
+			typ, opts := "", []string{}
+			for i := 3; i+1 < len(argv); i += 2 {
+				if argv[i] == "type" {
+					typ = argv[i+1]
+				} else {
+					opts = append(opts, strings.Split(argv[i+1], ",")...)
+				}
+			}
+			bind, err := grant.CheckMountOpts(typ, opts)
+			if err != nil {
+				return parent.Result{}, err
+			}
+			if bind != strings.HasPrefix(argv[1], "/") {
+				return parent.Result{}, errInitDenied
+			}
+			for _, forced := range grant.MountForcedOpts {
+				if !slices.Contains(opts, forced) {
+					return parent.Result{}, grant.ErrMountOpt
+				}
+			}
 			for _, root := range in.G.FileWrite {
 				if within(dir, root) || within(root, dir) {
 					return parent.Result{}, errors.New("mount_overlap")
@@ -249,9 +270,12 @@ func (in *Init) spawn(mine map[string]*Proc, v parent.Verb) (parent.Result, erro
 		return parent.Result{}, errInitDenied
 	}
 	for k := range p.Env {
-		if refusedEnv(k) {
+		if !in.G.AllowsEnv(k) {
 			return parent.Result{}, errors.New("env_refused")
 		}
+	}
+	if cwd, ok := opts["cwd"].(string); ok && !(within2(in.G.FileRead, cwd) || within2(in.G.FileWrite, cwd)) {
+		return parent.Result{}, errInitDenied
 	}
 	in.pid++
 	p.Pid = in.pid
@@ -340,19 +364,6 @@ func (in *Init) Proc(name string) *Proc {
 	return in.Procs[in.Service][name]
 }
 
-func refusedEnv(k string) bool {
-	for _, p := range []string{"LD_", "DYLD_", "MALLOC_"} {
-		if strings.HasPrefix(k, p) {
-			return true
-		}
-	}
-	switch k {
-	case "GCONV_PATH", "LOCPATH", "NLSPATH", "HOSTALIASES", "RES_OPTIONS", "GLIBC_TUNABLES":
-		return true
-	}
-	return false
-}
-
 // within is p equal to or beneath root, by whole components.
 func within(p, root string) bool {
 	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
@@ -364,4 +375,13 @@ func parentDir(p string) string {
 		return "/"
 	}
 	return p[:i]
+}
+
+func within2(roots []string, p string) bool {
+	for _, r := range roots {
+		if within(p, r) {
+			return true
+		}
+	}
+	return false
 }

@@ -30,5 +30,8 @@
   "mount_sources": [],
   "user": "app",
   "group": "app",
+  "env_names": [
+    "DB_PASS"
+  ],
   "serial": 0
 }

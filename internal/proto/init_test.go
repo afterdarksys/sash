@@ -15,7 +15,7 @@ import (
 func TestServiceVerbsOverThePipe(t *testing.T) {
 	g := grant.Grant{V: "sash/2", Purpose: grant.PurposeService, Service: "app",
 		Entitlements: []string{"svc.spawn", "svc.signal", "svc.proc", "file.write"},
-		FileWrite:    []string{"/run/app"}, Exec: []string{"/opt/app/bin/server"}, User: "app", Group: "app"}
+		FileWrite:    []string{"/run/app"}, Exec: []string{"/opt/app/bin/server"}, User: "app", Group: "app", EnvNames: []string{"P"}}
 	for _, max := range []int{0, 4} {
 		in := prototest.NewInit("app", g)
 		a, b := net.Pipe()

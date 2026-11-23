@@ -23,6 +23,7 @@ func bootGrant(service string) grant.Grant {
 		MountSources: []string{"tmpfs", "/srv/app/static"},
 		User:         "app",
 		Group:        "app",
+		EnvNames:     []string{"DB_PASS", "MODE", "P", "PORT", "LD_PRELOAD", "OPENSSL_CONF", "GIT_SSH_COMMAND"},
 		Serial:       1,
 	}
 }
@@ -503,19 +504,31 @@ func TestSpawnEnvRefused(t *testing.T) {
 
 func TestMountSourceAndOverlap(t *testing.T) {
 	for body, want := range map[string]string{
-		"mount / /mnt/app opts bind":                          "denied mount source",
-		"mount /etc /mnt/app type bind":                       "denied mount source",
-		"mount /srv/app/static/../../../etc /mnt/app":         "usage mount",
-		"mount proc /mnt/app":                                 "denied mount source",
-		"mount tmpfs /mnt/app opts rbind":                     "usage mount",
-		"mount /srv/app/static/img /mnt/app opts \"ro,bind\"": "",
-		"mount tmpfs /mnt/app type tmpfs opts \"size=64m\"":   "",
+		"mount / /mnt/app opts bind":                  "denied mount source",
+		"mount /etc /mnt/app opts rbind":              "denied mount source",
+		"mount /srv/app/static/../../../etc /mnt/app": "usage mount",
+		"mount proc /mnt/app type proc":               "denied mount source",
+		"mount tmpfs /mnt/app opts rbind":             "usage mount: a bind takes a path",
+		"mount /srv/app/static /mnt/app type tmpfs":   "usage mount: a bind takes a path",
+		"mount /srv/app/static /mnt/app type bind":    "mount_opt_refused",
+		"mount tmpfs /mnt/app":                        "mount_opt_refused",
+		"mount tmpfs /mnt/app type overlay opts \"lowerdir=/etc,upperdir=/srv/u,workdir=/srv/w\"": "mount_opt_refused",
+		"mount tmpfs /mnt/app type tmpfs opts \"suid,dev,exec\"":                                  "mount_opt_refused",
+		"mount tmpfs /mnt/app type tmpfs opts x-bind":                                             "mount_opt_refused",
+		"mount tmpfs /mnt/app type tmpfs opts move":                                               "mount_opt_refused",
+		"mount /srv/app/static /mnt/app opts BIND":                                                "mount_opt_refused",
+		"mount tmpfs /mnt/app type TMPFS":                                                         "mount_opt_refused",
+		"mount tmpfs /mnt/app type tmpfs opts \"mode=7777x\"":                                     "mount_opt_refused",
+		"mount /srv/app/static/img /mnt/app opts \"ro,bind\"":                                     "",
+		"mount tmpfs /mnt/app type tmpfs opts \"size=64m,mode=0755,uid=100,noexec\"":              "",
 	} {
 		in := newInit(t)
 		out := runEntry(t, appService+"fn start() {\n"+body+"\n}\n", "start", in)
 		if want == "" {
-			if out.Status != 0 || len(in.Mounts) != 1 {
-				t.Errorf("%q: %+v", body, out)
+			// sash always adds nosuid and nodev, and the init requires them.
+			calls := in.Calls()
+			if out.Status != 0 || len(in.Mounts) != 1 || len(calls) != 1 || !strings.HasSuffix(strings.Join(calls[0].Argv, " "), ",nosuid,nodev") {
+				t.Errorf("%q: %+v %v", body, out, calls)
 			}
 			continue
 		}
@@ -533,13 +546,20 @@ func TestMountSourceAndOverlap(t *testing.T) {
 		if out.Status != exitType || !strings.Contains(out.Stderr, "mount_overlap") || len(in.Calls()) != 0 {
 			t.Errorf("%s: %+v %v", mounts, out, in.Calls())
 		}
-		if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: []string{"mount", "/etc", mounts, "opts", "bind"}}); err == nil || err.Error() != "mount_overlap" {
+		if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: []string{"mount", "/etc", mounts, "opts", "bind,nosuid,nodev"}}); err == nil || err.Error() != "mount_overlap" {
 			t.Errorf("%s: the init mounted: %v", mounts, err)
 		}
 	}
 	in := newInit(t)
-	if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: []string{"mount", "/", "/mnt/app", "opts", "bind"}}); err == nil {
-		t.Fatal("the init mounted / ")
+	for _, argv := range [][]string{
+		{"mount", "/", "/mnt/app", "opts", "bind,nosuid,nodev"},
+		{"mount", "tmpfs", "/mnt/app", "type", "tmpfs", "opts", "size=1m"},
+		{"mount", "tmpfs", "/mnt/app", "type", "overlay", "opts", "nosuid,nodev,lowerdir=/etc"},
+		{"mount", "tmpfs", "/mnt/app", "type", "tmpfs", "opts", "nosuid,nodev,suid"},
+	} {
+		if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: argv}); err == nil {
+			t.Errorf("the init mounted %v", argv)
+		}
 	}
 }
 
@@ -598,5 +618,60 @@ func TestBootKeysNeedABootGrant(t *testing.T) {
 		if out.Status != exitDenied || len(f.calls) != 0 {
 			t.Errorf("%q: %+v %v", line, out, f.calls)
 		}
+	}
+}
+
+// The env names are an allowlist signed in the grant; the denylist is a
+// second gate the grant cannot open.
+func TestSpawnEnvAllowlist(t *testing.T) {
+	spawn := func(name string, g grant.Grant) (Outcome, *prototest.Init) {
+		in := prototest.NewInit("app", g)
+		return Run(appService+"fn start() { spawn main /opt/app/bin/server opts [ {\"env\": {\""+name+"\": \"x\"}} ] }\n", g, in, Options{Entry: "start"}), in
+	}
+	g := bootGrant("app")
+	for _, name := range []string{"OPENSSL_CONF", "CLASSPATH", "PYTHONWARNINGS", "PERL5DB", "GIT_SSH_COMMAND", "PATH", "LD_PRELOAD", "lower", "OPENSSL_ENGINES"} {
+		out, in := spawn(name, g)
+		if out.Status != exitType || !strings.Contains(out.Stderr, "env_refused: "+name) || len(in.Calls()) != 0 {
+			t.Errorf("%s: %+v", name, out)
+		}
+	}
+	// PATH is allowed only when the grant lists it.
+	g.EnvNames = append(g.EnvNames, "PATH")
+	if out, in := spawn("PATH", g); out.Status != 0 || in.Proc("main").Env["PATH"] != "x" {
+		t.Fatalf("listed PATH: %+v", out)
+	}
+	// The init applies both gates itself.
+	in := prototest.NewInit("app", bootGrant("app"))
+	for _, name := range []string{"CLASSPATH", "LD_PRELOAD", "GIT_SSH_COMMAND"} {
+		body := `{"user":"app","group":"app","env":{"` + name + `":"x"}}`
+		if _, err := in.Do(parent.Verb{Key: "svc.spawn", Argv: []string{"spawn", "main", "/opt/app/bin/server"}, Body: []byte(body)}); err == nil || err.Error() != "env_refused" {
+			t.Errorf("init %s: %v", name, err)
+		}
+	}
+}
+
+func TestSpawnCwd(t *testing.T) {
+	for cwd, want := range map[string]string{"/root": "denied cwd", "/etc": "denied cwd", "/run/app/data": "", "/etc/app": ""} {
+		in := newInit(t)
+		out := runEntry(t, appService+"fn start() { spawn main /opt/app/bin/server opts [ {\"cwd\": \""+cwd+"\"} ] }\n", "start", in)
+		if want == "" && out.Status != 0 || want != "" && (out.Status != exitType || !strings.Contains(out.Stderr, want) || len(in.Calls()) != 0) {
+			t.Errorf("%s: %+v", cwd, out)
+		}
+	}
+	in := newInit(t)
+	if _, err := in.Do(parent.Verb{Key: "svc.spawn", Argv: []string{"spawn", "main", "/opt/app/bin/server"}, Body: []byte(`{"user":"app","group":"app","cwd":"/root"}`)}); err == nil {
+		t.Fatal("the init took cwd /root")
+	}
+}
+
+func TestGrantRequestEnvNames(t *testing.T) {
+	src := appService + "fn start() {\n spawn main /opt/app/bin/server opts [ {\"env\": {\"PORT\": \"80\", \"LD_PRELOAD\": \"/x\"}} ]\n}\n"
+	out := Describe(src, DescribeOptions{GrantRequest: true})
+	if out.Status != 0 || !strings.Contains(out.Stdout, "\"env_names\": [\n    \"PORT\"\n  ]") {
+		t.Fatalf("%+v", out)
+	}
+	dyn := Describe(appService+"fn start() {\n let e = [ {} ]\n spawn main /opt/app/bin/server opts [ {\"env\": $e} ]\n}\n", DescribeOptions{})
+	if dyn.Status != 1 || !strings.Contains(dyn.Stdout, "\"target\": \"env $\"") {
+		t.Fatalf("dynamic env: %+v", dyn)
 	}
 }

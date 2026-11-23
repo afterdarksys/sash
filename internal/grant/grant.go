@@ -38,7 +38,9 @@ type Grant struct {
 	MountSources []string
 	User         string
 	Group        string
-	Serial       uint64
+	// EnvNames are the environment names spawn may set (policy.go).
+	EnvNames []string
+	Serial   uint64
 }
 
 // Boot reports a sash/2 boot grant: the only kind that carries the

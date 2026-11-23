@@ -95,7 +95,7 @@ func TestBinaryEntryAgainstTheInit(t *testing.T) {
 		g := grant.Grant{V: "sash/2", Actor: "service:" + service, Host: "web1", Purpose: grant.PurposeService, LeaseID: "boot-1",
 			Entitlements: []string{"file.read", "file.write", "svc.spawn", "svc.signal", "svc.wait", "svc.status", "svc.probe"},
 			FileRead:     []string{"/etc/app"}, FileWrite: []string{"/run/app"},
-			Service: service, Exec: []string{"/opt/app/bin/server"}, Caps: []string{}, Mounts: []string{}, MountSources: []string{}, User: "app", Group: "app", Serial: 3}
+			Service: service, Exec: []string{"/opt/app/bin/server"}, Caps: []string{}, Mounts: []string{}, MountSources: []string{}, User: "app", Group: "app", EnvNames: []string{"DB_PASS"}, Serial: 3}
 		doc, err := grant.Sign(g, fleetPriv)
 		if err != nil {
 			t.Fatal(err)

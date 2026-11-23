@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/afterdarksys/sash/internal/grant"
 	"github.com/afterdarksys/sash/internal/parent"
 )
 
@@ -61,41 +62,12 @@ var bootKeys = map[string]bool{
 // It starts with a letter, so it never reads as a pid.
 var procName = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 
-// envRefused are environment names a spawn may not set: the dynamic loader,
-// libc's lookup and allocator knobs, and interpreter search paths and
-// startup hooks, each of which runs code the grant never named.
-var envRefused = map[string]bool{
-	"GCONV_PATH": true, "LOCPATH": true, "NLSPATH": true, "HOSTALIASES": true, "RES_OPTIONS": true,
-	"GLIBC_TUNABLES": true, "TZDIR": true, "BASH_ENV": true, "ENV": true, "IFS": true, "SHELLOPTS": true,
-	"PYTHONPATH": true, "PYTHONHOME": true, "PYTHONSTARTUP": true, "PERLLIB": true, "PERL5LIB": true, "PERL5OPT": true,
-	"RUBYLIB": true, "RUBYOPT": true, "NODE_OPTIONS": true, "NODE_PATH": true, "JAVA_TOOL_OPTIONS": true,
-	"_JAVA_OPTIONS": true, "JDK_JAVA_OPTIONS": true, "LUA_PATH": true, "LUA_CPATH": true,
-}
-
-var envRefusedPrefix = []string{"LD_", "DYLD_", "MALLOC_"}
-
-// envNameOK is "" for an env name spawn may set, else env_refused.
-func envNameOK(k string) string {
-	if !envName.MatchString(k) {
-		return "usage spawn opts env"
-	}
-	for _, p := range envRefusedPrefix {
-		if strings.HasPrefix(k, p) {
-			return "env_refused: " + k
-		}
-	}
-	if envRefused[k] {
-		return "env_refused: " + k
-	}
-	return ""
-}
-
 var (
-	fileMode  = regexp.MustCompile(`^[01]?[0-7]{3}$`)
-	umaskRe   = regexp.MustCompile(`^0?[0-7]{3}$`)
-	envName   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	fsType    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
-	mountOpts = regexp.MustCompile(`^[A-Za-z0-9_=,.:/+-]{1,256}$`)
+	fileMode = regexp.MustCompile(`^[01]?[0-7]{3}$`)
+	umaskRe  = regexp.MustCompile(`^0?[0-7]{3}$`)
+	envName  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+	// mountWord is a type or opts word's shape; the allowlists decide.
+	mountWord = regexp.MustCompile(`^[A-Za-z0-9_=,.:/%+-]{1,256}$`)
 	mountSrc  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 )
 
@@ -277,7 +249,7 @@ func classifySvc(argv []string) (classified, *problem, bool) {
 			return usage()
 		}
 	case "mount":
-		if len(argv) < 3 || !svcOptions(argv[3:], map[string]func(string) bool{"type": fsType.MatchString, "opts": mountOpts.MatchString}) {
+		if len(argv) < 3 || !svcOptions(argv[3:], map[string]func(string) bool{"type": mountWord.MatchString, "opts": mountWord.MatchString}) {
 			return usage()
 		}
 		if src := argv[1]; !mountSrc.MatchString(src) {
@@ -406,7 +378,7 @@ func (m *machine) bindSvc(st *expStage) (int, *problem) {
 			return dir, &problem{exitDenied, msgDeniedMount}
 		}
 		if argv[0] == "mount" {
-			if i, prob := m.mountChecks(argv); prob != nil {
+			if i, prob := m.mountChecks(st); prob != nil {
 				return i, prob
 			}
 		}
@@ -584,6 +556,9 @@ func (m *machine) spawnOpt(k string, d any) (any, *problem) {
 		if err != nil {
 			return bad()
 		}
+		if !m.g.AllowsRead(string(p)) && !m.g.AllowsWrite(string(p)) {
+			return nil, &problem{exitDenied, "denied cwd"}
+		}
 		return string(p), nil
 	case "umask":
 		s, ok := str()
@@ -605,8 +580,9 @@ func (m *machine) spawnOpt(k string, d any) (any, *problem) {
 			return bad()
 		}
 		for ek, ev := range env {
-			if msg := envNameOK(ek); msg != "" {
-				return nil, &problem{exitType, msg}
+			// An allowlist: the grant's env_names, minus the denylist.
+			if !m.g.AllowsEnv(ek) {
+				return nil, &problem{exitType, "env_refused: " + needsCell(ek)}
 			}
 			switch x := ev.(type) {
 			case string:
@@ -816,6 +792,15 @@ func (n *needsRun) spawnOptsNeeds(x Expr, at int) {
 				}
 				n.add("svc.spawn", "cap "+s, "", at, "")
 			}
+		case "env":
+			em, ok := mx.vals[i].(exprMap)
+			if !ok {
+				n.add("svc.spawn", "env $", noteDynamic, at, "")
+				continue
+			}
+			for _, ek := range em.keys {
+				n.add("svc.spawn", "env "+ek, "", at, "")
+			}
 		case "stdout", "stderr":
 			lit, ok := mx.vals[i].(exprLit)
 			s, isStr := lit.d.(string)
@@ -869,38 +854,52 @@ func (l *linter) serviceRules() {
 	}
 }
 
-// mountRebinds are the mount options that bring an existing tree to DIR.
-var mountRebinds = map[string]bool{"bind": true, "rbind": true, "remount": true}
-
-// mountChecks is mount SRC DIR's source and overlap rules: SRC is one of
-// the grant's mount_sources or beneath one; a bind, rbind or remount takes
-// a path SRC, never a filesystem name; and DIR neither lies at or under a
-// file_write root nor holds one (mount_overlap), so a mount cannot turn
-// file_write onto another tree, or a write root into the mounted one.
-func (m *machine) mountChecks(argv []string) (int, *problem) {
+// mountChecks is mount SRC DIR's rules, on the shared allowlists
+// (grant/policy.go): the type is tmpfs, proc, sysfs or devpts, or the
+// mount is a bind (option bind or rbind, no type) of a path SRC; each
+// option is on the allowlist (mount_opt_refused); SRC is one of the
+// grant's mount_sources or beneath one; and DIR neither lies at or under a
+// file_write root nor holds one (mount_overlap). The argv the init gets
+// names the options in full, nosuid and nodev always among them.
+func (m *machine) mountChecks(st *expStage) (int, *problem) {
+	argv := st.argv
 	src, dir := argv[1], argv[2]
-	rebind := false
+	typ := ""
+	var opts []string
 	for i := 3; i+1 < len(argv); i += 2 {
-		vals := []string{argv[i+1]}
-		if argv[i] == "opts" {
-			vals = strings.Split(argv[i+1], ",")
+		if argv[i] == "type" {
+			typ = argv[i+1]
+		} else {
+			opts = append(opts, strings.Split(argv[i+1], ",")...)
 		}
-		for _, v := range vals {
-			if mountRebinds[v] {
-				rebind = true
-			}
-		}
+	}
+	bind, err := grant.CheckMountOpts(typ, opts)
+	if err != nil {
+		return -1, &problem{exitType, err.Error()}
 	}
 	if !m.g.AllowsMountSource(src) {
 		return 1, &problem{exitDenied, "denied mount source"}
 	}
-	if rebind && !strings.HasPrefix(src, "/") {
-		return 1, &problem{exitType, "usage mount: bind, rbind and remount take a path"}
+	if bind != strings.HasPrefix(src, "/") {
+		return 1, &problem{exitType, "usage mount: a bind takes a path SRC, a type a name"}
 	}
 	for _, root := range m.g.FileWrite {
 		if pathStarts(pathV(dir), pathV(root)) || pathStarts(pathV(root), pathV(dir)) {
 			return 2, &problem{exitDenied, "mount_overlap"}
 		}
 	}
+	seen := map[string]bool{}
+	var all []string
+	for _, o := range append(opts, grant.MountForcedOpts...) {
+		if !seen[o] {
+			seen[o] = true
+			all = append(all, o)
+		}
+	}
+	out := []string{"mount", src, dir}
+	if typ != "" {
+		out = append(out, "type", typ)
+	}
+	st.argv = append(out, "opts", strings.Join(all, ","))
 	return -1, nil
 }

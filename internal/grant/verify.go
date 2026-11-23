@@ -123,6 +123,7 @@ type signedV2 struct {
 	MountSources []string `json:"mount_sources"`
 	User         string   `json:"user"`
 	Group        string   `json:"group"`
+	EnvNames     []string `json:"env_names"`
 	Serial       uint64   `json:"serial"`
 }
 
@@ -147,7 +148,7 @@ func v1Fields(g Grant) signed {
 }
 
 func v2Fields(g Grant) signedV2 {
-	return signedV2{signed: v1Fields(g), Service: g.Service, Exec: norm(g.Exec), Caps: norm(g.Caps), Mounts: norm(g.Mounts), MountSources: norm(g.MountSources), User: g.User, Group: g.Group, Serial: g.Serial}
+	return signedV2{signed: v1Fields(g), Service: g.Service, Exec: norm(g.Exec), Caps: norm(g.Caps), Mounts: norm(g.Mounts), MountSources: norm(g.MountSources), User: g.User, Group: g.Group, EnvNames: norm(g.EnvNames), Serial: g.Serial}
 }
 
 // Message is the exact byte string an ed25519 key signs for this grant:
@@ -362,7 +363,7 @@ func parseV2(doc []byte) (Grant, string, error) {
 	if err := json.Unmarshal(doc, &raw); err != nil {
 		return Grant{}, "", ErrBadShape
 	}
-	for _, key := range []string{"v", "actor", "host", "purpose", "exp", "lease_id", "entitlements", "service", "exec", "caps", "mounts", "mount_sources", "user", "group", "serial", "sig"} {
+	for _, key := range []string{"v", "actor", "host", "purpose", "exp", "lease_id", "entitlements", "service", "exec", "caps", "mounts", "mount_sources", "user", "group", "env_names", "serial", "sig"} {
 		if _, ok := raw[key]; !ok {
 			return Grant{}, "", ErrBadShape
 		}
@@ -373,7 +374,7 @@ func parseV2(doc []byte) (Grant, string, error) {
 	if !ServiceName.MatchString(w.Service) || w.Actor != "service:"+w.Service || w.Serial < 1 || w.Exp < 0 {
 		return Grant{}, "", ErrBadShape
 	}
-	if w.Exec == nil || w.Caps == nil || w.Mounts == nil || w.MountSources == nil {
+	if w.Exec == nil || w.Caps == nil || w.Mounts == nil || w.MountSources == nil || w.EnvNames == nil {
 		return Grant{}, "", ErrBadShape
 	}
 	if !UnixName.MatchString(w.User) || !UnixName.MatchString(w.Group) {
@@ -393,6 +394,11 @@ func parseV2(doc []byte) (Grant, string, error) {
 		}
 		if err := roots([]string{src}); err != nil {
 			return Grant{}, "", err
+		}
+	}
+	for _, e := range w.EnvNames {
+		if !EnvName.MatchString(e) {
+			return Grant{}, "", ErrBadShape
 		}
 	}
 	for _, c := range w.Caps {
@@ -418,6 +424,7 @@ func parseV2(doc []byte) (Grant, string, error) {
 		MountSources: append([]string(nil), w.MountSources...),
 		User:         w.User,
 		Group:        w.Group,
+		EnvNames:     append([]string(nil), w.EnvNames...),
 		Serial:       w.Serial,
 	}
 	return g, w.Sig, nil

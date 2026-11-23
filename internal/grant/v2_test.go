@@ -212,3 +212,19 @@ func TestIdentityAndMountSources(t *testing.T) {
 		t.Fatal("Boot")
 	}
 }
+
+func TestEnvNamesShapeAndGates(t *testing.T) {
+	fleet, emergency := testKeys(t)
+	g := sampleV2()
+	g.EnvNames = []string{"lower"}
+	if _, err := Verify(mustSign(t, g, fleet.priv), fleet.pub, emergency.pub, time.Now()); token(err) != "grant_bad_shape" {
+		t.Fatalf("lowercase env name: %v", err)
+	}
+	if g.AllowsEnv("lower") {
+		t.Fatal("a name of the wrong form, listed in an unverified grant, allowed")
+	}
+	g.EnvNames = []string{"PORT", "LD_PRELOAD", "GIT_DIR", "PATH"}
+	if !g.AllowsEnv("PORT") || !g.AllowsEnv("PATH") || g.AllowsEnv("LD_PRELOAD") || g.AllowsEnv("GIT_DIR") || g.AllowsEnv("HOME") {
+		t.Fatal("env gates")
+	}
+}

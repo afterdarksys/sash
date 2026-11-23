@@ -214,7 +214,7 @@ func (n *needsRun) entryNeeds(fn *Fn, fns map[string]*Fn) {
 // not ask for, and the description says it is incomplete.
 func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
 	name := svc.Name
-	sets := map[string]map[string]bool{"ent": {}, "read": {}, "write": {}, "exec": {}, "caps": {}, "mounts": {}, "sources": {}}
+	sets := map[string]map[string]bool{"ent": {}, "read": {}, "write": {}, "exec": {}, "caps": {}, "mounts": {}, "sources": {}, "env": {}}
 	add := func(set, v string) { sets[set][v] = true }
 	private := false
 	for _, r := range rows {
@@ -232,6 +232,12 @@ func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
 		case "svc.spawn":
 			if c, ok := strings.CutPrefix(r.target, "cap "); ok {
 				add("caps", c)
+			} else if e, ok := strings.CutPrefix(r.target, "env "); ok {
+				// A denied name is refused at the run whatever the grant
+				// lists, so the request never asks for it.
+				if grant.EnvName.MatchString(e) && !grant.EnvDenied(e) {
+					add("env", e)
+				}
 			} else if strings.HasPrefix(r.target, "/") {
 				add("exec", r.target)
 			}
@@ -264,7 +270,7 @@ func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
 	g := grant.Grant{
 		Actor: "service:" + name, Entitlements: sorted("ent"), FileRead: sorted("read"), FileWrite: sorted("write"),
 		AllowPrivate: private, Service: name, Exec: sorted("exec"), Caps: sorted("caps"), Mounts: sorted("mounts"),
-		MountSources: sorted("sources"), User: svc.User, Group: svc.Group,
+		MountSources: sorted("sources"), User: svc.User, Group: svc.Group, EnvNames: sorted("env"),
 	}
 	b, err := grant.Request(g)
 	if err != nil {

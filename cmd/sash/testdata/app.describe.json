@@ -76,6 +76,15 @@
         "note": ""
       },
       {
+        "key": "svc.spawn",
+        "target": "env DB_PASS",
+        "mutates": true,
+        "lines": [
+          17
+        ],
+        "note": ""
+      },
+      {
         "key": "svc.status",
         "target": "postgres",
         "mutates": false,
