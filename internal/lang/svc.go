@@ -58,7 +58,37 @@ var bootKeys = map[string]bool{
 }
 
 // procName is a name given to spawn: the init's handle for the process.
-var procName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+// It starts with a letter, so it never reads as a pid.
+var procName = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+
+// envRefused are environment names a spawn may not set: the dynamic loader,
+// libc's lookup and allocator knobs, and interpreter search paths and
+// startup hooks, each of which runs code the grant never named.
+var envRefused = map[string]bool{
+	"GCONV_PATH": true, "LOCPATH": true, "NLSPATH": true, "HOSTALIASES": true, "RES_OPTIONS": true,
+	"GLIBC_TUNABLES": true, "TZDIR": true, "BASH_ENV": true, "ENV": true, "IFS": true, "SHELLOPTS": true,
+	"PYTHONPATH": true, "PYTHONHOME": true, "PYTHONSTARTUP": true, "PERLLIB": true, "PERL5LIB": true, "PERL5OPT": true,
+	"RUBYLIB": true, "RUBYOPT": true, "NODE_OPTIONS": true, "NODE_PATH": true, "JAVA_TOOL_OPTIONS": true,
+	"_JAVA_OPTIONS": true, "JDK_JAVA_OPTIONS": true, "LUA_PATH": true, "LUA_CPATH": true,
+}
+
+var envRefusedPrefix = []string{"LD_", "DYLD_", "MALLOC_"}
+
+// envNameOK is "" for an env name spawn may set, else env_refused.
+func envNameOK(k string) string {
+	if !envName.MatchString(k) {
+		return "usage spawn opts env"
+	}
+	for _, p := range envRefusedPrefix {
+		if strings.HasPrefix(k, p) {
+			return "env_refused: " + k
+		}
+	}
+	if envRefused[k] {
+		return "env_refused: " + k
+	}
+	return ""
+}
 
 var (
 	fileMode  = regexp.MustCompile(`^[01]?[0-7]{3}$`)
@@ -375,6 +405,11 @@ func (m *machine) bindSvc(st *expStage) (int, *problem) {
 		if !m.g.AllowsMount(argv[dir]) {
 			return dir, &problem{exitDenied, msgDeniedMount}
 		}
+		if argv[0] == "mount" {
+			if i, prob := m.mountChecks(argv); prob != nil {
+				return i, prob
+			}
+		}
 	case "probe":
 		switch argv[1] {
 		case "tcp":
@@ -498,13 +533,12 @@ func (m *machine) spawnOpts(x Expr) ([]byte, bool, *problem) {
 		}
 		opts[k] = v
 	}
-	if m.svc != nil {
-		if _, ok := opts["user"]; !ok && m.svc.User != "" {
-			opts["user"] = m.svc.User
-		}
-		if _, ok := opts["group"]; !ok && m.svc.Group != "" {
-			opts["group"] = m.svc.Group
-		}
+	// Omitted means the block's identity, which is the grant's.
+	if _, ok := opts["user"]; !ok && m.g.User != "" {
+		opts["user"] = m.g.User
+	}
+	if _, ok := opts["group"]; !ok && m.g.Group != "" {
+		opts["group"] = m.g.Group
 	}
 	b, err := json.Marshal(opts)
 	if err != nil {
@@ -530,6 +564,15 @@ func (m *machine) spawnOpt(k string, d any) (any, *problem) {
 		s, ok := str()
 		if !ok || !unixName.MatchString(s) {
 			return bad()
+		}
+		// Only the grant's identity, which the service block must match:
+		// root only when the grant itself says root.
+		want := m.g.User
+		if k == "group" {
+			want = m.g.Group
+		}
+		if s != want {
+			return nil, &problem{exitDenied, "denied " + k}
 		}
 		return s, nil
 	case "cwd":
@@ -562,8 +605,8 @@ func (m *machine) spawnOpt(k string, d any) (any, *problem) {
 			return bad()
 		}
 		for ek, ev := range env {
-			if !envName.MatchString(ek) {
-				return bad()
+			if msg := envNameOK(ek); msg != "" {
+				return nil, &problem{exitType, msg}
 			}
 			switch x := ev.(type) {
 			case string:
@@ -737,6 +780,11 @@ func (n *needsRun) svcStage(name string, st Stage, b needBase) {
 	case "mount":
 		if len(args) >= 2 {
 			n.value("fs.mount", args[1], false)
+			if src := plain(args[0]); src == "" {
+				n.add("fs.mount", "source $", noteDynamic, at, "")
+			} else {
+				n.add("fs.mount", "source "+src, "", at, "")
+			}
 		}
 	case "umount":
 		if len(args) == 1 {
@@ -819,4 +867,40 @@ func (l *linter) serviceRules() {
 			}
 		}
 	}
+}
+
+// mountRebinds are the mount options that bring an existing tree to DIR.
+var mountRebinds = map[string]bool{"bind": true, "rbind": true, "remount": true}
+
+// mountChecks is mount SRC DIR's source and overlap rules: SRC is one of
+// the grant's mount_sources or beneath one; a bind, rbind or remount takes
+// a path SRC, never a filesystem name; and DIR neither lies at or under a
+// file_write root nor holds one (mount_overlap), so a mount cannot turn
+// file_write onto another tree, or a write root into the mounted one.
+func (m *machine) mountChecks(argv []string) (int, *problem) {
+	src, dir := argv[1], argv[2]
+	rebind := false
+	for i := 3; i+1 < len(argv); i += 2 {
+		vals := []string{argv[i+1]}
+		if argv[i] == "opts" {
+			vals = strings.Split(argv[i+1], ",")
+		}
+		for _, v := range vals {
+			if mountRebinds[v] {
+				rebind = true
+			}
+		}
+	}
+	if !m.g.AllowsMountSource(src) {
+		return 1, &problem{exitDenied, "denied mount source"}
+	}
+	if rebind && !strings.HasPrefix(src, "/") {
+		return 1, &problem{exitType, "usage mount: bind, rbind and remount take a path"}
+	}
+	for _, root := range m.g.FileWrite {
+		if pathStarts(pathV(dir), pathV(root)) || pathStarts(pathV(root), pathV(dir)) {
+			return 2, &problem{exitDenied, "mount_overlap"}
+		}
+	}
+	return -1, nil
 }

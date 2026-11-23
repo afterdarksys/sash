@@ -168,7 +168,7 @@ func Describe(src string, opt DescribeOptions) Outcome {
 		out.Status = 1
 	}
 	if opt.GrantRequest {
-		b, err := grantRequest(svc.Name, all)
+		b, err := grantRequest(svc, all)
 		if err != nil {
 			return fail(err.Error())
 		}
@@ -212,8 +212,9 @@ func (n *needsRun) entryNeeds(fn *Fn, fns map[string]*Fn) {
 // grantRequest is the unsigned sash/2 body the literal needs ask for. A
 // row with a note is left out: the request never grants what a run might
 // not ask for, and the description says it is incomplete.
-func grantRequest(name string, rows []*needRow) ([]byte, error) {
-	sets := map[string]map[string]bool{"ent": {}, "read": {}, "write": {}, "exec": {}, "caps": {}, "mounts": {}}
+func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
+	name := svc.Name
+	sets := map[string]map[string]bool{"ent": {}, "read": {}, "write": {}, "exec": {}, "caps": {}, "mounts": {}, "sources": {}}
 	add := func(set, v string) { sets[set][v] = true }
 	private := false
 	for _, r := range rows {
@@ -235,7 +236,11 @@ func grantRequest(name string, rows []*needRow) ([]byte, error) {
 				add("exec", r.target)
 			}
 		case "fs.mount":
-			add("mounts", r.target)
+			if src, ok := strings.CutPrefix(r.target, "source "); ok {
+				add("sources", src)
+			} else {
+				add("mounts", r.target)
+			}
 		case "svc.probe":
 			kind, target, _ := strings.Cut(r.target, " ")
 			switch kind {
@@ -259,6 +264,7 @@ func grantRequest(name string, rows []*needRow) ([]byte, error) {
 	g := grant.Grant{
 		Actor: "service:" + name, Entitlements: sorted("ent"), FileRead: sorted("read"), FileWrite: sorted("write"),
 		AllowPrivate: private, Service: name, Exec: sorted("exec"), Caps: sorted("caps"), Mounts: sorted("mounts"),
+		MountSources: sorted("sources"), User: svc.User, Group: svc.Group,
 	}
 	b, err := grant.Request(g)
 	if err != nil {

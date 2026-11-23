@@ -704,6 +704,19 @@ func joinAlts(prefix string, alts []string, suffix string) (string, *ExpandProbl
 }
 
 func expandGlobs(src string, g grant.Grant, p parent.Parent, opt Options) (string, *ExpandProblem) {
+	return globWords(src, func(word string) (string, *ExpandProblem) {
+		// A glob runs before $ expansion, so it would match the name
+		// literally. Refuse it rather than surprise.
+		if strings.Contains(word, "$") {
+			return "", &ExpandProblem{Status: exitType, Msg: "type glob $"}
+		}
+		return globWord(word, g, p, opt)
+	})
+}
+
+// globWords calls glob on each word of src a run would glob, and puts its
+// result in the word's place.
+func globWords(src string, glob func(word string) (string, *ExpandProblem)) (string, *ExpandProblem) {
 	// A path literal (= path WORD, or the value of declare -P) is not a
 	// glob: it stays as written, and the parser refuses its "*" (path.go).
 	// The words are tracked within one statement only: a separator between
@@ -737,12 +750,7 @@ func expandGlobs(src string, g grant.Grant, p parent.Parent, opt Options) (strin
 		if pathLit || !strings.Contains(word, "*") {
 			return word, nil
 		}
-		// A glob runs before $ expansion, so it would match the name
-		// literally. Refuse it rather than surprise.
-		if strings.Contains(word, "$") {
-			return "", &ExpandProblem{Status: exitType, Msg: "type glob $"}
-		}
-		return globWord(word, g, p, opt)
+		return glob(word)
 	})
 }
 

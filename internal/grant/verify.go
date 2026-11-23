@@ -59,18 +59,36 @@ const (
 	// ErrServiceMismatch is a service file run under a grant for another
 	// service (or no service at all). It is checked before anything runs.
 	ErrServiceMismatch Error = "grant_service_mismatch"
+	// ErrIdentityMismatch is a service block whose user or group is not
+	// the grant's.
+	ErrIdentityMismatch Error = "grant_identity_mismatch"
 )
 
 // ServiceName is the form of a service name, in the grant and the service
 // block alike.
 var ServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
+// UnixName is a user or group name.
+var UnixName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// MountName is a mount source that is a filesystem name, not a path.
+var MountName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
 var capName = regexp.MustCompile(`^CAP_[A-Z0-9_]{1,32}$`)
 
 // CheckService is nil when g is a sash/2 service grant for name.
 func CheckService(g Grant, name string) error {
-	if g.V != "sash/2" || g.Purpose != PurposeService || g.Service == "" || g.Service != name {
+	if !g.Boot() || g.Service == "" || g.Service != name {
 		return ErrServiceMismatch
+	}
+	return nil
+}
+
+// CheckIdentity is nil when the service block's user and group are the
+// grant's. An unset block identity means the grant's.
+func CheckIdentity(g Grant, user, group string) error {
+	if (user != "" && user != g.User) || (group != "" && group != g.Group) {
+		return ErrIdentityMismatch
 	}
 	return nil
 }
@@ -101,7 +119,11 @@ type signedV2 struct {
 	Exec    []string `json:"exec"`
 	Caps    []string `json:"caps"`
 	Mounts  []string `json:"mounts"`
-	Serial  uint64   `json:"serial"`
+	// MountSources are what mount may mount there.
+	MountSources []string `json:"mount_sources"`
+	User         string   `json:"user"`
+	Group        string   `json:"group"`
+	Serial       uint64   `json:"serial"`
 }
 
 type wireV2 struct {
@@ -125,7 +147,7 @@ func v1Fields(g Grant) signed {
 }
 
 func v2Fields(g Grant) signedV2 {
-	return signedV2{signed: v1Fields(g), Service: g.Service, Exec: norm(g.Exec), Caps: norm(g.Caps), Mounts: norm(g.Mounts), Serial: g.Serial}
+	return signedV2{signed: v1Fields(g), Service: g.Service, Exec: norm(g.Exec), Caps: norm(g.Caps), Mounts: norm(g.Mounts), MountSources: norm(g.MountSources), User: g.User, Group: g.Group, Serial: g.Serial}
 }
 
 // Message is the exact byte string an ed25519 key signs for this grant:
@@ -340,7 +362,7 @@ func parseV2(doc []byte) (Grant, string, error) {
 	if err := json.Unmarshal(doc, &raw); err != nil {
 		return Grant{}, "", ErrBadShape
 	}
-	for _, key := range []string{"v", "actor", "host", "purpose", "exp", "lease_id", "entitlements", "service", "exec", "caps", "mounts", "serial", "sig"} {
+	for _, key := range []string{"v", "actor", "host", "purpose", "exp", "lease_id", "entitlements", "service", "exec", "caps", "mounts", "mount_sources", "user", "group", "serial", "sig"} {
 		if _, ok := raw[key]; !ok {
 			return Grant{}, "", ErrBadShape
 		}
@@ -351,7 +373,10 @@ func parseV2(doc []byte) (Grant, string, error) {
 	if !ServiceName.MatchString(w.Service) || w.Actor != "service:"+w.Service || w.Serial < 1 || w.Exp < 0 {
 		return Grant{}, "", ErrBadShape
 	}
-	if w.Exec == nil || w.Caps == nil || w.Mounts == nil {
+	if w.Exec == nil || w.Caps == nil || w.Mounts == nil || w.MountSources == nil {
+		return Grant{}, "", ErrBadShape
+	}
+	if !UnixName.MatchString(w.User) || !UnixName.MatchString(w.Group) {
 		return Grant{}, "", ErrBadShape
 	}
 	if err := shapeCommon(w.signed); err != nil {
@@ -359,6 +384,14 @@ func parseV2(doc []byte) (Grant, string, error) {
 	}
 	for _, list := range [][]string{w.Exec, w.Mounts} {
 		if err := roots(list); err != nil {
+			return Grant{}, "", err
+		}
+	}
+	for _, src := range w.MountSources {
+		if MountName.MatchString(src) {
+			continue
+		}
+		if err := roots([]string{src}); err != nil {
 			return Grant{}, "", err
 		}
 	}
@@ -382,6 +415,9 @@ func parseV2(doc []byte) (Grant, string, error) {
 		Exec:         append([]string(nil), w.Exec...),
 		Caps:         append([]string(nil), w.Caps...),
 		Mounts:       append([]string(nil), w.Mounts...),
+		MountSources: append([]string(nil), w.MountSources...),
+		User:         w.User,
+		Group:        w.Group,
 		Serial:       w.Serial,
 	}
 	return g, w.Sig, nil

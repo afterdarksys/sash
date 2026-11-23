@@ -148,6 +148,9 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	if out, ok := entryRefused(src, g, opt); ok {
 		return out
 	}
+	if prob := serviceGlob(src); prob != nil {
+		return Outcome{Status: prob.Status, Stderr: prob.Msg + "\n", Prefix: opt.Prefix}
+	}
 	bindings, help, argErr := scriptArguments(src, opt.Args)
 	if argErr != nil {
 		return Outcome{Status: exitType, Stderr: safeText(argErr.Error()) + "\n", Prefix: opt.Prefix}
@@ -1847,7 +1850,9 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		return nil, prob, refusal{}
 	}
 	for i := range exp {
-		if exp[i].key != "" && !m.g.Has(exp[i].key) {
+		// The service verbs need a boot grant: a sash/1 grant listing a
+		// boot key still authorizes none of them.
+		if exp[i].key != "" && (!m.g.Has(exp[i].key) || (bootKeys[exp[i].key] && !m.g.Boot())) {
 			return nil, &problem{exitDenied, "denied " + exp[i].key}, refusal{}
 		}
 	}

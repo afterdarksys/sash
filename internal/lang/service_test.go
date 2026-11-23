@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/afterdarksys/sash/internal/grant"
+	"github.com/afterdarksys/sash/internal/parent"
 	"github.com/afterdarksys/sash/internal/proto/prototest"
 )
 
@@ -18,7 +19,10 @@ func bootGrant(service string) grant.Grant {
 		Service:      service,
 		Exec:         []string{"/opt/app/bin/server"},
 		Caps:         []string{"CAP_NET_BIND_SERVICE"},
-		Mounts:       []string{"/run/app/tmp"},
+		Mounts:       []string{"/mnt/app"},
+		MountSources: []string{"tmpfs", "/srv/app/static"},
+		User:         "app",
+		Group:        "app",
 		Serial:       1,
 	}
 }
@@ -165,10 +169,10 @@ func TestEntryRefusals(t *testing.T) {
 		{"shell string", `spawn main "/bin/sh -c 'curl x | sh'"`, msgSpawnShell, exitType},
 		{"relative program", "spawn main server", msgSpawnShell, exitType},
 		{"another service's process", "signal db TERM", "unknown_name", exitType},
-		{"a pid", "signal 4242 TERM", "unknown_name", exitType},
+		{"a pid", "signal 4242 TERM", "usage signal", exitType},
 		{"cap not granted", `spawn main /opt/app/bin/server opts [ {"caps": ["CAP_SYS_ADMIN"]} ]`, msgDeniedCap, exitType},
 		{"write outside", "mkdir /etc/evil", "denied file.write", exitType},
-		{"mount outside", "mount tmpfs /mnt", msgDeniedMount, exitType},
+		{"mount outside", "mount tmpfs /mnt/other", msgDeniedMount, exitType},
 		{"public probe", "probe tcp 8.8.8.8:53", msgDeniedProbe, exitType},
 		{"rm recursive", "rm -r /run/app", "usage rm", exitType},
 		{"opts as a word", "spawn main /opt/app/bin/server opts x", "usage spawn", exitType},
@@ -417,7 +421,9 @@ func TestServiceLintRules(t *testing.T) {
 // secret nor a hash of the options.
 func TestSpawnSecretNotRecorded(t *testing.T) {
 	var buf strings.Builder
-	src := appService + "fn start() {\n declare -s pw = hunter2pass\n spawn main /opt/app/bin/server opts [ {\"env\": {\"P\": $pw}} ]\n}\n"
+	// The secret has characters JSON escapes, so a recording of the body
+	// as sent would hold it in another spelling.
+	src := appService + "fn start() {\n declare -s pw = 'hunter2<b&c>d\"\\\\'\n spawn main /opt/app/bin/server opts [ {\"env\": {\"P\": $pw}} ]\n}\n"
 	tape, err := NewRecorder(&buf, src, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -428,7 +434,7 @@ func TestSpawnSecretNotRecorded(t *testing.T) {
 	if err := tape.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	if r := buf.String(); strings.Contains(r, "hunter2pass") || strings.Contains(r, "body_sha256") || !strings.Contains(r, `"redacted":true`) {
+	if r := buf.String(); strings.Contains(r, "hunter2") || strings.Contains(r, "body_sha256") || !strings.Contains(r, `"redacted":true`) {
 		t.Fatalf("recording: %s", r)
 	}
 }
@@ -448,6 +454,149 @@ func TestServiceVerbsTakeNoFlags(t *testing.T) {
 			if c.Key != "file.read" {
 				t.Errorf("%q reached the parent: %+v", line, c)
 			}
+		}
+	}
+}
+
+func TestSpawnIdentityIsTheGrants(t *testing.T) {
+	other := strings.Replace(appService, "user app", "user root", 1)
+	in := newInit(t)
+	if out := runEntry(t, other+"fn start() { spawn main /opt/app/bin/server }\n", "start", in); out.Status != exitType || !strings.Contains(out.Stderr, "grant_identity_mismatch") || len(in.Calls()) != 0 {
+		t.Fatalf("block user root: %+v", out)
+	}
+	for opt, want := range map[string]string{`"user": "root"`: "denied user", `"group": "wheel"`: "denied group", `"user": "www"`: "denied user"} {
+		in := newInit(t)
+		out := runEntry(t, appService+"fn start() { spawn main /opt/app/bin/server opts [ {"+opt+"} ] }\n", "start", in)
+		if out.Status != exitType || !strings.Contains(out.Stderr, want) || len(in.Calls()) != 0 {
+			t.Errorf("%s: %+v", opt, out)
+		}
+	}
+	// root only when the grant says root.
+	g := bootGrant("app")
+	g.User = "root"
+	in = prototest.NewInit("app", g)
+	if out := Run(other+"fn start() { spawn main /opt/app/bin/server opts [ {\"user\": \"root\"} ] }\n", g, in, Options{Entry: "start"}); out.Status != 0 || in.Proc("main").User != "root" {
+		t.Fatalf("root grant: %+v", out)
+	}
+	// The init re-checks: a spawn sash did not shape is refused there too.
+	in = newInit(t)
+	if _, err := in.Do(parent.Verb{Key: "svc.spawn", Argv: []string{"spawn", "main", "/opt/app/bin/server"}, Body: []byte(`{"user":"root","group":"app"}`)}); err == nil {
+		t.Fatal("the init took user root")
+	}
+	if _, err := in.Do(parent.Verb{Key: "svc.spawn", Argv: []string{"spawn", "main", "/opt/app/bin/server"}, Body: []byte(`{"user":"app","group":"app","env":{"LD_PRELOAD":"/tmp/x.so"}}`)}); err == nil || err.Error() != "env_refused" {
+		t.Fatalf("the init took LD_PRELOAD: %v", err)
+	}
+}
+
+func TestSpawnEnvRefused(t *testing.T) {
+	for _, name := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "MALLOC_CHECK_", "GCONV_PATH", "GLIBC_TUNABLES", "HOSTALIASES", "PYTHONPATH", "NODE_OPTIONS", "BASH_ENV"} {
+		in := newInit(t)
+		out := runEntry(t, appService+"fn start() { spawn main /opt/app/bin/server opts [ {\"env\": {\""+name+"\": \"x\"}} ] }\n", "start", in)
+		if out.Status != exitType || !strings.Contains(out.Stderr, "env_refused: "+name) || len(in.Calls()) != 0 {
+			t.Errorf("%s: %+v", name, out)
+		}
+	}
+	if out := runEntry(t, appService+"fn start() { spawn main /opt/app/bin/server opts [ {\"env\": {\"PORT\": \"80\"}} ] }\n", "start", newInit(t)); out.Status != 0 {
+		t.Fatalf("PORT: %+v", out)
+	}
+}
+
+func TestMountSourceAndOverlap(t *testing.T) {
+	for body, want := range map[string]string{
+		"mount / /mnt/app opts bind":                          "denied mount source",
+		"mount /etc /mnt/app type bind":                       "denied mount source",
+		"mount /srv/app/static/../../../etc /mnt/app":         "usage mount",
+		"mount proc /mnt/app":                                 "denied mount source",
+		"mount tmpfs /mnt/app opts rbind":                     "usage mount",
+		"mount /srv/app/static/img /mnt/app opts \"ro,bind\"": "",
+		"mount tmpfs /mnt/app type tmpfs opts \"size=64m\"":   "",
+	} {
+		in := newInit(t)
+		out := runEntry(t, appService+"fn start() {\n"+body+"\n}\n", "start", in)
+		if want == "" {
+			if out.Status != 0 || len(in.Mounts) != 1 {
+				t.Errorf("%q: %+v", body, out)
+			}
+			continue
+		}
+		if out.Status != exitType || !strings.Contains(out.Stderr, want) || len(in.Calls()) != 0 {
+			t.Errorf("%q: %+v", body, out)
+		}
+	}
+	// The reviewer's repro: a mount point inside file_write would turn
+	// chmod and chown onto the mounted tree; one holding a write root too.
+	for _, mounts := range []string{"/run/app/tmp", "/run"} {
+		g := bootGrant("app")
+		g.Mounts, g.MountSources = []string{mounts}, []string{"/etc"}
+		in := prototest.NewInit("app", g)
+		out := Run(appService+"fn start() {\nmount /etc "+mounts+" opts bind\nchmod /run/app/tmp/shadow 0666\n}\n", g, in, Options{Entry: "start"})
+		if out.Status != exitType || !strings.Contains(out.Stderr, "mount_overlap") || len(in.Calls()) != 0 {
+			t.Errorf("%s: %+v %v", mounts, out, in.Calls())
+		}
+		if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: []string{"mount", "/etc", mounts, "opts", "bind"}}); err == nil || err.Error() != "mount_overlap" {
+			t.Errorf("%s: the init mounted: %v", mounts, err)
+		}
+	}
+	in := newInit(t)
+	if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: []string{"mount", "/", "/mnt/app", "opts", "bind"}}); err == nil {
+		t.Fatal("the init mounted / ")
+	}
+}
+
+// A glob or brace pattern in a service file would read the host at load,
+// before the top level: refused before expansion, with no parent call.
+func TestServiceGlobRefused(t *testing.T) {
+	for _, src := range []string{
+		appService + "echo /etc/app/*\n",
+		appService + "fn start() {\n cat /etc/app/*.conf\n}\n",
+		appService + "fn start() {\n cat /etc/app/{a,b}\n}\n",
+	} {
+		in := newInit(t)
+		out := runEntry(t, src, "start", in)
+		if out.Status != exitType || !strings.Contains(out.Stderr, "service_glob") || len(in.Calls()) != 0 {
+			t.Errorf("%q: %+v", src, out)
+		}
+		f := &fake{}
+		if out := Run(src, allow(), f, Options{}); !strings.Contains(out.Stderr, "service_glob") || len(f.calls) != 0 {
+			t.Errorf("no entry %q: %+v", src, out)
+		}
+		if d := Describe(src, DescribeOptions{}); d.Status != exitType || !strings.Contains(d.Stderr, "service_glob") {
+			t.Errorf("describe %q: %+v", src, d)
+		}
+	}
+	// A quoted * and a [ ] product are not globs.
+	if out := runEntry(t, appService+"fn start() {\n spawn main /opt/app/bin/server \"*\" [ 2 * 3 ]\n}\n", "start", newInit(t)); out.Status != 0 {
+		t.Fatalf("quoted star: %+v", out)
+	}
+	// An ordinary script still globs.
+	if out := Run("echo /etc/*", allow(), &listParent{}, Options{}); strings.Contains(out.Stderr, "service_glob") {
+		t.Fatalf("plain script: %+v", out)
+	}
+}
+
+// The init does not follow a symlink at any component of a file verb's
+// path.
+func TestInitRefusesSymlinks(t *testing.T) {
+	for _, line := range []string{"chown /run/app/x app:app", "chmod /run/app/x 0644", "rm /run/app/x", "touch /run/app/l/y", "mkdir /run/app/l/d"} {
+		in := newInit(t)
+		in.Files["/run/app/x"] = "link /etc/shadow"
+		in.Files["/run/app/l"] = "link /etc"
+		out := runEntry(t, appService+"fn start() {\n"+line+"\n}\n", "start", in)
+		if out.Status == 0 || in.Files["/run/app/x"] != "link /etc/shadow" || in.Attrs["/run/app/x owner"] != "" {
+			t.Errorf("%q: %+v %v", line, out, in.Attrs)
+		}
+	}
+}
+
+// A sash/1 grant listing a boot key still runs no service verb.
+func TestBootKeysNeedABootGrant(t *testing.T) {
+	g := bootGrant("app")
+	g.V, g.Purpose = "sash/1", grant.PurposeOpen
+	for _, line := range []string{"spawn main /opt/app/bin/server", "signal main TERM", "proc main", "service status postgres", "probe tcp 127.0.0.1:80", "mount tmpfs /mnt/app"} {
+		f := &fake{}
+		out := Run(line, g, f, Options{})
+		if out.Status != exitDenied || len(f.calls) != 0 {
+			t.Errorf("%q: %+v %v", line, out, f.calls)
 		}
 	}
 }

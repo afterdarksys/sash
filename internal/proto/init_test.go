@@ -15,7 +15,7 @@ import (
 func TestServiceVerbsOverThePipe(t *testing.T) {
 	g := grant.Grant{V: "sash/2", Purpose: grant.PurposeService, Service: "app",
 		Entitlements: []string{"svc.spawn", "svc.signal", "svc.proc", "file.write"},
-		FileWrite:    []string{"/run/app"}, Exec: []string{"/opt/app/bin/server"}}
+		FileWrite:    []string{"/run/app"}, Exec: []string{"/opt/app/bin/server"}, User: "app", Group: "app"}
 	for _, max := range []int{0, 4} {
 		in := prototest.NewInit("app", g)
 		a, b := net.Pipe()
@@ -28,7 +28,7 @@ func TestServiceVerbsOverThePipe(t *testing.T) {
 				t.Fatalf("mux: %d %v", n, err)
 			}
 		}
-		res, err := c.Do(parent.Verb{Key: "svc.spawn", Argv: []string{"spawn", "main", "/opt/app/bin/server", "-v"}, Body: []byte(`{"env":{"P":{"secret":"pw"}},"user":"app"}`)})
+		res, err := c.Do(parent.Verb{Key: "svc.spawn", Argv: []string{"spawn", "main", "/opt/app/bin/server", "-v"}, Body: []byte(`{"env":{"P":{"secret":"pw"}},"user":"app","group":"app"}`)})
 		if err != nil || res.Kind != parent.KindRows || res.Rows[0]["name"] != "main" {
 			t.Fatalf("max %d spawn: %+v %v", max, res, err)
 		}

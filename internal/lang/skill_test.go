@@ -281,7 +281,8 @@ func skillBootGrant(drop []string) grant.Grant {
 	}
 	g.V, g.Purpose, g.Actor, g.Service, g.Serial = "sash/2", grant.PurposeService, "service:app", "app", 1
 	g.FileWrite = append(g.FileWrite, "/run/app")
-	g.Exec, g.Caps, g.Mounts = []string{"/opt/app/bin/server"}, []string{"CAP_NET_BIND_SERVICE"}, []string{"/run/app/tmp"}
+	g.Exec, g.Caps, g.Mounts = []string{"/opt/app/bin/server"}, []string{"CAP_NET_BIND_SERVICE"}, []string{"/mnt/app"}
+	g.MountSources, g.User, g.Group = []string{"tmpfs"}, "app", "app"
 	return g
 }
 

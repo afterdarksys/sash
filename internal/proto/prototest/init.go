@@ -186,6 +186,16 @@ func (in *Init) Do(v parent.Verb) (parent.Result, error) {
 			return parent.Result{}, errInitDenied
 		}
 		if argv[0] == "mount" {
+			if !in.G.AllowsMountSource(argv[1]) {
+				return parent.Result{}, errInitDenied
+			}
+			for _, root := range in.G.FileWrite {
+				if within(dir, root) || within(root, dir) {
+					return parent.Result{}, errors.New("mount_overlap")
+				}
+			}
+		}
+		if argv[0] == "mount" {
 			in.Mounts[dir] = argv[1]
 		} else {
 			delete(in.Mounts, dir)
@@ -232,8 +242,17 @@ func (in *Init) spawn(mine map[string]*Proc, v parent.Verb) (parent.Result, erro
 			}
 		}
 	}
+	// The init never trusts sash on identity or environment.
 	p.User, _ = opts["user"].(string)
 	p.Group, _ = opts["group"].(string)
+	if p.User != in.G.User || p.Group != in.G.Group {
+		return parent.Result{}, errInitDenied
+	}
+	for k := range p.Env {
+		if refusedEnv(k) {
+			return parent.Result{}, errors.New("env_refused")
+		}
+	}
 	in.pid++
 	p.Pid = in.pid
 	if code, ends := in.Exits[p.Name]; ends {
@@ -256,6 +275,14 @@ func (in *Init) file(v parent.Verb) (parent.Result, error) {
 	for _, p := range paths {
 		if !in.G.AllowsWrite(p) {
 			return parent.Result{}, errInitDenied
+		}
+	}
+	// No component of the path (the last included) may be a symlink:
+	// the init resolves beneath the root with RESOLVE_NO_SYMLINKS, and
+	// uses lchown and unlinkat. ln's TARGET is only text in the link.
+	for p := argv[1]; p != "/" && p != "."; p = parentDir(p) {
+		if strings.HasPrefix(in.Files[p], "link ") {
+			return parent.Result{}, errors.New("symlink")
 		}
 	}
 	ok := parent.Result{Kind: parent.KindBytes}
@@ -311,4 +338,30 @@ func (in *Init) Proc(name string) *Proc {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	return in.Procs[in.Service][name]
+}
+
+func refusedEnv(k string) bool {
+	for _, p := range []string{"LD_", "DYLD_", "MALLOC_"} {
+		if strings.HasPrefix(k, p) {
+			return true
+		}
+	}
+	switch k {
+	case "GCONV_PATH", "LOCPATH", "NLSPATH", "HOSTALIASES", "RES_OPTIONS", "GLIBC_TUNABLES":
+		return true
+	}
+	return false
+}
+
+// within is p equal to or beneath root, by whole components.
+func within(p, root string) bool {
+	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
+}
+
+func parentDir(p string) string {
+	i := strings.LastIndexByte(p, '/')
+	if i <= 0 {
+		return "/"
+	}
+	return p[:i]
 }

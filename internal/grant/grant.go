@@ -32,7 +32,29 @@ type Grant struct {
 	Exec    []string
 	Caps    []string
 	Mounts  []string
-	Serial  uint64
+	// MountSources are the sources mount may use: a path (or a path
+	// beneath it) or a filesystem name such as tmpfs. User and Group are
+	// the only identity spawn may run as.
+	MountSources []string
+	User         string
+	Group        string
+	Serial       uint64
+}
+
+// Boot reports a sash/2 boot grant: the only kind that carries the
+// service verbs.
+func (g Grant) Boot() bool { return g.V == "sash/2" && g.Purpose == PurposeService }
+
+// AllowsMountSource reports whether src is a listed name, or a clean path
+// equal to or beneath a listed path.
+func (g Grant) AllowsMountSource(src string) bool {
+	if !strings.HasPrefix(src, "/") {
+		return exact(g.MountSources, src)
+	}
+	if path.Clean(src) != src {
+		return false
+	}
+	return under(g.MountSources, src)
 }
 
 // AllowsExec reports whether p is exactly one of the exec programs.

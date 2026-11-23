@@ -209,6 +209,9 @@ func Needs(src string, opt NeedsOptions) Outcome {
 // through it too, so both see the same text, errors, and rows. comments,
 // when not nil, gets the comments of the expanded text.
 func needsParse(src string, comments *[]comment) (*needsRun, string, *Program, error) {
+	if prob := serviceGlob(src); prob != nil {
+		return nil, "", nil, errors.New(prob.Msg)
+	}
 	text, prob := expandHistory(src, nil)
 	if prob == nil && len(text) > expandMax {
 		prob = braceProb()

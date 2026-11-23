@@ -27,5 +27,8 @@
   ],
   "caps": [],
   "mounts": [],
+  "mount_sources": [],
+  "user": "app",
+  "group": "app",
   "serial": 0
 }

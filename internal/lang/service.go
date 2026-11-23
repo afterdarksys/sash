@@ -419,8 +419,31 @@ func entryRefused(src string, g grant.Grant, opt Options) (Outcome, bool) {
 		if err := grant.CheckService(g, svc.Name); err != nil {
 			return fail(err.Error())
 		}
+		if err := grant.CheckIdentity(g, svc.User, svc.Group); err != nil {
+			return fail(err.Error())
+		}
 	}
 	return Outcome{}, false
+}
+
+// msgServiceGlob refuses a glob or a brace pattern in a service file: a run
+// expands them before the top level, so they would read the host at load.
+const msgServiceGlob = "service_glob: a service file has no globs or brace patterns"
+
+// serviceGlob is a problem when src is a service file holding a glob or a
+// brace pattern anywhere. It runs before Expand and reads nothing.
+func serviceGlob(src string) *ExpandProblem {
+	if svc, err := leadingService(src); err != nil || svc == nil {
+		return nil
+	}
+	refuse := &ExpandProblem{Status: exitType, Msg: msgServiceGlob}
+	if out, prob := expandBraces(src); prob != nil || out != src {
+		return refuse
+	}
+	if _, prob := globWords(src, func(string) (string, *ExpandProblem) { return "", refuse }); prob != nil {
+		return refuse
+	}
+	return nil
 }
 
 // leadingService parses only the service block at the top of src.
@@ -476,7 +499,7 @@ func (m *machine) runEntry(entry string) (int, bool) {
 func (m *machine) implicitRun() (int, bool) {
 	argv := append([]string{"spawn", "main"}, m.svc.Run...)
 	info, prob, _ := classifySvc(argv)
-	if prob == nil && !m.g.Has(info.key) {
+	if prob == nil && (!m.g.Has(info.key) || !m.g.Boot()) {
 		prob = &problem{exitDenied, "denied " + info.key}
 	}
 	st := expStage{argv: argv, key: info.key}

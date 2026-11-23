@@ -23,6 +23,9 @@ func sampleV2() Grant {
 		Exec:         []string{"/usr/sbin/nginx"},
 		Caps:         []string{"CAP_NET_BIND_SERVICE"},
 		Mounts:       []string{"/run/nginx/tmp"},
+		MountSources: []string{"tmpfs", "/srv/nginx/static"},
+		User:         "www",
+		Group:        "www",
 		Serial:       7,
 	}
 }
@@ -61,7 +64,7 @@ func TestV2MessageOrder(t *testing.T) {
 	}
 	body := string(msg[len("sash-grant-v2\n"):])
 	last := -1
-	for _, k := range []string{`"v"`, `"actor"`, `"host"`, `"purpose"`, `"exp"`, `"lease_id"`, `"entitlements"`, `"file_read"`, `"file_write"`, `"allow_private"`, `"service"`, `"exec"`, `"caps"`, `"mounts"`, `"serial"`} {
+	for _, k := range []string{`"v"`, `"actor"`, `"host"`, `"purpose"`, `"exp"`, `"lease_id"`, `"entitlements"`, `"file_read"`, `"file_write"`, `"allow_private"`, `"service"`, `"exec"`, `"caps"`, `"mounts"`, `"mount_sources"`, `"user"`, `"group"`, `"serial"`} {
 		i := strings.Index(body, k+":")
 		if i <= last {
 			t.Fatalf("%s out of order in %s", k, body)
@@ -140,6 +143,10 @@ func TestV2Shape(t *testing.T) {
 		"negative exp":    {func(g *Grant) { g.Exp = -1 }, "grant_bad_shape"},
 		"star":            {func(g *Grant) { g.Entitlements = []string{"*"} }, "grant_star"},
 		"file root slash": {func(g *Grant) { g.FileWrite = []string{"/"} }, "grant_root_slash"},
+		"no user":         {func(g *Grant) { g.User = "" }, "grant_bad_shape"},
+		"bad group":       {func(g *Grant) { g.Group = "Www" }, "grant_bad_shape"},
+		"slash source":    {func(g *Grant) { g.MountSources = []string{"/"} }, "grant_root_slash"},
+		"unclean source":  {func(g *Grant) { g.MountSources = []string{"/srv/../etc"} }, "grant_bad_shape"},
 	} {
 		g := sampleV2()
 		c.edit(&g)
@@ -184,5 +191,24 @@ func TestCheckService(t *testing.T) {
 	}
 	if token(CheckService(sample(PurposeOpen), "")) != "grant_service_mismatch" {
 		t.Fatal("sash/1 grant accepted for a service")
+	}
+}
+
+func TestIdentityAndMountSources(t *testing.T) {
+	g := sampleV2()
+	if CheckIdentity(g, "www", "www") != nil || CheckIdentity(g, "", "") != nil {
+		t.Fatal("own identity refused")
+	}
+	if token(CheckIdentity(g, "root", "www")) != "grant_identity_mismatch" || token(CheckIdentity(g, "www", "wheel")) != "grant_identity_mismatch" {
+		t.Fatal("other identity accepted")
+	}
+	for src, want := range map[string]bool{"tmpfs": true, "proc": false, "/srv/nginx/static": true, "/srv/nginx/static/img": true,
+		"/srv/nginx": false, "/srv/nginx/static/../../../etc": false, "/": false} {
+		if g.AllowsMountSource(src) != want {
+			t.Errorf("%s: %v", src, !want)
+		}
+	}
+	if (Grant{V: "sash/1", Purpose: PurposeOpen}).Boot() || !g.Boot() {
+		t.Fatal("Boot")
 	}
 }
