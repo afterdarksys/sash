@@ -159,12 +159,12 @@ In process, no key. Input is capped and nested data stops at depth 64.
 
 ## Service verbs (the init)
 
-A service file (`features.md`, "Service files") runs under the init, which performs these: sash never forks, execs, signals or mounts. sash checks each against the grant first and the init checks it again. The `svc.*` and `fs.mount` keys, and the `exec`, `caps` and `mounts` lists, come only in a `sash/2` boot grant (`sash --describe --grant-request`); `--needs --policy` prints a comment for them, not a flag. A process is a name given to `spawn` (`[a-z0-9][a-z0-9_.-]{0,63}`), never a pid: the init keeps a name-to-process table per service. A path is literal text or a path value, made absolute and clean before the check. No form takes a flag (a word starting with `-` is usage), and a secret anywhere but a `spawn` env value is exit 2 `secret_refused`.
+A service file (`features.md`, "Service files") runs under the init, which performs these: sash never forks, execs, signals or mounts. sash checks each against the grant first and the init checks it again. The `svc.*` and `fs.mount` keys, and the `exec`, `caps` and `mounts` lists, come only in a `sash/2` boot grant (`sash --describe --grant-request`); `--needs --policy` prints a comment for them, not a flag. A process is a name given to `spawn` (`[a-z][a-z0-9_.-]{0,63}`), never a pid: the init keeps a name-to-process table per service. A path is literal text or a path value, made absolute and clean before the check. No form takes a flag (a word starting with `-` is usage), and a secret anywhere but a `spawn` env value is exit 2 `secret_refused`.
 
 | form | kind | key | mutates | what |
 | --- | --- | --- | --- | --- |
 | `service` | keyword | - | no | `service { }`: the static block of a service file, first in the file, literal values only. |
-| `spawn` | verb | svc.spawn | yes | `spawn NAME PROGRAM args... [opts [ {map} ]]`: the init starts PROGRAM, one absolute path listed in the grant's `exec` (else exit 126 `denied exec`); a shell string or a relative name is exit 2 `spawn_shell`. `opts` keys: `user`, `group` (default: the service block's), `cwd`, `umask`, `env`, `limits`, `caps` (each in the grant's `caps`, else `denied cap`), `stdout` and `stderr` (`journal`, `null`, `file:<path>` in `file_write`; stderr also `stdout`). Row `name`, `pid`, `started_at`. Plan mode prints `plan: would spawn NAME PROGRAM args as U:G`. |
+| `spawn` | verb | svc.spawn | yes | `spawn NAME PROGRAM args... [opts [ {map} ]]`: the init starts PROGRAM, one absolute path listed in the grant's `exec` (else exit 126 `denied exec`); a shell string or a relative name is exit 2 `spawn_shell`. `opts` keys: `user`, `group` (only the grant's, which the service block must match; omitted means those; else exit 126 `denied user`), `cwd`, `umask`, `env` (no loader, libc or interpreter hook such as `LD_PRELOAD`, `DYLD_*`, `GLIBC_TUNABLES` or `PYTHONPATH`: exit 2 `env_refused: NAME`), `limits`, `caps` (each in the grant's `caps`, else `denied cap`), `stdout` and `stderr` (`journal`, `null`, `file:<path>` in `file_write`; stderr also `stdout`). Row `name`, `pid`, `started_at`. Plan mode prints `plan: would spawn NAME PROGRAM args as U:G`. |
 | `signal` | verb | svc.signal | yes | `signal NAME SIG`: SIG one of HUP INT QUIT KILL USR1 USR2 TERM CONT STOP WINCH, to a process this service spawned (the init refuses any other name: exit 2 `refused svc.signal: unknown_name`). |
 | `wait` | verb | svc.wait | no | `wait NAME timeout D`: row `name`, `exit`, `signal`, `ended_at` when it ends; exit 2 `timeout` when it does not. |
 | `proc` | verb | svc.proc | no | `proc NAME`: row `name`, `pid`, `state`, `started_at`. |
@@ -177,7 +177,7 @@ A service file (`features.md`, "Service files") runs under the init, which perfo
 | `touch` | verb | file.write | yes | `touch PATH`. |
 | `ln` | verb | file.write | yes | `ln PATH TARGET`: a symlink at PATH; both in `file_write`. |
 | `rm` | verb | file.write | yes | `rm PATH`: a file or an empty directory, never recursive (`rm -rf` is exit 2 usage). |
-| `mount` | verb | fs.mount | yes | `mount SRC DIR [type T] [opts O]`: DIR exactly one of the grant's `mounts` (else `denied fs.mount`); SRC an absolute path or a name such as `tmpfs`. |
+| `mount` | verb | fs.mount | yes | `mount SRC DIR [type T] [opts O]`: DIR exactly one of the grant's `mounts` (else `denied fs.mount`); SRC one of the grant's `mount_sources` (a name such as `tmpfs`) or a path beneath one listed (else `denied mount source`); `bind`, `rbind` and `remount` need a path SRC. DIR may not be at, under or over a `file_write` root: exit 126 `mount_overlap`. |
 | `umount` | verb | fs.mount | yes | `umount DIR`: DIR in the grant's `mounts`. |
 
 ## Session words
