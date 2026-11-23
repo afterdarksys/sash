@@ -3,6 +3,7 @@ package lang
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/afterdarksys/sash/internal/grant"
 	"github.com/afterdarksys/sash/internal/proto/prototest"
@@ -395,5 +396,39 @@ func TestServiceNeedsAndLint(t *testing.T) {
 	dyn := Needs(appService+"fn start() {\nlet o = [ {} ]\nspawn main /opt/app/bin/server opts [ $o ]\n}\n", NeedsOptions{})
 	if dyn.Status != 1 || !strings.Contains(dyn.Stdout, "dynamic") {
 		t.Errorf("dynamic opts: %+v", dyn)
+	}
+}
+
+func TestServiceLintRules(t *testing.T) {
+	out := Lint(appService + "fn start() {\n spawn main /bin/sh \"-c\" \"x\"\n}\nfn check() {\n mkdir /run/app\n}\n")
+	if !strings.Contains(out.Stdout, "spawn-shell") || !strings.Contains(out.Stdout, "check-mutates  error") {
+		t.Fatalf("lint:\n%s", out.Stdout)
+	}
+	if out := Lint("service {\n name a\n run /usr/bin/env python3\n}\n"); !strings.Contains(out.Stdout, "spawn-shell") {
+		t.Fatalf("run of env:\n%s", out.Stdout)
+	}
+	clean := Lint(appService + "fn start() {\n spawn main /opt/app/bin/server\n}\nfn check() {\n probe tcp 127.0.0.1:8080\n}\n")
+	if strings.Contains(clean.Stdout, "spawn-shell") || strings.Contains(clean.Stdout, "check-mutates") {
+		t.Fatalf("clean:\n%s", clean.Stdout)
+	}
+}
+
+// A recording of a spawn whose env holds a secret keeps neither the
+// secret nor a hash of the options.
+func TestSpawnSecretNotRecorded(t *testing.T) {
+	var buf strings.Builder
+	src := appService + "fn start() {\n declare -s pw = hunter2pass\n spawn main /opt/app/bin/server opts [ {\"env\": {\"P\": $pw}} ]\n}\n"
+	tape, err := NewRecorder(&buf, src, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := Run(src, bootGrant("app"), newInit(t), Options{Entry: "start", Tape: tape}); out.Status != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := tape.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if r := buf.String(); strings.Contains(r, "hunter2pass") || strings.Contains(r, "body_sha256") || !strings.Contains(r, `"redacted":true`) {
+		t.Fatalf("recording: %s", r)
 	}
 }

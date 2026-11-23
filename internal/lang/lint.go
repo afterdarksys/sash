@@ -43,6 +43,8 @@ var lintRules = map[string]string{
 	"par-same-target":     lintWarning,
 	"record-file":         lintInfo,
 	"atomic-irreversible": lintWarning,
+	"spawn-shell":         lintWarning,
+	"check-mutates":       lintError,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -111,6 +113,7 @@ func Lint(src string) Outcome {
 	l.parTargets()
 	l.recordFiles()
 	l.atomicBodies()
+	l.serviceRules()
 	l.needs()
 	return l.report(comments)
 }

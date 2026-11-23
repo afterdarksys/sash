@@ -781,3 +781,42 @@ func (n *needsRun) spawnOptsNeeds(x Expr, at int) {
 		}
 	}
 }
+
+// lintShells are programs that would run whatever command they are given:
+// spawning one undoes "no shell", since the grant's exec then admits any
+// command line.
+var lintShells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ash": true, "ksh": true, "busybox": true, "env": true}
+
+// serviceRules is spawn-shell (a spawn, or the service block's run, starts
+// a shell) and check-mutates (a service file's fn check reaches a
+// mutation, which the run refuses: check is read-only).
+func (l *linter) serviceRules() {
+	shell := func(at int, prog string) {
+		if i := strings.LastIndexByte(prog, '/'); i >= 0 && lintShells[prog[i+1:]] {
+			l.add(at, "spawn-shell", "spawn starts "+needsCell(prog)+", which runs any command it is given")
+		}
+	}
+	svc := serviceOf(l.prog)
+	if svc != nil && len(svc.Run) > 0 {
+		shell(l.prog.Pos[0], svc.Run[0])
+	}
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
+		lintEachPipe(s, func(pl Pipeline, _ string) {
+			for _, st := range pl.Stages {
+				if len(st.Argv) >= 3 && plain(st.Argv[0]) == "spawn" {
+					shell(st.Argv[0].Pos, plain(st.Argv[2]))
+				}
+			}
+		})
+	})
+	if svc == nil {
+		return
+	}
+	for i, s := range l.prog.Stmts {
+		if fn, ok := s.(*Fn); ok && fn.Name == "check" {
+			if what := l.mutates(&fn.Body, 0); what != "" {
+				l.add(l.prog.Pos[i], "check-mutates", "fn check reaches "+what+"; check runs read-only, so the run refuses it")
+			}
+		}
+	}
+}

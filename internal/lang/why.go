@@ -96,6 +96,14 @@ var whyHint = map[string]string{
 	"sysctl.get":      "policy --tweak-sysctl <key>",
 	"sysctl.set":      "policy --tweak-sysctl <key>",
 	"config.read":     "policy --config <dir>",
+	"svc.spawn":       "a sash/2 boot grant: sash --describe --grant-request (exec, caps)",
+	"svc.signal":      "a sash/2 boot grant: sash --describe --grant-request",
+	"svc.wait":        "a sash/2 boot grant: sash --describe --grant-request",
+	"svc.proc":        "a sash/2 boot grant: sash --describe --grant-request",
+	"svc.status":      "a sash/2 boot grant: sash --describe --grant-request",
+	"svc.probe":       "a sash/2 boot grant: sash --describe --grant-request",
+	"svc.output":      "a sash/2 boot grant: sash --describe --grant-request",
+	"fs.mount":        "a sash/2 boot grant: sash --describe --grant-request (mounts)",
 }
 
 func whyRow(command, key, granted, reason, fix string) parent.Row {

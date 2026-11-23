@@ -38,7 +38,7 @@ Read the one you need; each stands alone.
 
 - `reference/verbs.md`: the closed table, every name with its kind, entitlement key, and whether it mutates. Read it before using a name you are not sure exists.
 - `reference/language.md`: values, quoting, `|` and `|>`, redirection, `[ ]` expressions and functions, `let`, `if`, `for`, `while`, `fn` (including pipelines), `args`, `try`/`catch` with structured error metadata, `set` options and caps, globs, exit statuses, and the error strings a run prints. Read it for anything past a one-line pipeline, or to explain an error.
-- `reference/features.md`: plan mode, `--needs`, `--lint`, confirm, secrets, templates, `atomic`, `par`, `retry`/`timeout`, read-only `await`, `check`, `log`, `origin`, `with`, `use`, recording and replay, `why`, abbreviations, and wasm. Read it before a script that changes a host, runs in parallel, or touches a secret.
+- `reference/features.md`: plan mode, `--needs`, `--lint`, confirm, secrets, templates, `atomic`, `par`, `retry`/`timeout`, read-only `await`, `check`, `log`, `origin`, `with`, `use`, recording and replay, `why`, abbreviations, wasm, and service files for the init (`service { }`, `--describe`, `--entry`). Read it before a script that changes a host, runs in parallel, or touches a secret.
 
 ## Installing
 

@@ -127,6 +127,7 @@ type skillBlock struct {
 	expect    string   // "", "parse <msg>", or "<empty|host|plan> <status> [<msg>]"
 	marks     []string // "stdout: x", "nostdout: x", "stderr: x", "call: x", "nocall: x", "lint: x", "nolint: x"
 	drop      []string // entitlements "# drop: key" removes from the host grant
+	entry     string   // "# entry: start" runs a service file's entry under a boot grant
 }
 
 func skillBlocks(t *testing.T) []skillBlock {
@@ -158,6 +159,10 @@ func skillBlocks(t *testing.T) []skillBlock {
 				}
 				if d, ok := strings.CutPrefix(m, "drop: "); ok {
 					b.drop = append(b.drop, d)
+					continue
+				}
+				if e, ok := strings.CutPrefix(m, "entry: "); ok {
+					b.entry = e
 					continue
 				}
 				for _, k := range []string{"stdout: ", "nostdout: ", "stderr: ", "call: ", "nocall: ", "lint: ", "nolint: "} {
@@ -222,6 +227,16 @@ func (h *skillHost) Do(v parent.Verb) (parent.Result, error) {
 		return parent.Result{Kind: parent.KindBytes, Bytes: []byte(s)}, nil
 	}
 	switch v.Key {
+	case "svc.spawn":
+		return rows([]string{"name", "pid", "started_at"}, parent.Row{"name": v.Argv[1], "pid": "4242", "started_at": "2026-11-23T00:00:00Z"})
+	case "svc.status":
+		return rows([]string{"name", "state", "since", "pid"}, parent.Row{"name": v.Argv[2], "state": "ready", "since": "2026-11-23T00:00:00Z", "pid": "77"})
+	case "svc.proc":
+		return rows([]string{"name", "pid", "state", "started_at"}, parent.Row{"name": v.Argv[1], "pid": "4242", "state": "running", "started_at": "2026-11-23T00:00:00Z"})
+	case "svc.wait":
+		return rows([]string{"name", "exit", "signal", "ended_at"}, parent.Row{"name": v.Argv[1], "exit": "0", "signal": "TERM", "ended_at": "2026-11-23T00:01:00Z"})
+	case "svc.output":
+		return rows([]string{"line", "text"}, parent.Row{"line": "1", "text": "listening on 8080"})
 	case "ps":
 		return rows([]string{"user", "pid", "cmd"}, parent.Row{"user": "root", "pid": "1", "cmd": "init"}, parent.Row{"user": "www", "pid": "40", "cmd": "nginx"})
 	case "unit.status":
@@ -253,6 +268,21 @@ func (h *skillHost) Do(v parent.Verb) (parent.Result, error) {
 		h.files[v.Path] = string(v.Body)
 	}
 	return text("")
+}
+
+// skillBootGrant is the sash/2 grant a "# entry:" example runs under: the
+// service app.
+func skillBootGrant(drop []string) grant.Grant {
+	g := skillGrant(drop)
+	for _, e := range []string{"svc.spawn", "svc.signal", "svc.wait", "svc.proc", "svc.status", "svc.probe", "svc.output", "fs.mount"} {
+		if !slices.Contains(drop, e) {
+			g.Entitlements = append(g.Entitlements, e)
+		}
+	}
+	g.V, g.Purpose, g.Actor, g.Service, g.Serial = "sash/2", grant.PurposeService, "service:app", "app", 1
+	g.FileWrite = append(g.FileWrite, "/run/app")
+	g.Exec, g.Caps, g.Mounts = []string{"/opt/app/bin/server"}, []string{"CAP_NET_BIND_SERVICE"}, []string{"/run/app/tmp"}
+	return g
 }
 
 func skillGrant(drop []string) grant.Grant {
@@ -313,6 +343,10 @@ func TestSkillExamplesAreSash(t *testing.T) {
 		}
 		var out Outcome
 		host := &skillHost{}
+		g := skillGrant(b.drop)
+		if b.entry != "" {
+			g = skillBootGrant(b.drop)
+		}
 		switch mode {
 		case "empty":
 			if msg == "wasm_unsupported" && wasmBuilt {
@@ -320,13 +354,13 @@ func TestSkillExamplesAreSash(t *testing.T) {
 				// which the empty grant denies before any call.
 				want, msg = exitDenied, "denied file.read"
 			}
-			out = Run(b.src, grant.Grant{}, skillParent{t}, Options{})
+			out = Run(b.src, grant.Grant{}, skillParent{t}, Options{Entry: b.entry})
 		case "host":
-			out = Run(b.src, skillGrant(b.drop), host, Options{})
+			out = Run(b.src, g, host, Options{Entry: b.entry})
 		case "plan":
 			st := NewState()
 			st.LockPlan()
-			out = Run(b.src, skillGrant(b.drop), host, Options{State: st})
+			out = Run(b.src, g, host, Options{State: st, Entry: b.entry})
 			for _, c := range host.calls {
 				if mutating[strings.SplitN(c, " ", 2)[0]] {
 					t.Errorf("%s: plan mode reached the host: %s", b.file, c)

@@ -55,7 +55,7 @@ cat /srv/app/app.conf
 sash --needs [--policy] (-c script | file | stdin)
 ```
 
-Reads the script, runs nothing, calls no parent, takes no grant, and prints one row per need: `key`, `target`, `mutates`, `lines`, `note`. Every branch and every `fn` body counts. `--policy` prints instead the systemapi policy flags that would grant the literal needs (`--file-read <dir>`, `--service <unit>`, ...); anything a flag cannot express is a `# ` comment line. Exit 0 complete, 1 incomplete (a note: `dynamic`, `relative`, `not_grantable`, `use: not followed`, `unpasteable`, `command_from_value`), 2 usage or parse error.
+Reads the script, runs nothing, calls no parent, takes no grant, and prints one row per need: `key`, `target`, `mutates`, `lines`, `note`. Every branch and every `fn` body counts. `--policy` prints instead the systemapi policy flags that would grant the literal needs (`--file-read <dir>`, `--service <unit>`, ...); anything a flag cannot express is a `# ` comment line, among them every `svc.*` and `fs.mount` need, which only a `sash/2` boot grant carries (`--describe --grant-request`, "Service files"). Exit 0 complete, 1 incomplete (a note: `dynamic`, `relative`, `not_grantable`, `use: not followed`, `unpasteable`, `command_from_value`), 2 usage or parse error.
 
 The manifest is advisory: it grants nothing, and the agent still checks every verb. Literal targets make it complete; `unit $op nginx` lists both `unit.status` and `unit.restart` as `dynamic`.
 
@@ -65,7 +65,7 @@ The manifest is advisory: it grants nothing, and the agent still checks every ve
 sash --lint (-c script | file | stdin)
 ```
 
-Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`. `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
+Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `spawn-shell` (a `spawn` or `run` of a shell), `check-mutates` (error: a service file's `fn check` reaches a mutation). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
 
 `--lint` and `--needs` refuse every other flag (`--session`, `--plan`, each other) and anything after the source: exit 2, nothing runs.
 
@@ -316,3 +316,125 @@ await timeout 5s every 100ms { unit status nginx |> where state == active }
 The condition must be a single pipeline. Functions may be called, but mutations, atomic blocks, and session-option changes inside them are refused, even under plan mode and inside parallel branches. These refusals cannot be hidden with `catch`. Grant checks and verb/loop caps still apply. `--needs`, `--lint`, and preview inspect the condition through the ordinary static walkers. Reads still reach the host under plan mode.
 
 An outer, shorter timeout wins. Polling checks hangups and parallel cancellation between bounded sleeps. An already running parent call is not forcibly interrupted; if it returns after the deadline, even a successful observation times out. Clock and sleep operations participate in record/replay.
+
+## Service files
+
+A service file is one sash script the init runs: a static `service { }` block the init reads without running anything, and optional lifecycle functions `fn start()`, `fn stop()`, `fn reload()` and `fn check()`. A file with no functions is purely declarative. The init does all process work; sash never forks, execs or signals anything. The verbs (`spawn`, `signal`, `wait`, `proc`, `service status`, `probe`, `output`, the file verbs, `mount`) are in `verbs.md`.
+
+The block is first in the file (before `args`), one key per line, literal values only, each key once:
+
+| key | value |
+| --- | --- |
+| `name` | `[a-z0-9][a-z0-9_.-]{0,63}`; must equal the grant's `service` |
+| `description` | one word or a quoted string |
+| `requires`, `after`, `wants` | service names; the init orders and fails on them, sash only records them |
+| `user`, `group` | the default identity of `spawn` |
+| `run` | an absolute program and its arguments, for a declarative service; not with `fn start` (`service_run_and_start`) |
+| `ready` | `tcp HOST:PORT`, `unix PATH`, `file PATH` or `notify`, then `timeout D`; or `none` |
+| `stop` | `signal SIG timeout D`: the signal, and the wait before the init sends KILL |
+| `restart` | `never`, or `on-failure` or `always` with optional `delay D` and `burst N within D` |
+
+An unknown key, a duplicate, a value from a name or `[ ]`, and a bad value are parse errors (exit 2). The top level of a service file may hold only `service`, `args`, `fn`, `let` and `declare` of a literal, and `use`: anything else is exit 2 `service_top_level` at parse time, so `--describe` and `--entry` never run a stray statement. A lifecycle function takes no parameters, `fn run` is refused (run is the implicit entry), and `fn check` is the entry while `check "name" [ ]` stays the builtin.
+
+```text
+sash --describe [--grant-request] file
+sash --session --entry start|stop|reload|check|run file
+sash --plan --entry start file
+```
+
+`--describe` reads the file, runs nothing, takes no grant and calls no parent. It prints one JSON document (`"v": "sash-describe/1"`): the block (durations in milliseconds, empty lists as `[]`, absent `ready`, `stop` or `restart` as `null`), the `entries` the file has, and per entry the `--needs` rows of that function and every function it calls by literal name. Exit 0 complete, 1 incomplete (a row with a note), 2 a parse error or no `service` block. `--grant-request` prints instead the unsigned `sash/2` body the literal needs ask for: `entitlements`, `file_read` and `file_write` (the exact paths), `exec`, `caps`, `mounts`, `allow_private` (a probe of a private address), `exp` 0, and `host`, `lease_id` and `serial` left for the fleet signer. A row with a note is never in the request.
+
+`--entry` runs the top level (definitions only) and then calls the function; an entry the file does not define is exit 2 `entry_missing`. `run` is implicit for a file with `run` and no `fn start`: `spawn main <run...>` as the block's user and group, so the start is checked and audited like a scripted one. A `sash/2` grant whose `service` is not the block's `name` (or a `sash/1` grant) is exit 2 `grant_service_mismatch` before anything runs, and a boot grant without `--entry` is exit 2 `entry_missing`. The init reads the exit:
+
+| exit | start | stop | check |
+| --- | --- | --- | --- |
+| 0 | started (the init then waits on `ready`) | stopped | healthy |
+| 1 | failed (the restart policy applies) | failed (KILL after the stop timeout) | unhealthy |
+| 2 | a configuration or grant error: a denial, usage, type, `secret_refused`, unknown name; the init marks it failed and does not restart | same | same |
+| 3 | not ready in time (an `await` ran out inside `start`) | - | - |
+
+`check` runs under the `await` rules: every mutation is refused, plan mode or not (`await: mutation refused`). Under `--plan`, a mutation prints `plan: would spawn main /opt/app/bin/server --port 8080 as app:app` and runs nothing; reads (`proc`, `probe`, `service status`, `wait`, `output`) still reach the init.
+
+```sash
+# entry: start
+# stderr: plan: would spawn main /opt/app/bin/server --port 8080 as app:app
+# stderr: plan: would mkdir /run/app mode 0750 owner app:app
+# call: svc.status argv=service status postgres
+# nostdout: s3cr3tvalue
+service {
+  name app
+  requires postgres
+  after postgres network-online
+  user app
+  group app
+  ready tcp 127.0.0.1:8080 timeout 60s
+  stop signal TERM timeout 30s
+  restart on-failure delay 5s burst 3 within 120s
+}
+
+fn start() {
+  mkdir /run/app mode 0750 owner app:app
+  declare -s token = (cat /srv/app/token)
+  await timeout 30s every 1s { service status postgres |> where state == ready }
+  spawn main /opt/app/bin/server "--port" 8080 opts [ {"env": {"APP_TOKEN": $token}, "stdout": "journal"} ]
+}
+
+fn stop() {
+  signal main TERM
+  try { wait main timeout 25s } catch e { signal main KILL }
+}
+
+fn check() {
+  probe tcp 127.0.0.1:8080
+}
+```
+
+A secret bound with `declare -s` may leave sash only as an `env` value inside a literal `env` map in `spawn` opts: the frame carries it marked `{"secret": ...}` so the init writes it into the child's environment and never logs it, and the plan line, a trace and a recording never show it. Anywhere else (an argument, another option, an env map built in a name, a path, any other verb) it is exit 2 `secret_refused`.
+
+```sash
+# entry: start
+# expect: host 2 secret_refused
+service {
+  name app
+}
+fn start() {
+  declare -s token = (cat /srv/app/token)
+  spawn main /opt/app/bin/server $token
+}
+```
+
+`check` is read-only: a mutation there is refused before the init sees it, and `--lint` flags it as `check-mutates`.
+
+```sash
+# entry: check
+# expect: host 2 await: mutation refused
+# lint: check-mutates
+# nocall: svc.signal
+service {
+  name app
+}
+fn check() {
+  signal main HUP
+}
+```
+
+```sash
+# expect: parse service_top_level
+service {
+  name app
+}
+echo started
+```
+
+A declarative service with `run` needs no function; `--entry run` spawns it.
+
+```sash
+# entry: run
+# stderr: plan: would spawn main /opt/app/bin/server -g 'daemon off;' as app:app
+service {
+  name app
+  user app
+  group app
+  run /opt/app/bin/server "-g" "daemon off;"
+}
+```
