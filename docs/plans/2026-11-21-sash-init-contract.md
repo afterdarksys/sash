@@ -104,9 +104,10 @@ A boot grant is a `sash/2` document: every `sash/1` field, plus the fields below
 | `caps` | Linux capabilities `spawn` may grant. |
 | `mounts` | Mount points `mount`/`umount` may touch. |
 | `mount_sources` | What `mount` may mount: a filesystem name (`tmpfs`) or a path, equal to or beneath which SRC must lie. |
+| `env_names` | The environment names `spawn` may set (`[A-Z][A-Z0-9_]{0,63}`); a name on the denylist is refused even when listed. |
 | `user`, `group` | The only identity `spawn` may run as. The service block's `user` and `group` must equal them (`grant_identity_mismatch`); `root` only when the grant says so. |
 
-The signed message is the `sash/1` message with the prefix `sash-grant-v2\n` and the new fields appended in this order: `service`, `exec`, `caps`, `mounts`, `mount_sources`, `user`, `group`, `serial`. A v1 grant cannot verify as v2, and the reverse.
+The signed message is the `sash/1` message with the prefix `sash-grant-v2\n` and the new fields appended in this order: `service`, `exec`, `caps`, `mounts`, `mount_sources`, `user`, `group`, `env_names`, `serial`. A v1 grant cannot verify as v2, and the reverse.
 
 **Making one:**
 1. `sash --describe --grant-request file` prints an unsigned `sash/2` body built from the literal needs.
@@ -245,5 +246,10 @@ What phase 1 settled where the contract left a choice. Items marked **confirm** 
     - **Globs.** A service file (one whose first statement is a `service {` block) with any glob or brace pattern is exit 2 `service_glob`, checked before expansion, in a run, `--describe`, `--needs` and `--lint`. This replaces item 19.
     - **Names.** A process name starts with a letter (`[a-z][a-z0-9_.-]{0,63}`), so it never reads as a pid.
     - **Boot keys.** `svc.*` and `fs.mount` are denied unless the grant is `sash/2` purpose `service`, even when a `sash/1` grant lists them.
+
+22. **Re-check fixes (2026-11-23): allowlists, not denylists.** The tables live in `internal/grant/policy.go`; sash and the init double both use them, and the init must apply the same rules.
+    - **Mounts.** The type is exactly one of `tmpfs`, `proc`, `sysfs`, `devpts`; a bind is never a type, only the option `bind` or `rbind`, and takes a path SRC (a type takes a name). Options are exactly, lowercase: `ro`, `rw`, `nosuid`, `nodev`, `noexec`, `bind`, `rbind`, `remount`, `size=N` and `nr_inodes=N` (digits, optional `k`, `m`, `g` or `%`), `mode=OCTAL` (3 or 4 digits), `uid=N`, `gid=N`. Anything else (`overlay`, `lowerdir=`, `suid`, `dev`, `exec`, `x-bind`, `move`, `BIND`) is exit 2 `mount_opt_refused`. sash always adds `nosuid,nodev` and the argv the init gets lists every option; the init refuses a mount without both. The init resolves a path SRC and the mount point with `RESOLVE_NO_SYMLINKS`.
+    - **Environment.** The allowlist is the signed `env_names`; the item 21 denylist stays as a second gate, extended with `OPENSSL_CONF`, `OPENSSL_ENGINES`, `CLASSPATH`, `PYTHONWARNINGS`, `PERL5DB` and the `GIT_` prefix. `PATH` is not on the denylist: like any name it is allowed only when `env_names` lists it, so a signer decides it explicitly. `--grant-request` fills `env_names` from the literal env keys of spawn calls, never a denied one; an env map from a name is a dynamic `svc.spawn env $` row and the description is incomplete.
+    - **cwd** is a clean absolute path (relative to the prefix) at or under a `file_read` or `file_write` root, else exit 126 `denied cwd`; the init resolves it without symlinks.
 
 Deferred to phase 2, with sahinit: the serial floor and its store; the caps and limits ceilings; real processes, the cgroup, `notify` and output capture; `ready`, `restart` and the ordering from `requires`, `after` and `wants`; grant files and the fds; the fleet signer for grant requests; units derived from `--describe`; item 5's secret form; and the container and VM research item.
