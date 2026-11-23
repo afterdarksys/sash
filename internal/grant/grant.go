@@ -1,4 +1,4 @@
-// Package grant is the in-memory sash/1 entitlement set.
+// Package grant is the in-memory sash/1 and sash/2 entitlement set.
 // Commit 1 callers may pass a Grant they already trust.
 // Verify is the signed check used when a parent delivers the document.
 package grant
@@ -8,7 +8,9 @@ import (
 	"strings"
 )
 
-// Grant is one sash/1 document without a signature.
+// Grant is one sash/1 or sash/2 document without a signature. The fields
+// after AllowPrivate are sash/2 only (a boot grant, purpose service); a
+// sash/1 grant leaves them empty and its signed bytes do not carry them.
 type Grant struct {
 	V            string
 	Actor        string
@@ -20,6 +22,38 @@ type Grant struct {
 	FileRead     []string
 	FileWrite    []string
 	AllowPrivate bool
+
+	// Service is the one service a sash/2 grant authorizes; it must equal
+	// the service block's name. Exec are the absolute programs spawn may
+	// start, Caps the capabilities it may give, Mounts the mount points
+	// mount and umount may touch. Serial is the signed revocation serial
+	// (at least 1); the init refuses a grant below its floor.
+	Service string
+	Exec    []string
+	Caps    []string
+	Mounts  []string
+	Serial  uint64
+}
+
+// AllowsExec reports whether p is exactly one of the exec programs.
+func (g Grant) AllowsExec(p string) bool { return exact(g.Exec, p) }
+
+// AllowsCap reports whether capability c is listed.
+func (g Grant) AllowsCap(c string) bool { return exact(g.Caps, c) }
+
+// AllowsMount reports whether dir is exactly one of the mount points.
+func (g Grant) AllowsMount(dir string) bool { return exact(g.Mounts, dir) }
+
+func exact(list []string, s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, e := range list {
+		if e == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Has reports whether key is listed.
