@@ -1812,6 +1812,10 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 			outPath = full
 		}
 		info, prob := classify(argv, m.fns)
+		if _, svc := svcKeys[argv[0]]; prob != nil && m.sawSecret && (svc || argv[0] == "service") {
+			// A secret's *** fails the shape check; the refusal is the secret.
+			return nil, &problem{exitType, msgSecretRefused}, refusal{}
+		}
 		if prob != nil {
 			return nil, prob, refusal{}
 		}
