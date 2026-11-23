@@ -234,6 +234,9 @@ func parseTokens(toks []token) (*Program, error) {
 	if p.peek().kind != kEOF {
 		return nil, fmt.Errorf("parse: trailing input")
 	}
+	if err := checkServiceFile(prog); err != nil {
+		return nil, err
+	}
 	return prog, nil
 }
 
@@ -251,7 +254,12 @@ func (p *parser) program() (*Program, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, ok := s.(*Arguments); ok && (p.depth != 0 || len(stmts) != 0) {
+		// A service block is first; args follows it, or is first itself.
+		if _, ok := s.(*Service); ok && (p.depth != 0 || len(stmts) != 0) {
+			return nil, fmt.Errorf("parse: service must be the first top-level statement")
+		}
+		afterService := len(stmts) == 1 && serviceOf(&Program{Stmts: stmts}) != nil
+		if _, ok := s.(*Arguments); ok && (p.depth != 0 || (len(stmts) != 0 && !afterService)) {
 			return nil, fmt.Errorf("parse: args must be the first top-level statement")
 		}
 		stmts = append(stmts, s)
@@ -280,6 +288,11 @@ func (p *parser) stmt() (Stmt, error) {
 		switch p.peek().word.Parts[0].Lit {
 		case "args":
 			return p.arguments()
+		case "service":
+			// service { } is the block; service status NAME is a verb.
+			if p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kLBrace {
+				return p.service()
+			}
 		case "await":
 			return p.await()
 		case "let":

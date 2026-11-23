@@ -113,7 +113,11 @@ func whyFns(prog *Program, fns map[string]*Fn) {
 	for _, s := range prog.Stmts {
 		switch s := s.(type) {
 		case *Fn:
-			fns[s.Name] = s
+			// A reserved name defines no callable function: a run refuses
+			// it, and a service file keeps its fn check aside (service.go).
+			if !reserved(s.Name) {
+				fns[s.Name] = s
+			}
 			whyFns(&s.Body, fns)
 		case *If:
 			whyFns(&s.Then, fns)

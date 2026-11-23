@@ -66,10 +66,20 @@ var needsFlag = map[string]string{
 	"sysctl.get":      "--tweak-sysctl",
 	"sysctl.set":      "--tweak-sysctl",
 	"config.read":     "--config",
+	// Only a sash/2 boot grant carries these (bootKeys): no policy flag.
+	"svc.spawn":  "",
+	"svc.signal": "",
+	"svc.wait":   "",
+	"svc.proc":   "",
+	"svc.status": "",
+	"svc.probe":  "",
+	"svc.output": "",
+	"fs.mount":   "",
 }
 
 var needsMutates = map[string]bool{
 	"file.write": true, "unit.restart": true, "package.install": true, "sysctl.set": true,
+	"svc.spawn": true, "svc.signal": true, "fs.mount": true,
 }
 
 // A path need lists a directory (cd, ls, pushd, with prefix, a glob) or
@@ -433,7 +443,7 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 		return b
 	case *Jump:
 		return b
-	case *Arguments:
+	case *Arguments, *Service:
 		// A static schema: binds names, reads and writes nothing.
 		return b
 	default:
@@ -594,6 +604,8 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 		if (sub == "read" || dynSub) && len(args) == 2 {
 			n.config(args[1], b, dynSub)
 		}
+	case "service", "spawn", "signal", "wait", "proc", "probe", "output", "mkdir", "chown", "chmod", "touch", "ln", "rm", "mount", "umount":
+		n.svcStage(name, st, b)
 	default:
 		// A function's body is counted where it is defined. A call may
 		// move the prefix when a function here moves it or a use may
@@ -852,6 +864,8 @@ func (n *needsRun) policy(rows []*needRow) string {
 			why = "a command name from a value does not run; the run stops here"
 		case r.note == noteUse:
 			why = "use reads this file; the needs of what it defines are not listed"
+		case r.note == "" && bootKeys[r.key]:
+			why = "only a sash/2 boot grant carries this: sash --describe --grant-request"
 		case r.note == noteUnpasteable:
 			why = "the " + needsKind(r.key) + " cannot be a flag value (it starts with - or has a control or format character); grant it by hand"
 		default:

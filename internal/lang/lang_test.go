@@ -364,11 +364,15 @@ func TestRedirectPreflight(t *testing.T) {
 
 func TestUnknown(t *testing.T) {
 	f := &fake{}
-	got := Run(`rm -rf /`, allow(), f, Options{})
+	// rm is a service verb now, and never recursive: a flag is usage.
+	if got := Run(`rm -rf /`, allow(), f, Options{}); got.Status != exitType || len(f.calls) != 0 || !strings.Contains(got.Stderr, "usage rm") {
+		t.Fatalf("rm -rf: status %d stderr %q calls %v", got.Status, got.Stderr, keys(f))
+	}
+	got := Run(`shred -u /etc/passwd`, allow(), f, Options{})
 	if got.Status != exitUnknown || len(f.calls) != 0 {
 		t.Fatalf("status %d calls %v", got.Status, keys(f))
 	}
-	if !strings.Contains(got.Stderr, "unknown rm") {
+	if !strings.Contains(got.Stderr, "unknown shred") {
 		t.Fatalf("stderr %q", got.Stderr)
 	}
 }

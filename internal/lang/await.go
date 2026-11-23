@@ -78,6 +78,7 @@ func (m *machine) runAwait(t *Timeout) (int, bool) {
 			return fail("await: cancelled")
 		}
 		if m.pastDeadline() {
+			m.awaitTimedOut = true
 			return fail("timeout")
 		}
 		if attempt >= m.st.loopMax {
@@ -98,6 +99,7 @@ func (m *machine) runAwait(t *Timeout) (int, bool) {
 		// An in-flight parent call cannot be forcibly interrupted. Late success
 		// still fails the deadline, and no subsequent call starts.
 		if m.pastDeadline() {
+			m.awaitTimedOut = true
 			return fail("timeout")
 		}
 		if ok && st == 0 {

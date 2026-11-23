@@ -6,7 +6,7 @@ Columns:
 
 - **kind**: `verb` (the agent fulfills it), `filter` (in process), `builtin` (in process, or a prefix move), `keyword` (syntax), `session` (the interactive editor only).
 - **key**: the entitlement the grant must hold, `-` for none. The agent checks the key again, and the target against the host's channel or file policy.
-- **mutates**: `yes` when the key is one plan mode stops and confirm asks about (`unit.restart`, `package.install`, `sysctl.set`, `file.write`).
+- **mutates**: `yes` when the key is one plan mode stops and confirm asks about (`unit.restart`, `package.install`, `sysctl.set`, `file.write`, `svc.spawn`, `svc.signal`, `fs.mount`).
 
 The policy flag in the descriptions is what `sash --needs --policy` prints for that key: the systemapi channel-policy grant that adds it.
 
@@ -156,6 +156,29 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `checks` | builtin | - | no | The check rows so far (`check`, `result`). |
 | `origin` | builtin | - | no | `origin name`: where a name's value came from, as rows. |
 | `log` | builtin | - | no | `log debug\|info\|warn\|error <msg> [ {fields} ]`: one line on stderr. |
+
+## Service verbs (the init)
+
+A service file (`features.md`, "Service files") runs under the init, which performs these: sash never forks, execs, signals or mounts. sash checks each against the grant first and the init checks it again. The `svc.*` and `fs.mount` keys, and the `exec`, `caps` and `mounts` lists, come only in a `sash/2` boot grant (`sash --describe --grant-request`); `--needs --policy` prints a comment for them, not a flag. A process is a name given to `spawn` (`[a-z0-9][a-z0-9_.-]{0,63}`), never a pid: the init keeps a name-to-process table per service. A path is literal text or a path value, made absolute and clean before the check. No form takes a flag (a word starting with `-` is usage), and a secret anywhere but a `spawn` env value is exit 2 `secret_refused`.
+
+| form | kind | key | mutates | what |
+| --- | --- | --- | --- | --- |
+| `service` | keyword | - | no | `service { }`: the static block of a service file, first in the file, literal values only. |
+| `spawn` | verb | svc.spawn | yes | `spawn NAME PROGRAM args... [opts [ {map} ]]`: the init starts PROGRAM, one absolute path listed in the grant's `exec` (else exit 126 `denied exec`); a shell string or a relative name is exit 2 `spawn_shell`. `opts` keys: `user`, `group` (default: the service block's), `cwd`, `umask`, `env`, `limits`, `caps` (each in the grant's `caps`, else `denied cap`), `stdout` and `stderr` (`journal`, `null`, `file:<path>` in `file_write`; stderr also `stdout`). Row `name`, `pid`, `started_at`. Plan mode prints `plan: would spawn NAME PROGRAM args as U:G`. |
+| `signal` | verb | svc.signal | yes | `signal NAME SIG`: SIG one of HUP INT QUIT KILL USR1 USR2 TERM CONT STOP WINCH, to a process this service spawned (the init refuses any other name: exit 2 `refused svc.signal: unknown_name`). |
+| `wait` | verb | svc.wait | no | `wait NAME timeout D`: row `name`, `exit`, `signal`, `ended_at` when it ends; exit 2 `timeout` when it does not. |
+| `proc` | verb | svc.proc | no | `proc NAME`: row `name`, `pid`, `state`, `started_at`. |
+| `service status` | verb | svc.status | no | `service status NAME`: any service's row `name`, `state`, `since`, `pid`. |
+| `probe` | verb | svc.probe | no | `probe tcp HOST:PORT`, `probe unix PATH`, `probe file PATH`, `probe notify NAME`: exit 0 when ready, 1 when not; usable inside `await`. HOST is an IP literal or `localhost`, loopback only unless the grant has `allow_private` (then private addresses too; never a public one). A unix or file PATH must be in `file_read`. |
+| `output` | verb | svc.output | no | `output NAME [stderr] [tail N]`: what the init captured of a spawned process's stdout (or stderr), as rows; N 1 to 10000. |
+| `mkdir` | verb | file.write | yes | `mkdir PATH [mode M] [owner U:G]`: idempotent; M is three octal digits, or four with a leading 0 or 1. |
+| `chown` | verb | file.write | yes | `chown PATH U:G`. |
+| `chmod` | verb | file.write | yes | `chmod PATH M`. |
+| `touch` | verb | file.write | yes | `touch PATH`. |
+| `ln` | verb | file.write | yes | `ln PATH TARGET`: a symlink at PATH; both in `file_write`. |
+| `rm` | verb | file.write | yes | `rm PATH`: a file or an empty directory, never recursive (`rm -rf` is exit 2 usage). |
+| `mount` | verb | fs.mount | yes | `mount SRC DIR [type T] [opts O]`: DIR exactly one of the grant's `mounts` (else `denied fs.mount`); SRC an absolute path or a name such as `tmpfs`. |
+| `umount` | verb | fs.mount | yes | `umount DIR`: DIR in the grant's `mounts`. |
 
 ## Session words
 

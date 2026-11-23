@@ -171,6 +171,13 @@ func scriptArguments(src string, args []string) (map[string]value, string, error
 	} // The normal parser reports syntax errors.
 	p := &parser{tok: toks}
 	p.skipSep()
+	// A service file's args follow its service block.
+	if p.peek().kind == kWord && plain(p.peek().word) == "service" && p.i+1 < len(p.tok) && p.tok[p.i+1].kind == kLBrace {
+		if _, err := p.service(); err != nil {
+			return nil, "", nil
+		}
+		p.skipSep()
+	}
 	if p.peek().kind != kWord || plain(p.peek().word) != "args" {
 		if len(args) > 0 {
 			return nil, "", fmt.Errorf("args: script has no argument declaration")

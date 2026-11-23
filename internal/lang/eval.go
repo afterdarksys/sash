@@ -108,6 +108,10 @@ type Options struct {
 	// refuses host text as its path (path.go). A State alone does not make
 	// a prompt: cmd/sash passes one to scripts too.
 	Prompt bool
+	// Entry, when set, runs a service file's top level (definitions only)
+	// and then that lifecycle function: start, stop, reload, check, or the
+	// implicit run (service.go). The status is the init's: 0, 1, 2, or 3.
+	Entry string
 	// Interrupts, when set, is asked for an interrupt (Ctrl-C) channel
 	// while a par waits for its branches, and stop ends the watch. The
 	// first interrupt cancels the branches; a second stops the wait.
@@ -141,6 +145,9 @@ func runTaped(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 }
 
 func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
+	if out, ok := entryRefused(src, g, opt); ok {
+		return out
+	}
 	bindings, help, argErr := scriptArguments(src, opt.Args)
 	if argErr != nil {
 		return Outcome{Status: exitType, Stderr: safeText(argErr.Error()) + "\n", Prefix: opt.Prefix}
@@ -197,6 +204,9 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	}
 	m.defers = [][]*Program{nil}
 	status, stop := m.runProg(prog)
+	if opt.Entry != "" && status == 0 && !stop {
+		status, stop = m.runEntry(opt.Entry)
+	}
 	status = m.runDefers(status, stop)
 	if m.ctl == ctlHalt {
 		status = exitType
@@ -217,6 +227,9 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 		// even when a try caught it or an exit 0 followed, so nothing
 		// believes its writes landed.
 		out.Status = exitType
+	}
+	if opt.Entry != "" {
+		out.Status = entryStatus(opt.Entry, out.Status, m.awaitTimedOut)
 	}
 	return out
 }
@@ -343,6 +356,12 @@ type machine struct {
 	// rolledBack is set once a block in this run rolled back.
 	atomic     *atomicTx
 	rolledBack bool
+	// svc is the service block of the file running, once its top level
+	// reached it; awaitTimedOut is set when an await ran out of time, so
+	// --entry start can exit 3.
+	svc           *Service
+	awaitTimedOut bool
+	checkFn       *Fn
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -455,7 +474,8 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 }
 
 // mutating names the verbs plan mode stops.
-var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true}
+var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true,
+	"svc.spawn": true, "svc.signal": true, "fs.mount": true}
 
 // do is the one door to the parent. It counts verbs against verbMax, and in
 // plan mode a mutating verb stops here: it prints what it would do and
@@ -465,7 +485,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		m.ctl = ctlHalt
 		return parent.Result{}, errAwaitMutation
 	}
-	if m.atomic != nil && irreversible[v.Key] {
+	if m.atomic != nil && (irreversible[v.Key] || (v.Key == "file.write" && len(v.Argv) > 0 && svcFileOps[v.Argv[0]])) {
 		// The static check found every literal stage; this catches the
 		// rest (unit $op).
 		return parent.Result{}, errAtomicIrreversible
@@ -501,6 +521,9 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 			if m.recWriting {
 				what = fmt.Sprintf("write %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
 			}
+		}
+		if line := svcPlan(v); line != "" {
+			what = line
 		}
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
@@ -628,6 +651,9 @@ func (m *machine) doFailed(key string, err error) int {
 		m.err.WriteString("refused file.write: " + err.Error() + " (" + fileWriteRefusals[err.Error()] + ")\n")
 		return exitType
 	}
+	if st, ok := m.svcDoFailed(key, err); ok {
+		return st
+	}
 	m.err.WriteString("parent " + key + "\n")
 	return 1
 }
@@ -730,6 +756,9 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 	switch s := s.(type) {
 	case *Arguments:
 		return 0, false
+	case *Service:
+		m.svc = s
+		return 0, false
 	case *Let:
 		return m.runLet(s)
 	case *If:
@@ -780,6 +809,12 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 }
 
 func (m *machine) defFn(fn *Fn) (int, bool) {
+	if fn.Name == "check" && m.svc != nil && m.depth == 0 {
+		// A service file's fn check is its lifecycle entry; the check
+		// builtin keeps its name everywhere else.
+		m.checkFn = fn
+		return 0, false
+	}
 	if reserved(fn.Name) {
 		m.err.WriteString("usage fn\n")
 		return exitType, true
@@ -1699,7 +1734,16 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		if name == "set" && len(st.Argv) == 4 && plain(st.Argv[1]) == "-o" && plain(st.Argv[2]) == "record" && plain(st.Argv[3]) == "" {
 			return nil, &problem{exitType, "usage set -o record: the path must be literal"}, refusal{}
 		}
-		if (name == "filter" || name == "each" || name == "check" || name == "log") && last >= 1 && exprOf(st.Argv[last]) != nil {
+		if name == "spawn" && last >= 4 && exprOf(st.Argv[last]) != nil && plain(st.Argv[last-1]) == "opts" {
+			// spawn's opts [ ] is a data value, evaluated at the call
+			// (svc.go), never expanded into words.
+			rowX = exprOf(st.Argv[last])
+			if argv, argProv, argData, err = m.expandArgvData(st.Argv[:last]); err != nil {
+				return nil, &problem{exitType, err.Error()}, refusal{}
+			}
+			argv = append(argv, exprMark)
+			argData = append(argData, false)
+		} else if (name == "filter" || name == "each" || name == "check" || name == "log") && last >= 1 && exprOf(st.Argv[last]) != nil {
 			// The [ ] keeps its value: per row for filter and each, a
 			// datum for check and log.
 			rowX = exprOf(st.Argv[last])
@@ -1774,6 +1818,9 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		// A secret prints as ***, but it does not leave sash: not as a verb
 		// argument, a path, or a function argument.
 		if m.sawSecret && (info.key != "" || info.call != nil || inPath != "" || outPath != "" || len(st.Redirs) > 0) {
+			if _, svc := svcKeys[argv[0]]; svc || argv[0] == "service" {
+				return nil, &problem{exitType, msgSecretRefused}, refusal{}
+			}
 			return nil, &problem{exitType, "a secret cannot leave sash"}, refusal{}
 		}
 		if argv[0] == "template_file" && (len(pipe.Stages) != 1 || inPath != "" || outPath != "" || here != nil) {
@@ -1837,6 +1884,9 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 			return classified{}, &problem{exitType, "usage " + name}
 		}
 		return classified{call: fn, in: inNone, out: inBytes}, nil
+	}
+	if info, prob, ok := classifySvc(argv); ok {
+		return info, prob
 	}
 	switch name {
 	case "echo", "dirs":
@@ -2109,6 +2159,9 @@ func stageShape(st expStage) (int, int) {
 		}
 		return inNone, inBytes
 	default:
+		if info, prob, ok := classifySvc(st.argv); ok && prob == nil {
+			return info.in, info.out
+		}
 		return inNone, inBytes
 	}
 }
@@ -2164,6 +2217,10 @@ func (m *machine) bindPaths(st *expStage) (int, *problem) {
 		}
 		st.paths = append(st.paths, full)
 		st.outPath = full
+	default:
+		if _, svc := svcKeys[st.argv[0]]; svc {
+			return m.bindSvc(st)
+		}
 	}
 	return -1, nil
 }
@@ -2521,6 +2578,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return value{kind: valBytes}, 0
 	case "cd", "pushd":
 		return m.move(st)
+	case "spawn":
+		return m.runSpawn(st)
 	case "cat":
 		if len(st.paths) == 0 {
 			return value{kind: valBytes, b: []byte(asBytes(in))}, 0
@@ -3037,7 +3096,8 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "await", "args", "check", "checks", "log", "origin", "par", "atomic"} {
+		"retry", "timeout", "await", "args", "check", "checks", "log", "origin", "par", "atomic",
+		"service", "spawn", "signal", "wait", "proc", "probe", "output", "mkdir", "chown", "chmod", "touch", "ln", "rm", "mount", "umount"} {
 		reservedNames[n] = true
 	}
 }

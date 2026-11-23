@@ -506,8 +506,13 @@ func knownKey(argv []string) string {
 			return "file.read"
 		}
 		return "file.write"
-	default:
+	case "service":
+		if len(argv) >= 2 && argv[1] == "status" {
+			return "svc.status"
+		}
 		return ""
+	default:
+		return svcKeys[argv[0]]
 	}
 }
 

@@ -410,7 +410,22 @@ func TestNeedsCoversEveryBuiltinKey(t *testing.T) {
 		"template_file":   "template_file /s.yaml /t /o",
 		"template":        "template /t",
 		// atomic rides on the file.write of the writes inside it.
-		"atomic": "atomic { echo x > /o/x }",
+		"atomic":         "atomic { echo x > /o/x }",
+		"spawn":          "spawn main /usr/sbin/nginx",
+		"signal":         "signal main TERM",
+		"wait":           "wait main timeout 5s",
+		"proc":           "proc main",
+		"service status": "service status postgres",
+		"probe":          "probe tcp 127.0.0.1:80",
+		"output":         "output main tail 10",
+		"mkdir":          "mkdir /run/app",
+		"chown":          "chown /run/app app:app",
+		"chmod":          "chmod /run/app 0750",
+		"touch":          "touch /run/app/x",
+		"ln":             "ln /run/app/l /run/app/x",
+		"rm":             "rm /run/app/x",
+		"mount":          "mount tmpfs /run/app/tmp",
+		"umount":         "umount /run/app/tmp",
 	}
 	for _, b := range Builtins() {
 		if b.Key == "" {
@@ -452,7 +467,7 @@ func TestNeedsCoversEveryBuiltinKey(t *testing.T) {
 		}
 	}
 	for key := range needsFlag {
-		if key != "ps" && key != "journal" && needsFlag[key] == "" {
+		if key != "ps" && key != "journal" && !bootKeys[key] && needsFlag[key] == "" {
 			t.Errorf("%q has no policy flag", key)
 		}
 	}

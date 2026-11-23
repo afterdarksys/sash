@@ -41,6 +41,10 @@ type Agent struct {
 	// Before, when set, runs as each request starts, serial or mux,
 	// before the agent answers it (a test's hook into timing).
 	Before func(v parent.Verb)
+	// Init, when set, answers the service verbs (svc.*, fs.mount, and the
+	// file verbs on file.write) before the agent's own rules: the parent
+	// is the init.
+	Init *Init
 
 	tx      *journal
 	ended   error // a restore not yet reported, for the next commit/abort
@@ -179,6 +183,11 @@ func (a *Agent) serial(conn net.Conn, body []byte) {
 	a.mu.Lock()
 	a.reqs++
 	a.mu.Unlock()
+	if a.Init != nil && Handles(v) {
+		res, err := a.Init.Do(v)
+		a.write(conn, result(nil, res, err))
+		return
+	}
 	if err := writeRule(v); err != nil {
 		a.write(conn, result(nil, parent.Result{}, err))
 		return
@@ -226,6 +235,14 @@ func (a *Agent) work(conn net.Conn, id uint64, v parent.Verb, q *req) {
 				return
 			}
 		}
+	}
+	if a.Init != nil && Handles(v) {
+		res, err := a.Init.Do(v)
+		a.mu.Lock()
+		delete(a.open, id)
+		a.mu.Unlock()
+		a.write(conn, result(&id, res, err))
+		return
 	}
 	if err := writeRule(v); err != nil {
 		a.mu.Lock()

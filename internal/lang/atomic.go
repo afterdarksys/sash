@@ -35,7 +35,7 @@ import (
 )
 
 // irreversible are the verbs atomic cannot undo.
-var irreversible = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true}
+var irreversible = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "svc.spawn": true, "svc.signal": true, "fs.mount": true}
 
 // atomicDeadlineMax is the agent's longest transaction.
 const atomicDeadlineMax = 600 * time.Second
