@@ -15,6 +15,7 @@ package grant
 import (
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -72,30 +73,61 @@ var (
 	mountMode  = regexp.MustCompile(`^[0-7]{3,4}$`)
 )
 
+// mountIDMax is the largest uid or gid: 2^32-1 is (uid_t)-1, "no id".
+const mountIDMax = 1<<32 - 2
+
+// mountValueOK bounds a size, nr_inodes, mode, uid or gid by its meaning:
+// a count that parses without overflow (a percentage at most 100), a mode
+// without setuid or setgid (at most 1777), an id below (uid_t)-1.
+func mountValueOK(k, v string) bool {
+	switch k {
+	case "size", "nr_inodes":
+		if !mountSize.MatchString(v) {
+			return false
+		}
+		num, unit := v, byte(0)
+		if c := v[len(v)-1]; c < '0' || c > '9' {
+			num, unit = v[:len(v)-1], c
+		}
+		n, err := strconv.ParseUint(num, 10, 64)
+		if err != nil || (unit == '%' && (k != "size" || n > 100)) {
+			return false
+		}
+		shift := map[byte]uint{'k': 10, 'm': 20, 'g': 30}[unit]
+		return n <= (1<<63-1)>>shift
+	case "mode":
+		n, err := strconv.ParseUint(v, 8, 32)
+		return mountMode.MatchString(v) && err == nil && n <= 0o1777
+	case "uid", "gid":
+		n, err := strconv.ParseUint(v, 10, 64)
+		return mountNum.MatchString(v) && err == nil && n <= mountIDMax
+	}
+	return false
+}
+
 // MountForcedOpts are added to every mount: no setuid binaries, no device
 // nodes.
 var MountForcedOpts = []string{"nosuid", "nodev"}
 
-// CheckMountOpts checks a mount's type ("" for a bind) and options. A bind
-// (bind or rbind) takes no type; any other mount names an allowed type.
-// It returns whether the mount is a bind.
-func CheckMountOpts(typ string, opts []string) (bool, error) {
-	bind := false
+// CheckMountOpts checks a mount's source, type ("" for a bind) and
+// options. A bind (bind or rbind) takes no type; any other mount names an
+// allowed type, and its source is that type's name, so a grant whose
+// mount_sources lists only tmpfs cannot mount proc. ro and rw together are
+// refused. It returns whether the mount is a bind.
+func CheckMountOpts(src, typ string, opts []string) (bool, error) {
+	bind, ro, rw := false, false, false
 	for _, o := range opts {
 		k, v, hasVal := strings.Cut(o, "=")
 		switch {
 		case !hasVal && mountFlags[o]:
-			if o == "bind" || o == "rbind" {
-				bind = true
-			}
-		case hasVal && (k == "size" || k == "nr_inodes") && mountSize.MatchString(v):
-		case hasVal && k == "mode" && mountMode.MatchString(v):
-		case hasVal && (k == "uid" || k == "gid") && mountNum.MatchString(v):
+			bind = bind || o == "bind" || o == "rbind"
+			ro, rw = ro || o == "ro", rw || o == "rw"
+		case hasVal && mountValueOK(k, v):
 		default:
 			return false, ErrMountOpt
 		}
 	}
-	if bind && typ != "" || !bind && !MountTypes[typ] {
+	if ro && rw || bind && typ != "" || !bind && (!MountTypes[typ] || src != typ) {
 		return false, ErrMountOpt
 	}
 	return bind, nil

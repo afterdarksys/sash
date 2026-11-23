@@ -198,12 +198,16 @@ func (in *Init) Do(v parent.Verb) (parent.Result, error) {
 					opts = append(opts, strings.Split(argv[i+1], ",")...)
 				}
 			}
-			bind, err := grant.CheckMountOpts(typ, opts)
+			bind, err := grant.CheckMountOpts(argv[1], typ, opts)
 			if err != nil {
 				return parent.Result{}, err
 			}
 			if bind != strings.HasPrefix(argv[1], "/") {
 				return parent.Result{}, errInitDenied
+			}
+			// A remount changes only a mount this service made.
+			if _, mounted := in.Mounts[dir]; slices.Contains(opts, "remount") && !mounted {
+				return parent.Result{}, errors.New("not_mounted")
 			}
 			for _, forced := range grant.MountForcedOpts {
 				if !slices.Contains(opts, forced) {

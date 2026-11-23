@@ -509,7 +509,7 @@ func TestMountSourceAndOverlap(t *testing.T) {
 		"mount /srv/app/static/../../../etc /mnt/app": "usage mount",
 		"mount proc /mnt/app type proc":               "denied mount source",
 		"mount tmpfs /mnt/app opts rbind":             "usage mount: a bind takes a path",
-		"mount /srv/app/static /mnt/app type tmpfs":   "usage mount: a bind takes a path",
+		"mount /srv/app/static /mnt/app type tmpfs":   "mount_opt_refused",
 		"mount /srv/app/static /mnt/app type bind":    "mount_opt_refused",
 		"mount tmpfs /mnt/app":                        "mount_opt_refused",
 		"mount tmpfs /mnt/app type overlay opts \"lowerdir=/etc,upperdir=/srv/u,workdir=/srv/w\"": "mount_opt_refused",
@@ -673,5 +673,61 @@ func TestGrantRequestEnvNames(t *testing.T) {
 	dyn := Describe(appService+"fn start() {\n let e = [ {} ]\n spawn main /opt/app/bin/server opts [ {\"env\": $e} ]\n}\n", DescribeOptions{})
 	if dyn.Status != 1 || !strings.Contains(dyn.Stdout, "\"target\": \"env $\"") {
 		t.Fatalf("dynamic env: %+v", dyn)
+	}
+}
+
+// A type mount's source is its type: a grant listing only tmpfs cannot
+// mount proc or sysfs by naming tmpfs as the source.
+func TestMountTypeIsTheSource(t *testing.T) {
+	for _, body := range []string{"mount tmpfs /mnt/app type proc", "mount tmpfs /mnt/app type sysfs", "mount proc /mnt/app type proc"} {
+		in := newInit(t)
+		out := runEntry(t, appService+"fn start() {\n"+body+"\n}\n", "start", in)
+		if out.Status == 0 || len(in.Calls()) != 0 {
+			t.Errorf("%q: %+v", body, out)
+		}
+	}
+	g := bootGrant("app")
+	g.MountSources = append(g.MountSources, "proc")
+	in := prototest.NewInit("app", g)
+	if out := Run(appService+"fn start() {\nmount proc /mnt/app type proc\n}\n", g, in, Options{Entry: "start"}); out.Status != 0 {
+		t.Fatalf("listed proc: %+v", out)
+	}
+	in = newInit(t)
+	if _, err := in.Do(parent.Verb{Key: "fs.mount", Argv: []string{"mount", "tmpfs", "/mnt/app", "type", "proc", "opts", "nosuid,nodev"}}); err == nil {
+		t.Fatal("the init mounted proc from a tmpfs source")
+	}
+	req := Describe(appService+"fn start() {\nmount proc /mnt/app type proc\n}\n", DescribeOptions{GrantRequest: true})
+	if !strings.Contains(req.Stdout, "\"mount_sources\": [\n    \"proc\"\n  ]") {
+		t.Fatalf("request:\n%s", req.Stdout)
+	}
+}
+
+// Option values are bounded by meaning, and ro with rw is refused.
+func TestMountOptionBounds(t *testing.T) {
+	for opts, ok := range map[string]bool{
+		"uid=4294967294": true, "uid=4294967295": false, "gid=9999999999": false,
+		"mode=1777": true, "mode=0755": true, "mode=2755": false, "mode=4755": false, "mode=7777": false,
+		"ro,rw": false, "ro": true, "size=64m": true, "size=100%": true, "size=101%": false,
+		"size=999999999999999g": false, "size=999999999999999": true, "nr_inodes=10k": true, "nr_inodes=5%": false,
+	} {
+		_, err := grant.CheckMountOpts("tmpfs", "tmpfs", strings.Split(opts, ","))
+		if (err == nil) != ok {
+			t.Errorf("%s: %v", opts, err)
+		}
+	}
+}
+
+// remount with a type is valid (it changes the options of a mount this
+// service made); the init refuses a remount of a directory it did not
+// mount for the service.
+func TestMountRemount(t *testing.T) {
+	in := newInit(t)
+	src := appService + "fn start() {\nmount tmpfs /mnt/app type tmpfs opts \"remount,ro\"\n}\n"
+	if out := runEntry(t, src, "start", in); out.Status == 0 || !strings.Contains(out.Stderr, "not_mounted") {
+		t.Fatalf("remount of nothing: %+v", out)
+	}
+	in.Mounts["/mnt/app"] = "tmpfs"
+	if out := runEntry(t, src, "start", in); out.Status != 0 {
+		t.Fatalf("remount: %+v", out)
 	}
 }

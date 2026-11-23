@@ -406,6 +406,7 @@ var svcRefusals = map[string]string{
 	"timeout":      "the process did not end in time",
 	"denied":       "the init refused it",
 	"ceiling":      "past the init's ceiling for caps or limits",
+	"not_mounted":  "a remount changes only a mount the init made for this service",
 }
 
 // runSpawn evaluates the options and makes the one svc.spawn call.
@@ -873,7 +874,7 @@ func (m *machine) mountChecks(st *expStage) (int, *problem) {
 			opts = append(opts, strings.Split(argv[i+1], ",")...)
 		}
 	}
-	bind, err := grant.CheckMountOpts(typ, opts)
+	bind, err := grant.CheckMountOpts(src, typ, opts)
 	if err != nil {
 		return -1, &problem{exitType, err.Error()}
 	}
