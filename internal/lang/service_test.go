@@ -432,3 +432,22 @@ func TestSpawnSecretNotRecorded(t *testing.T) {
 		t.Fatalf("recording: %s", r)
 	}
 }
+
+// No service verb takes a flag: under a prefix, rm -rf would otherwise be
+// the path <prefix>/-rf.
+func TestServiceVerbsTakeNoFlags(t *testing.T) {
+	g := bootGrant("app")
+	g.V, g.Purpose = "sash/1", grant.PurposeOpen
+	for _, line := range []string{"rm -rf", "chmod -R 0755", "touch -d", "umount -l"} {
+		f := &fake{}
+		out := Run("cd /run/app\n"+line+"\n", g, f, Options{})
+		if out.Status != exitType || !strings.Contains(out.Stderr, "usage") {
+			t.Errorf("%q: %+v", line, out)
+		}
+		for _, c := range f.calls {
+			if c.Key != "file.read" {
+				t.Errorf("%q reached the parent: %+v", line, c)
+			}
+		}
+	}
+}
