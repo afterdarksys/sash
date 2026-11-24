@@ -27,7 +27,7 @@ Out of scope:
 
 ## Decisions
 
-These are proposed. The open decisions at the end are the ones that need Ryan's word.
+Ryan settled the open decisions on 2026-11-24; they are recorded at the end.
 
 - **D1. One interpreter.** There is no `sash-boot` and no boot-job broker. A boot script is an ordinary sash unit: `sash --session --entry start`, the same fds, the same verb socket, the same recording and audit.
 - **D2. A new grant version.** The boot verbs need a signed grant version, `sash/3`, with its own purpose (`boot`), its own domain prefix (`sash-grant-v3\n`) and six new name lists. A `sash/2` grant can never carry a boot verb.
@@ -82,7 +82,7 @@ The shape errors are usage errors, exit 2.
 - **No flags.** No form takes one (a word starting with `-` is usage), as for the service verbs.
 - **No secrets.** A secret anywhere in the arguments is `secret_refused`.
 - **`mount ensure` against `mount`.** `mount ensure` shares its first word with `mount SRC DIR`. A `mount` stage whose second word is `ensure` is always the boot verb, and it takes exactly one name. So `mount ensure /mnt/x` is `usage mount ensure NAME`. To keep that from hiding a real mount, the grant parser refuses `ensure` in `mount_sources` (`grant_bad_shape`).
-- **`service start` and `service stop`** sit beside `service status` (`svc.status`), which is already the init's view of a service. They are not `unit start` and `unit stop`. In sash, `unit` is the systemapi agent's systemd verb (`unit status`, `unit restart`, keys `unit.*`, flag `--service`), and the boot keys must not look like channel keys (open decision 1).
+- **`service start` and `service stop`** sit beside `service status` (`svc.status`), which is already the init's view of a service. They are not `unit start` and `unit stop`. In sash, `unit` is the systemapi agent's systemd verb (`unit status`, `unit restart`, keys `unit.*`, flag `--service`), and the boot keys must not look like channel keys (decision 1).
 
 ### Where boot verbs may run
 
@@ -118,10 +118,10 @@ Every verb is checked first against the common gates below, in this order:
 sash checks only gates 1 and 2, the entry, the shapes and the grant list. The init checks everything.
 
 **`module load NAME`.** NAME must be in `modules` (sash: exit 126 `denied module`). The init then:
-1. Refuses when `/proc/sys/kernel/modules_disabled` is 1 (`module_disabled`), and when signature enforcement is off: `/sys/module/module/parameters/sig_enforce` is not `Y` and the kernel is not in lockdown (`module_sig_unenforced`; open decision 2).
+1. Refuses when `/proc/sys/kernel/modules_disabled` is 1 (`module_disabled`), and when signature enforcement is off: `/sys/module/module/parameters/sig_enforce` is not `Y` and the kernel is not in lockdown (`module_sig_unenforced`). A binary built with the `sahinit_unsigned_modules` tag goes ahead instead and logs `module_unsigned_dev NAME` (decision 2).
 2. Opens the module tree `/lib/modules/<release>`, with `<release>` from `uname(2)` and never from the request. It opens it with the trusted walk: root-owned, not group- or other-writable, no symlinks (`module_tree`).
 3. Reads `modules.dep` from that tree, at most 8 MiB (`module_tree`). It finds the one line whose file's base name, with the `.ko` and any `.xz`, `.zst` or `.gz` suffix removed and `-` read as `_`, equals NAME. No line is `module_unknown`. A path in the line that is absolute, unclean or contains `..` is `module_tree`.
-4. Takes NAME's dependencies from that line, in the order `modules.dep` gives them. It loads them first, each by the same steps. Dependencies come from the root-owned `depmod` output and are not listed in the grant (open decision 2). They are reported in `deps`.
+4. Takes NAME's dependencies from that line, in the order `modules.dep` gives them. It loads them first, each by the same steps. Dependencies come from the root-owned `depmod` output and are not listed in the grant (decision 2). They are reported in `deps`.
 5. Loads each module that `/sys/module/NAME` does not already show as live:
    - it opens the file with `openat2(treefd, rel, RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS)` and `O_RDONLY|O_CLOEXEC`;
    - it calls `finit_module(fd, "", flags)`, with `MODULE_INIT_COMPRESSED_FILE` for a compressed file;
@@ -205,7 +205,7 @@ The caller's runtime lock is never held across the target's start or stop. A tes
 
 **The floor and serial.** The floor stays `sahinit-sash-floor/1`, one per **service name**, unchanged. `sash/2` and `sash/3` grants for a service share it and share one serial sequence, so raising the floor revokes both. To remove one module from a boot grant, the signer issues a new `sash/3` with a higher serial, and the floor is raised to it. Moving a unit from `sash/2` to `sash/3` raises the floor in the same way. A swap back to the old file is refused twice: by the floor, and by the unit's `boot_ops` opt-in, which requires `sash/3`.
 
-**The host is bound.** A `sash/2` grant's `host` is not checked by sahinit in batch 1. A `sash/3` grant's is: sahinit compares it with the `host_id` of its boot-policy trust file and refuses a mismatch (`sash_grant_host`). With no trust file configured, sahinit refuses every `sash/3` grant (`sash_grant_host`). The comparison is by plain equality: a host id is public, not a secret (open decision 3).
+**The host is bound.** A `sash/2` grant's `host` is not checked by sahinit in batch 1. A `sash/3` grant's is: sahinit compares it with the `host_id` of its boot-policy trust file and refuses a mismatch (`sash_grant_host`). With no trust file configured, sahinit refuses every `sash/3` grant (`sash_grant_host`). The comparison is by plain equality: a host id is public, not a secret (decision 3).
 
 **In sash:**
 - `grant.Grant` gains the six lists.
@@ -276,7 +276,7 @@ None of these runs under `setfsuid`. They are host operations, not file operatio
   - Every verb is bounded by the session's entry timeout, which stays 2 minutes. The init never lets a verb outlive its session.
   - `service start` is also bounded by the target unit's own `timeout`.
   - A module load that outlives its session is the one exception (see the module rules).
-- **Window.** A boot verb runs only before the boot waves end (`Supervisor.Booted()` false) and only in a `start` entry. After that it is `boot_over`, so a later `ctl start` of the boot-ops unit fails. Running it again means rebooting (open decision 4).
+- **Window.** A boot verb runs only before the boot waves end (`Supervisor.Booted()` false) and only in a `start` entry. After that it is `boot_over`, so a later `ctl start` of the boot-ops unit fails. Running it again means rebooting (decision 4).
 - **Who.** Only a unit with `boot_ops`, a `sash/3` purpose `boot` grant and `"boot": true` may use the verbs. A `service` grant never can.
 - **Idempotence.** Every mutating verb answers `already` when the host already matches. Repeating a script is safe, and a partial boot can be re-run after a reboot without undoing anything.
 - **Start and stop are once per unit per boot** (`boot_once`). Together with the call budget, this rules out stop/start loops.
@@ -337,7 +337,7 @@ What this protects against, and what it does not. Every new Go file in both repo
   - Every wait is bounded by the 2-minute entry timeout.
 
   The worst case is a boot delayed by 2 minutes, then recovery.
-- **Network apply exposing interfaces.** The profile, not the script, chooses the link (by MAC), the addresses and the routes. Apply only adds, never creates virtual links, never sets promiscuous mode or forwarding, and can wait for a firewall unit (`requires`). Not protected: a profile that brings up a public interface before a firewall when it lists no `requires`. The open decisions recommend requiring it for any profile with a non-private address.
+- **Network apply exposing interfaces.** The profile, not the script, chooses the link (by MAC), the addresses and the routes. Apply only adds, never creates virtual links, never sets promiscuous mode or forwarding, and can wait for a firewall unit (`requires`). Not protected: a profile that brings up a public interface before a firewall when it lists no `requires`. Decision 5 requires it for any static profile with a non-private address (`host_decl_invalid` otherwise).
 - **Grant forgery, swap and replay.**
   - Ed25519 over a domain-separated message.
   - `sash/2`, `sash/3` and the floor domains are disjoint.
@@ -479,14 +479,25 @@ Negative scenarios, each ending in `BOOTTEST: recovery`:
 - `bootverbs-wrongdisk`: the disk serial differs, giving `device_mismatch`;
 - `bootverbs-ungranted`: the script asks for a module not in the grant.
 
-## Open decisions for Ryan
+## Decisions (Ryan, 2026-11-24)
 
-1. **`service start` and `service stop`, not `unit start` and `unit stop`.** In sash, `unit` is the systemapi agent's systemd verb, with `unit.*` keys and the `--service` flag. `service status` is already the init's view of a service. **Recommend `service start` and `service stop`**, with keys `boot.start` and `boot.stop`.
-2. **Modules: require kernel signature enforcement, and load `modules.dep` dependencies implicitly.** The alternatives are:
-   - allowing unsigned modules by a `host.json` switch;
-   - listing every dependency in the grant, which breaks with each kernel's `depmod` output.
-
-   **Recommend refusing without `sig_enforce` or lockdown, with no override in this version, and implicit dependencies from the root-owned tree.**
-3. **Bind `sash/3` to the host.** Use the boot-policy trust file's `host_id`, and refuse every `sash/3` grant on a host without one. **Recommend yes.** A boot grant that loads kernel code should not be portable between hosts, and failing closed matches the floor's rules.
-4. **Boot only.** After the boot waves end, every boot verb is `boot_over`, so a link change or a hot-plugged disk after boot is not handled here. **Recommend boot only for now.** A post-boot `network apply` would be a separate contract with its own purpose.
-5. **Network profiles with a non-private address must list `requires`.** That would make a firewall gate mandatory, so no public interface comes up before its firewall. **Recommend yes:** `host_decl_invalid` for a static profile with a public address and an empty `requires`.
+1. **`service start` and `service stop`.** In sash, `unit` stays the systemapi agent's systemd verb. Keys are `boot.start` and `boot.stop`.
+2. **Modules need kernel signature enforcement, with a development override chosen at build time.**
+   - Release builds refuse every load unless `sig_enforce` is `Y` or the kernel is in lockdown (`module_sig_unenforced`).
+   - The override exists only in a binary built with the Go build tag `sahinit_unsigned_modules`. Nothing at run time can turn it on: no flag, no environment variable, no unit or `host.json` field, no deployment.
+   - In such a binary, a load with signature enforcement off goes ahead. Each such load is logged as `module_unsigned_dev NAME`.
+   - The binary announces itself:
+     - `sahinit --version` and the startup log line carry `unsigned-modules`;
+     - `ctl status` reports `"build": ["unsigned-modules"]`.
+   - `build.sh` builds release artifacts without the tag. A test checks that the default build refuses an unsigned load.
+   - The tag relaxes only the signature check. `modules_disabled`, the trusted module tree, `modules.dep` path checks, the grant list and the host binding all still apply.
+   - Dependencies are loaded implicitly from the root-owned `modules.dep`; they are not listed in the grant.
+3. **`sash/3` is bound to the host.** Its `host` must equal the boot-policy trust file's `host_id`. With no trust file, every `sash/3` grant is refused.
+4. **Boot only, for now.** After the boot waves end, every boot verb is `boot_over`.
+   - **Follow-up:** post-boot `network apply`, plus link changes and hot-plugged disks, need their own contract with their own purpose.
+   - This is tracked in sah.system `docs/followups.md`.
+5. **A static profile with a non-private address must list `requires`.** Otherwise `host.json` is refused with `host_decl_invalid`. The firewall unit is ordered before the address, but it does not need the address to exist:
+   - nftables rules match values, not live addresses. A rule on `ip daddr 203.0.113.7` or on a set of addresses loads, and stays loaded, before any interface carries that address.
+   - Matching on `iifname "eth0"` is a string match, so it also loads before the link exists. `iif` is an index and needs the link, so firewall units should use `iifname`.
+   - So rules stick across the address appearing later. The firewall unit needs no ANY or placeholder source; `requires` only makes sure the filter is in place before the public address goes live.
+   - The firewall unit's own configuration (for example through nftapi) is out of scope here.
