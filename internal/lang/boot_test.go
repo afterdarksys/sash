@@ -269,10 +269,16 @@ func TestBootPlacement(t *testing.T) {
 			t.Errorf("%s: the init was called: %v", c.name, in.Calls())
 		}
 	}
+	// The await refusal halts the run: try cannot catch it and poll on.
+	in := newBootInit(t)
+	out := runBoot(startFn("try { await timeout 10s every 1s { module load virtio_blk } } catch e { echo caught }"), "start", in)
+	if out.Status != exitType || !strings.Contains(out.Stderr, "boot_in_await") || strings.Contains(out.Stdout, "caught") || len(in.Calls()) != 0 {
+		t.Fatalf("try around await: %+v", out)
+	}
 	// device wait is a read: atomic does not refuse it statically (the
 	// double serves no atomic.*, so the block is unavailable instead).
-	in := newBootInit(t)
-	out := runBoot(startFn("atomic { device wait data timeout 5s }"), "start", in)
+	in = newBootInit(t)
+	out = runBoot(startFn("atomic { device wait data timeout 5s }"), "start", in)
 	if strings.Contains(out.Stderr, "atomic_irreversible") {
 		t.Fatalf("device wait in atomic: %+v", out)
 	}
@@ -287,7 +293,9 @@ func TestBootCallLimit(t *testing.T) {
 	if out.Status != exitType || !strings.Contains(out.Stderr, "boot_call_limit") || len(in.Calls()) != 64 {
 		t.Fatalf("65th: %d %q %d", out.Status, out.Stderr, len(in.Calls()))
 	}
-	if out := runBoot(startFn("set bootmax 1000\nmodule load virtio_blk"), "start", newBootInit(t)); out.Status == 0 {
+	// bootmax is no session option: set refuses it as usage.
+	in = newBootInit(t)
+	if out := runBoot(startFn("set bootmax 1000\nmodule load virtio_blk"), "start", in); out.Status != exitType || out.Stderr != "usage set\n" || len(in.Calls()) != 0 {
 		t.Fatalf("set bootmax: %+v", out)
 	}
 	// The init's own count: 40, then 40 more in a new session.
@@ -379,6 +387,15 @@ func TestBootInitRefusals(t *testing.T) {
 		if out.Status != exitType || !strings.Contains(out.Stderr, want) {
 			t.Errorf("%s: %d %q, want %q", c.name, out.Status, out.Stderr, want)
 		}
+	}
+	// A mount over a file_write root: target /data holds the root
+	// /data/app.
+	in0 := newBootInit(t)
+	og := bootOpsGrant()
+	og.FileWrite = []string{"/data/app"}
+	in0.G = og
+	if out := Run(startFn("device wait data timeout 5s\nmount ensure data"), og, in0, Options{Entry: "start"}); out.Status != exitType || !strings.Contains(out.Stderr, "refused boot.mount: mount_overlap (") {
+		t.Fatalf("mount above a write root: %+v", out)
 	}
 	// The disk under the node changes between device wait and mount
 	// ensure (two sessions, one boot).
@@ -528,6 +545,22 @@ func TestInitRechecksBootVerbs(t *testing.T) {
 	in.Boot.ModulesDep += "kernel/x/..evil.ko:\n"
 	if _, err := in.Do(ok); err == nil || err.Error() != "module_tree" {
 		t.Fatalf("dotdot name: %v", err)
+	}
+	// Gate 2 on its own: a sash/3 grant for another service, and a sash/2
+	// grant whose boot lists are filled in.
+	other := bootOpsGrant()
+	other.Service, other.Actor = "otherprep", "boot:otherprep"
+	in = prototest.NewInit("hostprep", other)
+	in.Boot = prototest.NewBoot("hostprep")
+	if _, err := in.Do(ok); err == nil || err.Error() != "denied" {
+		t.Fatalf("other service: %v", err)
+	}
+	filled := bootOpsGrant()
+	filled.V, filled.Purpose = "sash/2", grant.PurposeService
+	in = prototest.NewInit("hostprep", filled)
+	in.Boot = prototest.NewBoot("hostprep")
+	if _, err := in.Do(ok); err == nil || err.Error() != "denied" {
+		t.Fatalf("sash/2 with lists: %v", err)
 	}
 	// An unknown boot key, even with no argv, is denied and charges no
 	// budget.

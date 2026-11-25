@@ -453,12 +453,14 @@ func (in *Init) boot(v parent.Verb) (parent.Result, error) {
 		re        *regexp.Regexp
 		allows    func(string) bool
 	}{
-		"boot.module": {"module", "load", 3, grant.ModuleName, g.AllowsModule},
-		"boot.device": {"device", "wait", 5, grant.BootName, g.AllowsDevice},
-		"boot.mount":  {"mount", "ensure", 3, grant.BootName, g.AllowsHostMount},
-		"boot.net":    {"network", "apply", 3, grant.BootName, g.AllowsNetProfile},
-		"boot.start":  {"service", "start", 3, grant.UnitName, g.AllowsUnitStart},
-		"boot.stop":   {"service", "stop", 3, grant.UnitName, g.AllowsUnitStop},
+		// The lists themselves: gate 2 above is the one sash/3 check, so
+		// a test can show it holds on its own.
+		"boot.module": {"module", "load", 3, grant.ModuleName, listed(g.Modules)},
+		"boot.device": {"device", "wait", 5, grant.BootName, listed(g.Devices)},
+		"boot.mount":  {"mount", "ensure", 3, grant.BootName, listed(g.HostMounts)},
+		"boot.net":    {"network", "apply", 3, grant.BootName, listed(g.NetProfiles)},
+		"boot.start":  {"service", "start", 3, grant.UnitName, listed(g.UnitsStart)},
+		"boot.stop":   {"service", "stop", 3, grant.UnitName, listed(g.UnitsStop)},
 	}[v.Key]
 	// An unknown boot key is denied before the budget is charged.
 	if !known {
@@ -494,6 +496,10 @@ func (in *Init) boot(v parent.Verb) (parent.Result, error) {
 		return b.stopUnit(name, in.Service)
 	}
 	return parent.Result{}, errInitDenied
+}
+
+func listed(list []string) func(string) bool {
+	return func(s string) bool { return s != "" && slices.Contains(list, s) }
 }
 
 func oneRow(cols []string, r parent.Row) (parent.Result, error) {
