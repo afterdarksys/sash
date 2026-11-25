@@ -1174,6 +1174,9 @@ func lintKey(st Stage) string {
 			return "package.install"
 		case "sysctl":
 			return "sysctl.set"
+		case "service":
+			// status, start or stop: the run may start a unit.
+			return "boot.start"
 		}
 	}
 	return knownKey(argv)

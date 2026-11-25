@@ -320,6 +320,11 @@ func (l *linter) bootReach(p *Program, seen map[*Fn]bool) string {
 			what = k
 			return
 		}
+		// mount $w NAME may be mount ensure.
+		if plain(st.Argv[0]) == "mount" && len(st.Argv) == 3 && plain(st.Argv[1]) == "" {
+			what = "boot.mount (mount with a subcommand from a value)"
+			return
+		}
 		if fn := l.fns[plain(st.Argv[0])]; fn != nil && !seen[fn] {
 			seen[fn] = true
 			if inner := l.bootReach(&fn.Body, seen); inner != "" {

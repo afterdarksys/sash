@@ -532,6 +532,28 @@ func TestBootNeedsDescribeAndLint(t *testing.T) {
 	if req.Status != 1 || !strings.Contains(req.Stdout, `"modules": []`) || !strings.Contains(req.Stdout, `"boot.module"`) {
 		t.Fatalf("dynamic request: %+v", req)
 	}
+	// A subcommand from a value: service $s NAME may be start or stop,
+	// mount $w NAME may be mount ensure. Each is a dynamic row, the
+	// description is incomplete, the request is sash/3 with the keys, and
+	// lint sees a possible boot verb.
+	for _, c := range []struct{ body, key string }{
+		{"let s = start\nservice $s dhcp", "boot.start"},
+		{"let s = start\nservice $s dhcp", "boot.stop"},
+		{"let w = ensure\nmount $w data", "boot.mount"},
+	} {
+		n := Needs(startFn(c.body), NeedsOptions{})
+		if n.Status != 1 || !strings.Contains(n.Stdout, c.key) || !strings.Contains(n.Stdout, "dynamic") {
+			t.Errorf("%q needs: %+v", c.body, n)
+		}
+		r := Describe(startFn(c.body), DescribeOptions{GrantRequest: true})
+		if r.Status != 1 || !strings.Contains(r.Stdout, `"v": "sash/3"`) || !strings.Contains(r.Stdout, `"`+c.key+`"`) {
+			t.Errorf("%q request: %+v", c.body, r)
+		}
+		l := Lint(hostprepService + "fn start() { echo x }\nfn stop() {\n" + c.body + "\n}\n")
+		if !strings.Contains(l.Stdout, "boot-outside-start") {
+			t.Errorf("%q lint:\n%s", c.body, l.Stdout)
+		}
+	}
 	// Without a boot verb the request stays sash/2.
 	if r := Describe(appService+"fn start() { proc main }\n", DescribeOptions{GrantRequest: true}); !strings.Contains(r.Stdout, `"v": "sash/2"`) || strings.Contains(r.Stdout, "modules") {
 		t.Fatalf("sash/2 request: %s", r.Stdout)

@@ -712,6 +712,26 @@ func (n *needsRun) svcStage(name string, st Stage, b needBase) {
 		n.bootStage(st)
 		return
 	}
+	// A subcommand from a value may be any form the run accepts: service
+	// $s NAME is status, start or stop, and mount $w NAME may be mount
+	// ensure. Each possible key is a dynamic row, so the description is
+	// incomplete and a grant request carries the boot keys.
+	if len(args) == 2 && plain(args[0]) == "" && (name == "service" || name == "mount") {
+		target := plain(args[1])
+		if target == "" {
+			target = "$"
+		}
+		if name == "mount" {
+			// mount SRC DIR keeps its own rows below; SRC from a value is
+			// already a dynamic source.
+			n.add("boot.mount", target, noteDynamic, at, "")
+		} else {
+			for _, k := range []string{"svc.status", "boot.start", "boot.stop"} {
+				n.add(k, target, noteDynamic, at, "")
+			}
+			return
+		}
+	}
 	switch name {
 	case "service":
 		if len(args) == 2 && plain(args[0]) == "status" {
