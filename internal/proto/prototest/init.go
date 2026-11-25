@@ -1,7 +1,8 @@
 package prototest
 
 // Init is a test double for the init side of the verb socket
-// (docs/plans/2026-11-21-sash-init-contract.md): the service verbs, a
+// (docs/plans/2026-11-21-sash-init-contract.md): the service verbs and
+// the boot verbs (boot.go), a
 // name-to-process table per service, and fake processes. Nothing forks.
 // It re-checks each verb against its own copy of the grant, as the init
 // does, so a test can show sash refusing first and the init refusing too.
@@ -57,6 +58,8 @@ type Init struct {
 	// Exits makes a process end on its own: name to exit status, when it
 	// is spawned. Unlisted processes run until signalled.
 	Exits map[string]int
+	// Boot answers the boot verbs (boot.go); nil denies them all.
+	Boot *Boot
 
 	mu    sync.Mutex
 	pid   int
@@ -75,7 +78,7 @@ var errInitDenied = errors.New("denied")
 
 // Handles reports whether v is a verb Init answers.
 func Handles(v parent.Verb) bool {
-	if strings.HasPrefix(v.Key, "svc.") || v.Key == "fs.mount" {
+	if strings.HasPrefix(v.Key, "svc.") || strings.HasPrefix(v.Key, "boot.") || v.Key == "fs.mount" {
 		return true
 	}
 	if v.Key == "file.write" && len(v.Argv) > 0 {
@@ -93,6 +96,9 @@ func (in *Init) Do(v parent.Verb) (parent.Result, error) {
 	defer in.mu.Unlock()
 	in.calls = append(in.calls, v)
 	in.log = append(in.log, v.Key+" "+strings.Join(v.Argv, " "))
+	if strings.HasPrefix(v.Key, "boot.") {
+		return in.boot(v)
+	}
 	if !Handles(v) || !in.G.Has(v.Key) {
 		return parent.Result{}, errInitDenied
 	}
