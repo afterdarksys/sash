@@ -1,4 +1,4 @@
-// Package grant is the in-memory sash/1 and sash/2 entitlement set.
+// Package grant is the in-memory sash/1, sash/2 and sash/3 entitlement set.
 // Commit 1 callers may pass a Grant they already trust.
 // Verify is the signed check used when a parent delivers the document.
 package grant
@@ -40,12 +40,40 @@ type Grant struct {
 	Group        string
 	// EnvNames are the environment names spawn may set (policy.go).
 	EnvNames []string
-	Serial   uint64
+
+	// The sash/3 lists (purpose boot): the names the boot verbs may use.
+	// A name means something only on the init's side: the kernel's module
+	// tree, root's host.json, the unit catalog.
+	Modules     []string
+	Devices     []string
+	HostMounts  []string
+	NetProfiles []string
+	UnitsStart  []string
+	UnitsStop   []string
+
+	Serial uint64
 }
 
-// Boot reports a sash/2 boot grant: the only kind that carries the
-// service verbs.
-func (g Grant) Boot() bool { return g.V == "sash/2" && g.Purpose == PurposeService }
+// Boot reports a grant that carries the service verbs: sash/2 purpose
+// service, or sash/3 purpose boot.
+func (g Grant) Boot() bool {
+	return (g.V == "sash/2" && g.Purpose == PurposeService) || g.BootOps()
+}
+
+// BootOps reports a sash/3 boot grant: the only kind that carries the boot
+// verbs (module load, device wait, mount ensure, network apply, service
+// start and stop).
+func (g Grant) BootOps() bool { return g.V == "sash/3" && g.Purpose == PurposeBoot }
+
+// AllowsModule, AllowsDevice, AllowsHostMount, AllowsNetProfile,
+// AllowsUnitStart and AllowsUnitStop report whether a sash/3 list names
+// s exactly. Only a sash/3 boot grant allows any of them.
+func (g Grant) AllowsModule(s string) bool     { return g.BootOps() && exact(g.Modules, s) }
+func (g Grant) AllowsDevice(s string) bool     { return g.BootOps() && exact(g.Devices, s) }
+func (g Grant) AllowsHostMount(s string) bool  { return g.BootOps() && exact(g.HostMounts, s) }
+func (g Grant) AllowsNetProfile(s string) bool { return g.BootOps() && exact(g.NetProfiles, s) }
+func (g Grant) AllowsUnitStart(s string) bool  { return g.BootOps() && exact(g.UnitsStart, s) }
+func (g Grant) AllowsUnitStop(s string) bool   { return g.BootOps() && exact(g.UnitsStop, s) }
 
 // AllowsMountSource reports whether src is a listed name, or a clean path
 // equal to or beneath a listed path.

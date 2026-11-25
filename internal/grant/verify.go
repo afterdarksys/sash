@@ -16,9 +16,10 @@ import (
 // grant, a fleet signature on purpose emergency (and the reverse), a "*", an
 // expired exp, a relative or unclean file root, identical purpose keys, and
 // an oversized document. Verification fails closed before the prompt.
-// sash/2 (the boot grant, purpose service) signs under its own domain
-// prefix, so a sash/1 signature never verifies as sash/2 or the reverse;
-// exp 0 ("never") is allowed only for purpose service.
+// sash/2 (the boot grant, purpose service) and sash/3 (v3.go, purpose
+// boot) each sign under their own domain prefix, so a signature of one
+// version never verifies as another; exp 0 ("never") is allowed only for
+// purposes service and boot.
 // Does NOT hold a private key. Does NOT treat systemapi-lease-v1 or
 // "<action>\n<payload>" as a grant message. Does NOT open a pubkey path;
 // the caller passes the raw 32-byte keys.
@@ -152,9 +153,12 @@ func v2Fields(g Grant) signedV2 {
 }
 
 // Message is the exact byte string an ed25519 key signs for this grant:
-// sash-grant-v1 and the sash/1 fields, or for V "sash/2" sash-grant-v2 and
-// the sash/2 fields.
+// sash-grant-v1 and the sash/1 fields, for V "sash/2" sash-grant-v2 and the
+// sash/2 fields, or for V "sash/3" sash-grant-v3 and the sash/3 fields.
 func Message(g Grant) ([]byte, error) {
+	if g.V == "sash/3" {
+		return messageV3(g)
+	}
 	if g.V == "sash/2" {
 		body, err := json.Marshal(v2Fields(g))
 		if err != nil {
@@ -183,8 +187,8 @@ func Message(g Grant) ([]byte, error) {
 	return out, nil
 }
 
-// Sign returns the sash/1 (or, for V "sash/2", the sash/2) JSON document,
-// including sig.
+// Sign returns the sash/1 (or, for V "sash/2" or "sash/3", that version's)
+// JSON document, including sig.
 // The private key is the fleet key or the per-host emergency key.
 // Sign does not decide policy; Verify does.
 func Sign(g Grant, priv ed25519.PrivateKey) ([]byte, error) {
@@ -196,6 +200,13 @@ func Sign(g Grant, priv ed25519.PrivateKey) ([]byte, error) {
 		return nil, err
 	}
 	sig := ed25519.Sign(priv, msg)
+	if g.V == "sash/3" {
+		doc, err := json.Marshal(wireV3{signedV3: v3Fields(g), Sig: base64.StdEncoding.EncodeToString(sig)})
+		if err != nil {
+			return nil, ErrBadShape
+		}
+		return doc, nil
+	}
 	if g.V == "sash/2" {
 		doc, err := json.Marshal(wireV2{signedV2: v2Fields(g), Sig: base64.StdEncoding.EncodeToString(sig)})
 		if err != nil {
@@ -260,8 +271,9 @@ func Verify(doc []byte, fleet, emergency ed25519.PublicKey, now interface{ Unix(
 			return Grant{}, ErrStar
 		}
 	}
-	// exp 0 is never, and only a boot grant (purpose service) carries it.
-	if g.Exp < now.Unix() && !(g.Purpose == PurposeService && g.Exp == 0) {
+	// exp 0 is never, and only a boot grant (purpose service or boot)
+	// carries it.
+	if g.Exp < now.Unix() && !(expZeroOK(g.Purpose) && g.Exp == 0) {
 		return Grant{}, ErrExpired
 	}
 	return g, nil
@@ -274,8 +286,11 @@ func parse(doc []byte) (Grant, string, error) {
 	if err := json.Unmarshal(doc, &head); err != nil {
 		return Grant{}, "", ErrBadShape
 	}
-	if string(head.V) == `"sash/2"` {
+	switch string(head.V) {
+	case `"sash/2"`:
 		return parseV2(doc)
+	case `"sash/3"`:
+		return parseV3(doc)
 	}
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.DisallowUnknownFields()
@@ -325,10 +340,13 @@ func shape(doc []byte, w wire) error {
 	return shapeCommon(w.signed)
 }
 
-// shapeCommon is the shape both versions share once v and purpose are
+// expZeroOK is a purpose that may carry exp 0 ("never"): service and boot.
+func expZeroOK(purpose string) bool { return purpose == PurposeService || purpose == PurposeBoot }
+
+// shapeCommon is the shape every version shares once v and purpose are
 // known.
 func shapeCommon(w signed) error {
-	if w.Exp == 0 && w.Purpose != PurposeService {
+	if w.Exp == 0 && !expZeroOK(w.Purpose) {
 		return ErrExpZero
 	}
 	if w.Entitlements == nil {
@@ -374,37 +392,14 @@ func parseV2(doc []byte) (Grant, string, error) {
 	if !ServiceName.MatchString(w.Service) || w.Actor != "service:"+w.Service || w.Serial < 1 || w.Exp < 0 {
 		return Grant{}, "", ErrBadShape
 	}
-	if w.Exec == nil || w.Caps == nil || w.Mounts == nil || w.MountSources == nil || w.EnvNames == nil {
-		return Grant{}, "", ErrBadShape
-	}
 	if !UnixName.MatchString(w.User) || !UnixName.MatchString(w.Group) {
 		return Grant{}, "", ErrBadShape
 	}
 	if err := shapeCommon(w.signed); err != nil {
 		return Grant{}, "", err
 	}
-	for _, list := range [][]string{w.Exec, w.Mounts} {
-		if err := roots(list); err != nil {
-			return Grant{}, "", err
-		}
-	}
-	for _, src := range w.MountSources {
-		if MountName.MatchString(src) {
-			continue
-		}
-		if err := roots([]string{src}); err != nil {
-			return Grant{}, "", err
-		}
-	}
-	for _, e := range w.EnvNames {
-		if !EnvName.MatchString(e) {
-			return Grant{}, "", ErrBadShape
-		}
-	}
-	for _, c := range w.Caps {
-		if !capName.MatchString(c) {
-			return Grant{}, "", ErrBadShape
-		}
+	if err := shapeServiceLists(w.Exec, w.Caps, w.Mounts, w.MountSources, w.EnvNames); err != nil {
+		return Grant{}, "", err
 	}
 	g := Grant{
 		V:            w.V,
@@ -428,6 +423,43 @@ func parseV2(doc []byte) (Grant, string, error) {
 		Serial:       w.Serial,
 	}
 	return g, w.Sig, nil
+}
+
+// shapeServiceLists is the sash/2 list rules sash/3 shares: every list
+// present, exec and mounts clean absolute paths, a mount source a name or
+// such a path (never ensure, which mount ensure owns), env names and
+// capability names in their forms.
+func shapeServiceLists(exec, caps, mounts, sources, env []string) error {
+	if exec == nil || caps == nil || mounts == nil || sources == nil || env == nil {
+		return ErrBadShape
+	}
+	for _, list := range [][]string{exec, mounts} {
+		if err := roots(list); err != nil {
+			return err
+		}
+	}
+	for _, src := range sources {
+		if src == mountSourceEnsure {
+			return ErrBadShape
+		}
+		if MountName.MatchString(src) {
+			continue
+		}
+		if err := roots([]string{src}); err != nil {
+			return err
+		}
+	}
+	for _, e := range env {
+		if !EnvName.MatchString(e) {
+			return ErrBadShape
+		}
+	}
+	for _, c := range caps {
+		if !capName.MatchString(c) {
+			return ErrBadShape
+		}
+	}
+	return nil
 }
 
 func roots(list []string) error {
@@ -456,14 +488,32 @@ func norm(s []string) []string {
 	return s
 }
 
-// Request is the unsigned sash/2 body for g, in the signed field order,
-// for a fleet signer to complete (host, lease_id, serial) and sign. sash
-// never signs it.
+// Request is the unsigned body for g, in the signed field order, for a
+// fleet signer to complete (host, lease_id, serial) and sign. sash never
+// signs it. It is sash/3 (purpose boot, actor boot:<service>) when g
+// asks for any boot key or lists any boot name, else sash/2 (purpose
+// service, actor service:<service>).
 func Request(g Grant) ([]byte, error) {
-	g.V, g.Purpose = "sash/2", PurposeService
-	b, err := json.MarshalIndent(v2Fields(g), "", "  ")
+	var b []byte
+	var err error
+	if requestsBoot(g) {
+		g.V, g.Purpose, g.Actor = "sash/3", PurposeBoot, "boot:"+g.Service
+		b, err = json.MarshalIndent(v3Fields(g), "", "  ")
+	} else {
+		g.V, g.Purpose = "sash/2", PurposeService
+		b, err = json.MarshalIndent(v2Fields(g), "", "  ")
+	}
 	if err != nil {
 		return nil, ErrBadShape
 	}
 	return append(b, '\n'), nil
+}
+
+func requestsBoot(g Grant) bool {
+	for _, e := range g.Entitlements {
+		if strings.HasPrefix(e, "boot.") {
+			return true
+		}
+	}
+	return len(g.Modules)+len(g.Devices)+len(g.HostMounts)+len(g.NetProfiles)+len(g.UnitsStart)+len(g.UnitsStop) > 0
 }
