@@ -94,6 +94,9 @@ var (
 	hostMountOpt = map[string]bool{"ro": true, "rw": true, "noexec": true, "noatime": true, "relatime": true, "nosuid": true, "nodev": true, "suid": true, "dev": true}
 	macRe        = regexp.MustCompile(`^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`)
 	ifNameRe     = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,14}$`)
+	devPathRe    = regexp.MustCompile(`^/dev/[a-zA-Z0-9._/-]+$`)
+	// optConflict are option pairs a declaration may not hold both of.
+	optConflict = [][2]string{{"ro", "rw"}, {"suid", "nosuid"}, {"dev", "nodev"}}
 )
 
 // ParseHostDecl reads host.json strictly: closed key sets, at most 64 KiB
@@ -107,6 +110,12 @@ func ParseHostDecl(doc []byte) (HostDecl, error) {
 	if len(doc) > hostDeclMax {
 		return h, errHostDecl
 	}
+	// encoding/json matches keys without case and keeps the last of a
+	// duplicate, so the document is walked first: every key exact and
+	// once, no null anywhere, one value and nothing after it.
+	if err := strictHostJSON(doc); err != nil {
+		return HostDecl{}, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&h); err != nil {
@@ -119,7 +128,7 @@ func ParseHostDecl(doc []byte) (HostDecl, error) {
 		return HostDecl{}, errHostDecl
 	}
 	for name, d := range h.Devices {
-		if !grant.BootName.MatchString(name) || path.Clean(d.Path) != d.Path || !strings.HasPrefix(d.Path, "/dev/") ||
+		if !grant.BootName.MatchString(name) || path.Clean(d.Path) != d.Path || !devPathRe.MatchString(d.Path) ||
 			(d.Kind != "block" && d.Kind != "char") || len(d.Match) > 8 {
 			return HostDecl{}, errHostDecl
 		}
@@ -141,6 +150,11 @@ func ParseHostDecl(doc []byte) (HostDecl, error) {
 		}
 		if _, ok := h.Devices[m.Source]; m.Source != "tmpfs" && !ok {
 			return HostDecl{}, errHostDecl
+		}
+		for _, pair := range optConflict {
+			if slices.Contains(m.Options, pair[0]) && slices.Contains(m.Options, pair[1]) {
+				return HostDecl{}, errHostDecl
+			}
 		}
 		for _, o := range m.Options {
 			k, v, val := strings.Cut(o, "=")
@@ -201,6 +215,100 @@ func ParseHostDecl(doc []byte) (HostDecl, error) {
 		}
 	}
 	return h, nil
+}
+
+// hostSchema is host.json's shape for strictHostJSON: an object's exact
+// keys, a table (name to entry), a list, or a scalar.
+type hostSchema struct {
+	fields map[string]*hostSchema // an object
+	table  *hostSchema            // a map of names to this
+	list   *hostSchema            // an array of this
+	scalar bool                   // a string, number or bool
+}
+
+var (
+	hsScalar      = &hostSchema{scalar: true}
+	hsStrings     = &hostSchema{list: hsScalar}
+	hostSchemaTop = &hostSchema{fields: map[string]*hostSchema{
+		"devices": {table: &hostSchema{fields: map[string]*hostSchema{
+			"path": hsScalar, "kind": hsScalar, "match": {table: hsScalar},
+		}}},
+		"mounts": {table: &hostSchema{fields: map[string]*hostSchema{
+			"target": hsScalar, "fstype": hsScalar, "source": hsScalar, "options": hsStrings,
+		}}},
+		"network": {table: &hostSchema{fields: map[string]*hostSchema{
+			"kind": hsScalar, "link": hsScalar, "name": hsScalar, "mtu": hsScalar, "addresses": hsStrings,
+			"routes":   {list: &hostSchema{fields: map[string]*hostSchema{"dst": hsScalar, "gw": hsScalar}}},
+			"requires": hsStrings, "unit": hsScalar,
+		}}},
+	}}
+)
+
+// strictHostJSON walks doc token by token against hostSchemaTop: every
+// key an exact, case-sensitive match, none twice in one object, no null at
+// any level (the top included), and nothing after the document.
+func strictHostJSON(doc []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	dec.UseNumber()
+	var walk func(s *hostSchema, depth int) error
+	walk = func(s *hostSchema, depth int) error {
+		if depth > 8 {
+			return errHostDecl
+		}
+		tok, err := dec.Token()
+		if err != nil || tok == nil {
+			return errHostDecl
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch {
+			case t == '{' && (s.fields != nil || s.table != nil):
+				seen := map[string]bool{}
+				for dec.More() {
+					kt, err := dec.Token()
+					k, ok := kt.(string)
+					if err != nil || !ok || seen[k] {
+						return errHostDecl
+					}
+					seen[k] = true
+					next := s.table
+					if s.fields != nil {
+						next = s.fields[k]
+					}
+					if next == nil {
+						return errHostDecl
+					}
+					if err := walk(next, depth+1); err != nil {
+						return err
+					}
+				}
+			case t == '[' && s.list != nil:
+				for dec.More() {
+					if err := walk(s.list, depth+1); err != nil {
+						return err
+					}
+				}
+			default:
+				return errHostDecl
+			}
+			if _, err := dec.Token(); err != nil {
+				return errHostDecl
+			}
+			return nil
+		default:
+			if !s.scalar {
+				return errHostDecl
+			}
+			return nil
+		}
+	}
+	if err := walk(hostSchemaTop, 0); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errHostDecl
+	}
+	return nil
 }
 
 // FakeDev is one node under /dev and its sysfs attributes.

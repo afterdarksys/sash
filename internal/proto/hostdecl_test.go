@@ -34,11 +34,37 @@ func TestHostDeclRefusals(t *testing.T) {
 		"unit profile with ip": `{"network": {"d": {"kind": "unit", "unit": "dhcp", "addresses": ["10.0.0.2/24"]}}}`,
 		"bridge kind":          `{"network": {"br": {"kind": "bridge"}}}`,
 		"trailing":             prototest.HostFixture + ` {}`,
-		"oversized":            `{"devices": {}, "x": "` + strings.Repeat("a", 64*1024) + `"}`,
+		// Valid apart from its size: the fixture padded with whitespace.
+		"oversized": prototest.HostFixture + strings.Repeat(" ", 64*1024),
+		// Strict keys: exact case, each once, at every level.
+		"duplicate top key":     `{"devices": {}, "devices": {}}`,
+		"duplicate device name": `{"devices": {"d": {"path": "/dev/vdb", "kind": "block"}, "d": {"path": "/dev/vdc", "kind": "block"}}}`,
+		"duplicate field":       `{"devices": {"d": {"path": "/dev/vdb", "kind": "block", "path": "/dev/sda"}}}`,
+		"duplicate match":       `{"devices": {"d": {"path": "/dev/vdb", "kind": "block", "match": {"serial": "A", "serial": "B"}}}}`,
+		"duplicate route field": `{"network": {"lan": {"kind": "static", "link": "52:54:00:aa:bb:cc", "addresses": ["10.0.0.2/24"], "routes": [{"dst": "0.0.0.0/0", "gw": "10.0.0.1", "gw": "10.0.0.9"}]}}}`,
+		"top key case":          `{"Devices": {}}`,
+		"field key case":        `{"devices": {"d": {"PATH": "/dev/vdb", "kind": "block"}}}`,
+		"route key case":        `{"network": {"lan": {"kind": "static", "link": "52:54:00:aa:bb:cc", "routes": [{"Dst": "0.0.0.0/0", "gw": "10.0.0.1"}]}}}`,
+		"top null":              `null`,
+		"null table":            `{"devices": null}`,
+		"null entry":            `{"devices": {"d": null}}`,
+		"null field":            `{"devices": {"d": {"path": null, "kind": "block"}}}`,
+		"null mtu":              `{"network": {"lan": {"kind": "static", "link": "52:54:00:aa:bb:cc", "mtu": null, "addresses": ["10.0.0.2/24"]}}}`,
+		"null option":           `{"mounts": {"a": {"target": "/t", "fstype": "tmpfs", "source": "tmpfs", "options": [null]}}}`,
+		"device path space":     `{"devices": {"d": {"path": "/dev/v db", "kind": "block"}}}`,
+		"device path unicode":   `{"devices": {"d": {"path": "/dev/vdb‮", "kind": "block"}}}`,
+		"device path is /dev":   `{"devices": {"d": {"path": "/dev/", "kind": "block"}}}`,
+		"ro and rw":             `{` + dev + `, "mounts": {"a": {"target": "/data", "fstype": "ext4", "source": "d", "options": ["ro", "rw"]}}}`,
+		"suid and nosuid":       `{` + dev + `, "mounts": {"a": {"target": "/data", "fstype": "ext4", "source": "d", "options": ["suid", "nosuid"]}}}`,
+		"dev and nodev":         `{` + dev + `, "mounts": {"a": {"target": "/data", "fstype": "ext4", "source": "d", "options": ["dev", "nodev"]}}}`,
 	} {
 		if _, err := prototest.ParseHostDecl([]byte(doc)); err == nil || err.Error() != "host_decl_invalid" {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	// Each option of a conflicting pair is fine alone.
+	if _, err := prototest.ParseHostDecl([]byte(`{` + dev + `, "mounts": {"a": {"target": "/data", "fstype": "ext4", "source": "d", "options": ["ro", "suid", "dev"]}}}`)); err != nil {
+		t.Fatalf("one of each pair: %v", err)
 	}
 	many := `{"network": {`
 	for i := 0; i < 65; i++ {
