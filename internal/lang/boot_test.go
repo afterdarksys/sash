@@ -16,7 +16,7 @@ func bootOpsGrant() grant.Grant {
 		Entitlements: []string{"boot.module", "boot.device", "boot.mount", "boot.net", "boot.start", "boot.stop", "svc.status", "file.write"},
 		FileWrite:    []string{"/run/hostprep"},
 		Service:      "hostprep", User: "hostprep", Group: "hostprep",
-		Modules:     []string{"virtio_blk", "virtio_net", "e1000", "broken", "ext4"},
+		Modules:     []string{"virtio_blk", "virtio_net", "e1000", "broken", "ext4", "twice"},
 		Devices:     []string{"data", "logs"},
 		HostMounts:  []string{"data", "scratch"},
 		NetProfiles: []string{"lan", "wan", "dhcp"},
@@ -404,11 +404,64 @@ func TestBootInitRefusals(t *testing.T) {
 	if out := runBoot(startFn("module load virtio_blk"), "start", in); out.Status != 0 || strings.Join(in.Boot.Logs, ";") != "module_unsigned_dev virtio_blk" {
 		t.Fatalf("unsigned dev: %+v %v", out, in.Boot.Logs)
 	}
-	// A firewall unit guards a public profile.
+	// A firewall unit guards a public profile: ready, or a oneshot that
+	// exited 0. Running is not ready, nor a oneshot that failed.
+	for state, want := range map[string]int{"ready": 0, "exited": 0, "running": exitType, "exited 1": exitType, "stopped": exitType} {
+		in = newBootInit(t)
+		in.Boot.Links = append(in.Boot.Links, &prototest.FakeLink{MAC: "52:54:00:aa:bb:cc", Name: "eth1"})
+		fw := in.Boot.Units["firewall"]
+		fw.State = state
+		if state == "exited 1" {
+			fw.State, fw.Exit = "exited", 1
+		}
+		out := runBoot(startFn("network apply wan"), "start", in)
+		if out.Status != want || (want != 0 && !strings.Contains(out.Stderr, "refused boot.net: net_unguarded (")) {
+			t.Errorf("wan with the firewall %s: %+v", state, out)
+		}
+	}
+	// A started firewall is running, not yet ready.
 	in = newBootInit(t)
 	in.Boot.Links = append(in.Boot.Links, &prototest.FakeLink{MAC: "52:54:00:aa:bb:cc", Name: "eth1"})
-	if out := runBoot(startFn("service start firewall\nnetwork apply wan"), "start", in); out.Status != 0 {
-		t.Fatalf("guarded wan: %+v", out)
+	if out := runBoot(startFn("service start firewall\nnetwork apply wan"), "start", in); out.Status != exitType || !strings.Contains(out.Stderr, "net_unguarded") {
+		t.Fatalf("wan right after starting the firewall: %+v", out)
+	}
+}
+
+// Modules load dependencies first, each only once its own are live, in
+// the kernel's order: the sequence is pinned exactly.
+func TestBootModuleLoadOrder(t *testing.T) {
+	in := newBootInit(t)
+	if out := runBoot(startFn("module load virtio_net\nmodule load virtio_blk"), "start", in); out.Status != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := strings.Join(in.Boot.LoadOrder, " "); got != "virtio virtio_ring failover net_failover virtio_net virtio_blk" {
+		t.Fatalf("load order %q", got)
+	}
+	// A modules.dep line that names a dependency after the module that
+	// needs it cannot load: the kernel would refuse the unknown symbol.
+	in = newBootInit(t)
+	good := "virtio_net.ko.zst: kernel/drivers/net/net_failover.ko kernel/net/core/failover.ko "
+	bad := "virtio_net.ko.zst: kernel/net/core/failover.ko kernel/drivers/net/net_failover.ko "
+	if !strings.Contains(in.Boot.ModulesDep, good) {
+		t.Fatal("fixture changed")
+	}
+	in.Boot.ModulesDep = strings.Replace(in.Boot.ModulesDep, good, bad, 1)
+	if out := runBoot(startFn("module load virtio_net"), "start", in); out.Status != exitType || !strings.Contains(out.Stderr, "refused boot.module: module_failed (") {
+		t.Fatalf("misordered line: %+v %v", out, in.Boot.LoadOrder)
+	}
+	if in.Boot.Loaded["net_failover"] || in.Boot.Loaded["virtio_net"] {
+		t.Fatalf("loaded past the missing dependency: %v", in.Boot.LoadOrder)
+	}
+	// One compression suffix at most, then .ko: twice.ko.gz.xz is no module.
+	in = newBootInit(t)
+	in.Boot.ModulesDep += "kernel/x/twice.ko.gz.xz:\n"
+	if out := runBoot(startFn("module load twice"), "start", in); out.Status != exitType || !strings.Contains(out.Stderr, "module_unknown") {
+		t.Fatalf("two suffixes: %+v", out)
+	}
+	in = newBootInit(t)
+	in.Boot.ModulesDep += "kernel/x/twice.ko.xz:\n"
+	if out := runBoot(startFn("module load twice"), "start", in); out.Status != 0 {
+		t.Fatalf("one suffix: %+v", out)
 	}
 }
 
@@ -475,6 +528,15 @@ func TestInitRechecksBootVerbs(t *testing.T) {
 	in.Boot.ModulesDep += "kernel/x/..evil.ko:\n"
 	if _, err := in.Do(ok); err == nil || err.Error() != "module_tree" {
 		t.Fatalf("dotdot name: %v", err)
+	}
+	// An unknown boot key, even with no argv, is denied and charges no
+	// budget.
+	unk := bootOpsGrant()
+	unk.Entitlements = append(unk.Entitlements, "boot.fsck")
+	in = prototest.NewInit("hostprep", unk)
+	in.Boot = prototest.NewBoot("hostprep")
+	if _, err := in.Do(parent.Verb{Key: "boot.fsck"}); err == nil || err.Error() != "denied" || in.Boot.BootCalls() != 0 {
+		t.Fatalf("unknown key: %v, %d calls", err, in.Boot.BootCalls())
 	}
 	// No Boot configured: every boot verb is denied.
 	in = prototest.NewInit("hostprep", bootOpsGrant())

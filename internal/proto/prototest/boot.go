@@ -234,6 +234,8 @@ type Unit struct {
 	Boot, BootOps, Essential bool
 	Needs, After             []string
 	State                    string // stopped, running, exited, ready
+	// Exit is a oneshot's status once it has exited.
+	Exit int
 }
 
 // Boot is the boot side of the double: host.json, the fake kernel and the
@@ -261,8 +263,10 @@ type Boot struct {
 	ModulesDep string
 	Loaded     map[string]bool
 	LoadFail   map[string]bool
-	DevTmpfs   bool
-	Devs       map[string]*FakeDev
+	// LoadOrder is every module the double loaded, in order.
+	LoadOrder []string
+	DevTmpfs  bool
+	Devs      map[string]*FakeDev
 	// Dirs are existing directories: path to "root 0755"-style owner and
 	// mode.
 	Dirs       map[string]string
@@ -290,7 +294,7 @@ func NewBoot(service string) *Boot {
 	return &Boot{
 		HostID: "web1", OptedIn: true, Entry: "start", Host: h, SigEnforce: true, DevTmpfs: true,
 		ModulesDep: "kernel/drivers/block/virtio_blk.ko.zst: kernel/drivers/virtio/virtio_ring.ko kernel/drivers/virtio/virtio.ko.xz\n" +
-			"kernel/drivers/net/virtio_net.ko.zst: kernel/net/core/failover.ko kernel/drivers/net/net_failover.ko kernel/drivers/virtio/virtio_ring.ko kernel/drivers/virtio/virtio.ko.xz\n" +
+			"kernel/drivers/net/virtio_net.ko.zst: kernel/drivers/net/net_failover.ko kernel/net/core/failover.ko kernel/drivers/virtio/virtio_ring.ko kernel/drivers/virtio/virtio.ko.xz\n" +
 			"kernel/drivers/virtio/virtio_ring.ko:\nkernel/drivers/virtio/virtio.ko.xz:\nkernel/net/core/failover.ko:\nkernel/drivers/net/net_failover.ko: kernel/net/core/failover.ko\n" +
 			"kernel/fs/ext4/ext4.ko.gz: kernel/fs/jbd2/jbd2.ko\nkernel/fs/jbd2/jbd2.ko:\n",
 		Loaded: map[string]bool{}, LoadFail: map[string]bool{},
@@ -334,15 +338,8 @@ func (in *Init) boot(v parent.Verb) (parent.Result, error) {
 	if b.Booted {
 		return parent.Result{}, code("boot_over")
 	}
-	if b.calls >= grant.MaxBootList {
-		return parent.Result{}, code("boot_call_limit")
-	}
-	b.calls++
-	if v.Path != "" || len(v.Body) != 0 || v.Mode != "" {
-		return parent.Result{}, errInitDenied
-	}
 	argv := v.Argv
-	shape := map[string]struct {
+	shape, known := map[string]struct {
 		verb, sub string
 		n         int
 		re        *regexp.Regexp
@@ -355,6 +352,17 @@ func (in *Init) boot(v parent.Verb) (parent.Result, error) {
 		"boot.start":  {"service", "start", 3, grant.UnitName, g.AllowsUnitStart},
 		"boot.stop":   {"service", "stop", 3, grant.UnitName, g.AllowsUnitStop},
 	}[v.Key]
+	// An unknown boot key is denied before the budget is charged.
+	if !known {
+		return parent.Result{}, errInitDenied
+	}
+	if b.calls >= grant.MaxBootList {
+		return parent.Result{}, code("boot_call_limit")
+	}
+	b.calls++
+	if v.Path != "" || len(v.Body) != 0 || v.Mode != "" {
+		return parent.Result{}, errInitDenied
+	}
 	if len(argv) != shape.n || argv[0] != shape.verb || argv[1] != shape.sub || !shape.re.MatchString(argv[2]) || !shape.allows(argv[2]) {
 		return parent.Result{}, errInitDenied
 	}
@@ -384,12 +392,16 @@ func oneRow(cols []string, r parent.Row) (parent.Result, error) {
 	return parent.Result{Kind: parent.KindRows, Cols: cols, Rows: []parent.Row{r}}, nil
 }
 
-// moduleBase is a modules.dep path's module name: the base name, .ko and
-// one compression suffix removed, - read as _.
+// moduleBase is a modules.dep path's module name: the base name with at
+// most one compression suffix removed, then .ko required and removed, -
+// read as _. "" is no module.
 func moduleBase(rel string) string {
 	base := path.Base(rel)
 	for _, sfx := range []string{".xz", ".zst", ".gz"} {
-		base = strings.TrimSuffix(base, sfx)
+		if strings.HasSuffix(base, sfx) {
+			base = strings.TrimSuffix(base, sfx)
+			break
+		}
 	}
 	if !strings.HasSuffix(base, ".ko") {
 		return ""
@@ -447,30 +459,44 @@ func (b *Boot) loadModule(name string) (parent.Result, error) {
 	// modules.dep lists every dependency, nearest first: load them from
 	// the far end so each finds its own already live.
 	for i := len(deps) - 1; i >= 0; i-- {
-		d := deps[i]
-		if d == "" {
+		if deps[i] == "" {
 			return parent.Result{}, code("module_tree")
 		}
-		if b.Loaded[d] {
-			continue
-		}
-		if _, err := b.depLine(d); err != nil {
+		if err := b.loadOne(deps[i]); err != nil {
 			return parent.Result{}, err
 		}
-		if b.LoadFail[d] {
-			return parent.Result{}, code("module_failed")
-		}
-		b.Loaded[d] = true
 	}
 	state := "already"
 	if !b.Loaded[name] {
-		if b.LoadFail[name] {
-			return parent.Result{}, code("module_failed")
+		if err := b.loadOne(name); err != nil {
+			return parent.Result{}, err
 		}
-		b.Loaded[name] = true
 		state = "done"
 	}
 	return oneRow([]string{"name", "state", "deps"}, parent.Row{"name": name, "state": state, "deps": strings.Join(deps, ",")})
+}
+
+// loadOne is one finit_module: as the kernel, it refuses a module any of
+// whose own dependencies is not live yet (an unknown symbol).
+func (b *Boot) loadOne(m string) error {
+	if b.Loaded[m] {
+		return nil
+	}
+	deps, err := b.depLine(m)
+	if err != nil {
+		return err
+	}
+	for _, d := range deps {
+		if !b.Loaded[d] {
+			return code("module_failed")
+		}
+	}
+	if b.LoadFail[m] {
+		return code("module_failed")
+	}
+	b.Loaded[m] = true
+	b.LoadOrder = append(b.LoadOrder, m)
+	return nil
 }
 
 // checkDevice is device wait's identity check, once: the node, its kind
@@ -574,7 +600,8 @@ func (b *Boot) applyNetwork(name, self string) (parent.Result, error) {
 		return oneRow(cols, parent.Row{"name": name, "link": "", "state": res.Rows[0]["state"], "changes": "0"})
 	}
 	for _, u := range n.Requires {
-		if unit := b.Units[u]; unit == nil || (unit.State != "ready" && unit.State != "running" && unit.State != "exited") {
+		// Ready, or a oneshot that exited 0: running is not ready.
+		if unit := b.Units[u]; unit == nil || !(unit.State == "ready" || (unit.State == "exited" && unit.Exit == 0)) {
 			return parent.Result{}, code("net_unguarded")
 		}
 	}
