@@ -61,3 +61,38 @@ func TestFileVerbDeniedByAnAgent(t *testing.T) {
 	a.Close()
 	<-done
 }
+
+// The boot verbs travel the pipe as Key and Argv only, serial and mux,
+// and the init's refusal codes come back as the error text.
+func TestBootVerbsOverThePipe(t *testing.T) {
+	g := grant.Grant{V: "sash/3", Purpose: grant.PurposeBoot, Service: "hostprep", Host: "web1",
+		Entitlements: []string{"boot.module", "boot.device"}, Modules: []string{"virtio_blk"}, Devices: []string{"data"}}
+	for _, max := range []int{0, 4} {
+		in := prototest.NewInit("hostprep", g)
+		in.Boot = prototest.NewBoot("hostprep")
+		a, b := net.Pipe()
+		agent := &prototest.Agent{Max: max, Init: in, Handle: func(parent.Verb) (parent.Result, error) { return parent.Result{}, nil }}
+		done := make(chan struct{})
+		go func() { defer close(done); agent.Serve(b) }()
+		c := &Client{RW: a}
+		if max > 0 {
+			if n, err := c.Concurrency(2); err != nil || n != 2 {
+				t.Fatalf("mux: %d %v", n, err)
+			}
+		}
+		res, err := c.Do(parent.Verb{Key: "boot.module", Argv: []string{"module", "load", "virtio_blk"}})
+		if err != nil || res.Kind != parent.KindRows || res.Rows[0]["state"] != "done" || res.Rows[0]["deps"] != "virtio_ring,virtio" {
+			t.Fatalf("max %d module: %+v %v", max, res, err)
+		}
+		res, err = c.Do(parent.Verb{Key: "boot.device", Argv: []string{"device", "wait", "data", "timeout", "30"}})
+		if err != nil || res.Rows[0]["major"] != "253" || res.Rows[0]["minor"] != "16" || res.Rows[0]["path"] != "/dev/vdb" {
+			t.Fatalf("max %d device: %+v %v", max, res, err)
+		}
+		in.Boot.Booted = true
+		if _, err := c.Do(parent.Verb{Key: "boot.module", Argv: []string{"module", "load", "virtio_blk"}}); err == nil || err.Error() != "boot_over" {
+			t.Fatalf("max %d after boot: %v", max, err)
+		}
+		a.Close()
+		<-done
+	}
+}

@@ -152,8 +152,8 @@ func bootWaitSeconds(s string) (int, bool) {
 }
 
 // bindBoot checks a boot verb before anything runs: the entry is start,
-// it is not in await, check or par, the per-run budget is not spent, and
-// the grant's list names it. The key and the grant (sash/3 purpose boot)
+// it is not in await, check or par, and the grant's list names it (the
+// per-run budget is runBoot's, where the call is counted). The key and the grant (sash/3 purpose boot)
 // were checked in prepare. device wait's timeout goes to the init as whole
 // seconds.
 func (m *machine) bindBoot(st *expStage) (int, *problem) {
@@ -171,9 +171,6 @@ func (m *machine) bindBoot(st *expStage) (int, *problem) {
 	}
 	if m.pb != nil {
 		return -1, &problem{exitType, msgBootInPar}
-	}
-	if m.st.bootCalls >= bootMax {
-		return -1, &problem{exitType, msgBootLimit}
 	}
 	if !f.allows(m.g, st.argv[2]) {
 		return 2, &problem{exitDenied, f.denied}
