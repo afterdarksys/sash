@@ -65,7 +65,7 @@ The manifest is advisory: it grants nothing, and the agent still checks every ve
 sash --lint (-c script | file | stdin)
 ```
 
-Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `spawn-shell` (a `spawn` or `run` of a shell), `check-mutates` (error: a service file's `fn check` reaches a mutation). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
+Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `spawn-shell` (a `spawn` or `run` of a shell), `check-mutates` (error: a service file's `fn check` reaches a mutation), `boot-outside-start` (error: a boot verb reachable from a service file's `fn stop`, `fn reload` or `fn check`). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
 
 `--lint` and `--needs` refuse every other flag (`--session`, `--plan`, each other) and anything after the source: exit 2, nothing runs.
 
@@ -342,9 +342,9 @@ sash --session --entry start|stop|reload|check|run file
 sash --plan --entry start file
 ```
 
-`--describe` reads the file, runs nothing, takes no grant and calls no parent. It prints one JSON document (`"v": "sash-describe/1"`): the block (durations in milliseconds, empty lists as `[]`, absent `ready`, `stop` or `restart` as `null`), the `entries` the file has, and per entry the `--needs` rows of that function and every function it calls by literal name. Exit 0 complete, 1 incomplete (a row with a note), 2 a parse error or no `service` block. `--grant-request` prints instead the unsigned `sash/2` body the literal needs ask for: `entitlements`, `file_read` and `file_write` (the exact paths), `exec`, `caps`, `mounts`, `mount_sources`, `user` and `group` (the block's), `env_names` (the literal env keys), `allow_private` (a probe of a private address), `exp` 0, and `host`, `lease_id` and `serial` left for the fleet signer. A row with a note is never in the request.
+`--describe` reads the file, runs nothing, takes no grant and calls no parent. It prints one JSON document (`"v": "sash-describe/1"`): the block (durations in milliseconds, empty lists as `[]`, absent `ready`, `stop` or `restart` as `null`), the `entries` the file has, and per entry the `--needs` rows of that function and every function it calls by literal name. Exit 0 complete, 1 incomplete (a row with a note), 2 a parse error or no `service` block. `--grant-request` prints instead the unsigned `sash/2` body the literal needs ask for (or `sash/3`, purpose `boot`, actor `boot:<name>`, when any boot verb is among them, with `modules`, `devices`, `host_mounts`, `net_profiles`, `units_start` and `units_stop` filled from the literal names): `entitlements`, `file_read` and `file_write` (the exact paths), `exec`, `caps`, `mounts`, `mount_sources`, `user` and `group` (the block's), `env_names` (the literal env keys), `allow_private` (a probe of a private address), `exp` 0, and `host`, `lease_id` and `serial` left for the fleet signer. A row with a note is never in the request.
 
-`--entry` runs the top level (definitions only) and then calls the function; an entry the file does not define is exit 2 `entry_missing`. `run` is implicit for a file with `run` and no `fn start`: `spawn main <run...>` as the block's user and group, so the start is checked and audited like a scripted one. A `sash/2` grant whose `service` is not the block's `name` (or a `sash/1` grant) is exit 2 `grant_service_mismatch` before anything runs, a block `user` or `group` that is not the grant's is exit 2 `grant_identity_mismatch`, and a boot grant without `--entry` is exit 2 `entry_missing`. The init reads the exit:
+`--entry` runs the top level (definitions only) and then calls the function; an entry the file does not define is exit 2 `entry_missing`. `run` is implicit for a file with `run` and no `fn start`: `spawn main <run...>` as the block's user and group, so the start is checked and audited like a scripted one. A `sash/2` or `sash/3` grant whose `service` is not the block's `name` (or a `sash/1` grant) is exit 2 `grant_service_mismatch` before anything runs, a block `user` or `group` that is not the grant's is exit 2 `grant_identity_mismatch`, and a boot grant without `--entry` is exit 2 `entry_missing`. The init reads the exit:
 
 | exit | start | stop | check |
 | --- | --- | --- | --- |
@@ -415,6 +415,67 @@ service {
 }
 fn check() {
   signal main HUP
+}
+```
+
+### Boot-ops units
+
+A boot-ops unit prepares the host and ends: its `fn start` loads drivers, waits for disks, mounts them, brings up the network and starts the units that use them, with the boot verbs (`verbs.md`, "Boot verbs"). It runs under a `sash/3` grant with purpose `boot` (actor `boot:<name>`), which lists each name it may use; the init's `host.json`, module tree and catalog say what each name means. A boot verb runs only in `fn start` (`boot_entry` anywhere else), never in `await`, `check` or `par`, and the five that change the host are `atomic_irreversible`. Plan mode prints each one and calls nothing, `device wait` included, since what it would see depends on the module loads plan skipped.
+
+```sash
+# entry: start
+# grant: boot
+# stderr: plan: would load module virtio_blk
+# stderr: plan: would wait for device data (up to 30s)
+# stderr: plan: would ensure mount data
+# stderr: plan: would start service dhcp
+# nocall: boot.
+service {
+  name hostprep
+  user hostprep
+  group hostprep
+  restart never
+}
+
+fn start() {
+  module load virtio_blk
+  device wait data timeout 30s
+  mount ensure data
+  module load virtio_net
+  network apply lan
+  service start dhcp
+}
+```
+
+A boot verb in `fn stop` is refused before the init sees it, and `--lint` flags it as `boot-outside-start`. `mount ensure` takes one name, never a path.
+
+```sash
+# entry: stop
+# grant: boot
+# expect: host 2 boot_entry
+# lint: boot-outside-start
+# nocall: boot.stop
+service {
+  name hostprep
+  user hostprep
+  group hostprep
+}
+fn stop() {
+  service stop getty-tty1
+}
+```
+
+```sash
+# entry: start
+# grant: boot
+# expect: host 2 usage mount ensure NAME
+service {
+  name hostprep
+  user hostprep
+  group hostprep
+}
+fn start() {
+  mount ensure /mnt/x
 }
 ```
 

@@ -1,6 +1,6 @@
 # sash boot verbs: contract
 
-2026-11-24. Status: proposed. Nothing here is built. Branch `docs/boot-verbs`, from `feat/init-phase1` at `f28285b`.
+2026-11-24. Status: decided (see Decisions). Phase 1 (sash, against the double) built on `feat/boot-verbs`; see "Phase 1 build notes". Branch `docs/boot-verbs`, from `feat/init-phase1` at `f28285b`.
 
 ## Goal
 
@@ -501,3 +501,23 @@ Negative scenarios, each ending in `BOOTTEST: recovery`:
    - Matching on `iifname "eth0"` is a string match, so it also loads before the link exists. `iif` is an index and needs the link, so firewall units should use `iifname`.
    - So rules stick across the address appearing later. The firewall unit needs no ANY or placeholder source; `requires` only makes sure the filter is in place before the public address goes live.
    - The firewall unit's own configuration (for example through nftapi) is out of scope here.
+
+## Phase 1 build notes (2026-11-24)
+
+Where the contract left a choice, phase 1 took the fail-closed one. Phase 2 should match each, or change both sides together.
+
+1. **`ensure` in `mount_sources` is refused in `sash/2` as well as `sash/3`** (`grant_bad_shape`). The syntax rule says "the grant parser"; no version is named. A `sash/2` grant could never use it anyway: a type mount's source is its type and `ensure` is no type, and a bind needs a path. The `sash/2` message and vectors are unchanged.
+2. **`device wait`'s timeout is whole seconds.** `1.5s` and `500ms` are `usage device wait: timeout 1s to 60s`, never rounded; `1m` is 60. A bare `30` is refused in a script (it is not a duration); on the wire the init receives `"30"` and refuses anything but an integer 1 to 60 (the double does).
+3. **Every boot verb inside `await` or `check` is `boot_in_await`**, the mutating ones included (not the generic `await: mutation refused`), and the run stops there: a refusal is never polled again as "not ready". In the `check` entry `boot_entry` comes first, since sash checks the entry before the placement.
+4. **sash's order:** the key and the `sash/3` grant (in prepare, `denied boot.KEY`), then the entry, `await`/`check`, `par`, then the name (`denied module` and the others), all before any stage of the pipeline runs; the budget is counted at the call. Under `--entry` a denial (126) exits 2, as init contract item 12 already says for every denial.
+5. **The budget counts every call that reaches the door**, in plan mode too and including calls the init then refuses, once per run on the session state. The init's own count is per boot and authoritative.
+6. **An init refusal is always `refused boot.KEY: CODE (why)`**, `timeout` included (the service verb `wait` prints a bare `timeout`; the boot verbs follow this contract's single form).
+7. **`mount ensure` of a device source with no `device wait` for that device earlier in this boot is `device_changed`** in the double: there is no checked `dev_t` to mount through. Phase 2 should refuse the same way.
+8. **`module`, `device` and `network` are reserved**: no `fn` may take those names. `module X` (any second word but `load`) is `usage module load NAME`, likewise for `device` and `network`.
+9. **The double loads a module's dependencies from the end of its `modules.dep` line** (as modprobe does, so each finds its own dependencies live) and reports them in the order the line gives. Phase 3 should confirm that order against the kernel's.
+10. **The double checks the host binding as part of gate 2** (before the opt-in), and refuses an empty `host_id` and an empty grant `host` alike.
+11. **`--needs --policy`** words the comment "only a sash/3 boot grant carries this" for `boot.*`; the `svc.*` and `fs.mount` rows keep the `sash/2` wording, since a `sash/2` grant still carries them.
+
+For phase 2:
+- The golden vectors are `internal/grant/testdata/sash-grant-v3-vectors.json` (`sash-grant-v3-vectors/1`): fixed test keys (seeds 32×0x01 fleet, 32×0x02 emergency, 32×0x03 wrong), `now`, and per case the document, the expected token and, for valid cases, the exact signed message. `go test ./internal/grant -run TestV3Vectors` fails if the code's bytes drift from the file.
+- The double's host.json fixture and loader are `prototest.HostFixture` and `prototest.ParseHostDecl` (`internal/proto/prototest/boot.go`): a reference for the strict loader, not its implementation.

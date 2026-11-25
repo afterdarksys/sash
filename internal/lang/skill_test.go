@@ -128,6 +128,7 @@ type skillBlock struct {
 	marks     []string // "stdout: x", "nostdout: x", "stderr: x", "call: x", "nocall: x", "lint: x", "nolint: x"
 	drop      []string // entitlements "# drop: key" removes from the host grant
 	entry     string   // "# entry: start" runs a service file's entry under a boot grant
+	boot      bool     // "# grant: boot" makes that grant sash/3 purpose boot (service hostprep)
 }
 
 func skillBlocks(t *testing.T) []skillBlock {
@@ -163,6 +164,10 @@ func skillBlocks(t *testing.T) []skillBlock {
 				}
 				if e, ok := strings.CutPrefix(m, "entry: "); ok {
 					b.entry = e
+					continue
+				}
+				if m == "grant: boot" {
+					b.boot = true
 					continue
 				}
 				for _, k := range []string{"stdout: ", "nostdout: ", "stderr: ", "call: ", "nocall: ", "lint: ", "nolint: "} {
@@ -286,6 +291,21 @@ func skillBootGrant(drop []string) grant.Grant {
 	return g
 }
 
+// skillBootOpsGrant is the sash/3 grant a "# grant: boot" example runs
+// under: the boot-ops unit hostprep.
+func skillBootOpsGrant(drop []string) grant.Grant {
+	g := skillBootGrant(drop)
+	for _, e := range []string{"boot.module", "boot.device", "boot.mount", "boot.net", "boot.start", "boot.stop"} {
+		if !slices.Contains(drop, e) {
+			g.Entitlements = append(g.Entitlements, e)
+		}
+	}
+	g.V, g.Purpose, g.Actor, g.Service, g.User, g.Group = "sash/3", grant.PurposeBoot, "boot:hostprep", "hostprep", "hostprep", "hostprep"
+	g.Modules, g.Devices, g.HostMounts = []string{"virtio_blk", "virtio_net"}, []string{"data"}, []string{"data"}
+	g.NetProfiles, g.UnitsStart, g.UnitsStop = []string{"lan"}, []string{"dhcp"}, []string{"getty-tty1"}
+	return g
+}
+
 func skillGrant(drop []string) grant.Grant {
 	var ents []string
 	for _, e := range []string{"ps", "unit.status", "unit.restart", "package.query", "package.install", "sysctl.get", "sysctl.set", "config.read", "file.read", "file.write"} {
@@ -347,6 +367,9 @@ func TestSkillExamplesAreSash(t *testing.T) {
 		g := skillGrant(b.drop)
 		if b.entry != "" {
 			g = skillBootGrant(b.drop)
+		}
+		if b.boot {
+			g = skillBootOpsGrant(b.drop)
 		}
 		switch mode {
 		case "empty":

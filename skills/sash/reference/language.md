@@ -442,7 +442,10 @@ Each is one line on stderr.
 | `wasm_unsupported` | the release build has no wasm (2) |
 | `plan: would <command>` | plan mode stopped a mutating verb (the run goes on) |
 | `grant_missing`, `grant_bad_shape`, `grant_bad_sig`, `grant_star`, `grant_expired`, `grant_root_slash` | `sash --session` refused the grant before anything ran (2) |
-| `grant_exp_zero`, `grant_service_mismatch`, `grant_identity_mismatch` | exp 0 on a grant that is not a boot grant; a service file under a grant for another service, or with another user or group (2) |
+| `grant_exp_zero`, `grant_service_mismatch`, `grant_identity_mismatch` | exp 0 on a grant that is not a boot grant (purpose `service` or `boot`); a service file under a grant for another service, or with another user or group (2) |
 | `service_top_level`, `service_run_and_start`, `service_glob`, `entry_missing` | a service file's rules, `features.md` "Service files" (2) |
 | `secret_refused`, `spawn_shell`, `env_refused: NAME`, `denied exec`, `denied cap`, `denied user`, `denied group`, `denied fs.mount`, `denied mount source`, `mount_overlap`, `mount_opt_refused`, `denied cwd`, `denied probe: ...` | a service verb's refusals, `verbs.md` (2 or 126) |
 | `refused <key>: <code> (<why>)` | the init refused a service verb: `unknown_name`, `name_in_use`, `denied`, `ceiling` (2) |
+| `boot_entry`, `boot_in_await`, `boot_in_par`, `boot_call_limit` | a boot verb outside `fn start`, inside `await`, `check` or `par`, or past 64 in a run (2) |
+| `denied boot.<key>`, `denied module`, `denied device`, `denied host mount`, `denied network profile`, `denied service start`, `denied service stop` | a boot verb without a `sash/3` purpose `boot` grant holding its key, or a name its list does not hold (126) |
+| `refused boot.<key>: <code> (<why>)` | the init refused a boot verb: `boot_over`, `boot_once`, `boot_self`, `boot_chain`, `boot_cycle`, `boot_unit_auto`, `boot_essential`, `module_*`, `device_*`, `mount_target`, `mount_conflict`, `net_*`, `sash_grant_host`, `host_decl_*`, `busy`, `not_found`, `timeout` and the others in `verbs.md` (2) |
