@@ -1,6 +1,6 @@
 {
   "v": "sash-grant-v3-vectors/1",
-  "note": "Test keys only: fleet is ed25519 seed 32*0x01, emergency 32*0x02, the wrong key 32*0x03. Verify each doc at now with fleet_pub and emergency_pub; want is the error token, empty when it verifies. message is the exact signed bytes of a valid case. Regenerate with go test ./internal/grant -run TestV3Vectors -update.",
+  "note": "Test keys only: fleet is ed25519 seed 32*0x01, emergency 32*0x02, the wrong key 32*0x03. Verify each doc at now with fleet_pub and emergency_pub; want is the error token, empty when it verifies. null is never accepted for any list, file_read and file_write included: every list is [] when empty. message is the exact signed bytes of a valid case. Regenerate with go test ./internal/grant -run TestV3Vectors -update.",
   "fleet_pub": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
   "emergency_pub": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
   "now": 1700000000,
@@ -120,6 +120,16 @@
     {
       "name": "missing exp",
       "doc": "{\"actor\":\"boot:hostprep\",\"allow_private\":false,\"caps\":[],\"devices\":[\"data\"],\"entitlements\":[\"boot.module\",\"boot.device\",\"boot.mount\",\"boot.net\",\"boot.start\",\"boot.stop\"],\"env_names\":[],\"exec\":[],\"file_read\":[],\"file_write\":[\"/run/hostprep\"],\"group\":\"hostprep\",\"host\":\"web1\",\"host_mounts\":[\"data\"],\"lease_id\":\"boot-hostprep-1\",\"modules\":[\"virtio_blk\",\"virtio_net\"],\"mount_sources\":[],\"mounts\":[],\"net_profiles\":[\"lan\"],\"purpose\":\"boot\",\"serial\":3,\"service\":\"hostprep\",\"sig\":\"BN7OF7MUH05NNSBahh7ZNI1/U2G70gPaWL+IaXe7JB1zqlO5btMbQ9fqwLujJOGimCP/dYVpCpgB+VJGAaQLDA==\",\"units_start\":[\"dhcp\"],\"units_stop\":[\"getty-tty1\"],\"user\":\"hostprep\",\"v\":\"sash/3\"}",
+      "want": "grant_bad_shape"
+    },
+    {
+      "name": "null file_read",
+      "doc": "{\"actor\":\"boot:hostprep\",\"allow_private\":false,\"caps\":[],\"devices\":[\"data\"],\"entitlements\":[\"boot.module\",\"boot.device\",\"boot.mount\",\"boot.net\",\"boot.start\",\"boot.stop\"],\"env_names\":[],\"exec\":[],\"exp\":0,\"file_read\":null,\"file_write\":[\"/run/hostprep\"],\"group\":\"hostprep\",\"host\":\"web1\",\"host_mounts\":[\"data\"],\"lease_id\":\"boot-hostprep-1\",\"modules\":[\"virtio_blk\",\"virtio_net\"],\"mount_sources\":[],\"mounts\":[],\"net_profiles\":[\"lan\"],\"purpose\":\"boot\",\"serial\":3,\"service\":\"hostprep\",\"sig\":\"BN7OF7MUH05NNSBahh7ZNI1/U2G70gPaWL+IaXe7JB1zqlO5btMbQ9fqwLujJOGimCP/dYVpCpgB+VJGAaQLDA==\",\"units_start\":[\"dhcp\"],\"units_stop\":[\"getty-tty1\"],\"user\":\"hostprep\",\"v\":\"sash/3\"}",
+      "want": "grant_bad_shape"
+    },
+    {
+      "name": "null file_write",
+      "doc": "{\"actor\":\"boot:hostprep\",\"allow_private\":false,\"caps\":[],\"devices\":[\"data\"],\"entitlements\":[\"boot.module\",\"boot.device\",\"boot.mount\",\"boot.net\",\"boot.start\",\"boot.stop\"],\"env_names\":[],\"exec\":[],\"exp\":0,\"file_read\":[],\"file_write\":null,\"group\":\"hostprep\",\"host\":\"web1\",\"host_mounts\":[\"data\"],\"lease_id\":\"boot-hostprep-1\",\"modules\":[\"virtio_blk\",\"virtio_net\"],\"mount_sources\":[],\"mounts\":[],\"net_profiles\":[\"lan\"],\"purpose\":\"boot\",\"serial\":3,\"service\":\"hostprep\",\"sig\":\"BN7OF7MUH05NNSBahh7ZNI1/U2G70gPaWL+IaXe7JB1zqlO5btMbQ9fqwLujJOGimCP/dYVpCpgB+VJGAaQLDA==\",\"units_start\":[\"dhcp\"],\"units_stop\":[\"getty-tty1\"],\"user\":\"hostprep\",\"v\":\"sash/3\"}",
       "want": "grant_bad_shape"
     },
     {

@@ -133,6 +133,11 @@ func parseV3(doc []byte) (Grant, string, error) {
 	if !UnixName.MatchString(w.User) || !UnixName.MatchString(w.Group) {
 		return Grant{}, "", ErrBadShape
 	}
+	// sash/3 writes every list as [] and accepts nothing else: null is not
+	// an empty file_read or file_write.
+	if w.FileRead == nil || w.FileWrite == nil {
+		return Grant{}, "", ErrBadShape
+	}
 	if err := shapeCommon(w.signed); err != nil {
 		return Grant{}, "", err
 	}

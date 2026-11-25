@@ -143,6 +143,8 @@ func buildVectors(t *testing.T) vectorFile {
 		{Name: "missing file_read", Doc: rawEdit(valid, func(m map[string]any) { delete(m, "file_read") }), Want: "grant_bad_shape"},
 		{Name: "missing allow_private", Doc: rawEdit(valid, func(m map[string]any) { delete(m, "allow_private") }), Want: "grant_bad_shape"},
 		{Name: "missing exp", Doc: rawEdit(valid, func(m map[string]any) { delete(m, "exp") }), Want: "grant_bad_shape"},
+		{Name: "null file_read", Doc: rawEdit(valid, func(m map[string]any) { m["file_read"] = nil }), Want: "grant_bad_shape"},
+		{Name: "null file_write", Doc: rawEdit(valid, func(m map[string]any) { m["file_write"] = nil }), Want: "grant_bad_shape"},
 		{Name: "null devices", Doc: rawEdit(valid, func(m map[string]any) { m["devices"] = nil }), Want: "grant_bad_shape"},
 		{Name: "unknown field", Doc: rawEdit(valid, func(m map[string]any) { m["params"] = []string{"x=1"} }), Want: "grant_bad_shape"},
 		{Name: "trailing data", Doc: valid + " {}", Want: "grant_bad_shape"},
@@ -167,7 +169,7 @@ func buildVectors(t *testing.T) vectorFile {
 	}
 	return vectorFile{
 		V:            "sash-grant-v3-vectors/1",
-		Note:         "Test keys only: fleet is ed25519 seed 32*0x01, emergency 32*0x02, the wrong key 32*0x03. Verify each doc at now with fleet_pub and emergency_pub; want is the error token, empty when it verifies. message is the exact signed bytes of a valid case. Regenerate with go test ./internal/grant -run TestV3Vectors -update.",
+		Note:         "Test keys only: fleet is ed25519 seed 32*0x01, emergency 32*0x02, the wrong key 32*0x03. Verify each doc at now with fleet_pub and emergency_pub; want is the error token, empty when it verifies. null is never accepted for any list, file_read and file_write included: every list is [] when empty. message is the exact signed bytes of a valid case. Regenerate with go test ./internal/grant -run TestV3Vectors -update.",
 		FleetPub:     base64.StdEncoding.EncodeToString(fleet.pub),
 		EmergencyPub: base64.StdEncoding.EncodeToString(emergency.pub),
 		Now:          vectorNow,
