@@ -257,6 +257,7 @@ func (m *machine) branchMachine(ctx context.Context, i int) *machine {
 	bm.depth = m.depth
 	bm.secretPipe = m.secretPipe
 	bm.prompt = m.prompt
+	bm.entry = m.entry
 	bm.scoped = copyMap(m.scoped)
 	bm.pb = &parBranch{idx: i, ctx: ctx}
 	if cp, ok := m.p.(parent.ContextParent); ok {

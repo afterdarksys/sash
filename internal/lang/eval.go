@@ -189,6 +189,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m.confirm = opt.Confirm
 	m.interrupts = opt.Interrupts
 	m.prompt = opt.Prompt
+	m.entry = opt.Entry
 	if opt.Tape != nil {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
@@ -365,6 +366,9 @@ type machine struct {
 	svc           *Service
 	awaitTimedOut bool
 	checkFn       *Fn
+	// entry is the lifecycle entry this run calls (Options.Entry); the
+	// boot verbs run only under start.
+	entry string
 }
 
 // msgConfirmTerminal refuses confirm mode without a terminal to ask.
@@ -478,7 +482,8 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 
 // mutating names the verbs plan mode stops.
 var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true,
-	"svc.spawn": true, "svc.signal": true, "fs.mount": true}
+	"svc.spawn": true, "svc.signal": true, "fs.mount": true,
+	"boot.module": true, "boot.mount": true, "boot.net": true, "boot.start": true, "boot.stop": true}
 
 // do is the one door to the parent. It counts verbs against verbMax, and in
 // plan mode a mutating verb stops here: it prints what it would do and
@@ -514,7 +519,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	if !m.takeVerb() {
 		return parent.Result{}, errVerbMax
 	}
-	if m.st.plan && mutating[v.Key] {
+	if m.st.plan && planStops(v.Key) {
 		what := strings.Join(v.Argv, " ")
 		if v.Key == "file.write" {
 			what = fmt.Sprintf("write %s (%d bytes)", v.Path, len(v.Body))
@@ -653,6 +658,9 @@ func (m *machine) doFailed(key string, err error) int {
 	case key == "file.write" && fileWriteRefusals[err.Error()] != "":
 		m.err.WriteString("refused file.write: " + err.Error() + " (" + fileWriteRefusals[err.Error()] + ")\n")
 		return exitType
+	}
+	if st, ok := m.bootDoFailed(key, err); ok {
+		return st
 	}
 	if st, ok := m.svcDoFailed(key, err); ok {
 		return st
@@ -1815,7 +1823,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 			outPath = full
 		}
 		info, prob := classify(argv, m.fns)
-		if _, svc := svcKeys[argv[0]]; prob != nil && m.sawSecret && (svc || argv[0] == "service") {
+		if prob != nil && m.sawSecret && isSvcWord(argv[0]) {
 			// A secret's *** fails the shape check; the refusal is the secret.
 			return nil, &problem{exitType, msgSecretRefused}, refusal{}
 		}
@@ -1825,7 +1833,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		// A secret prints as ***, but it does not leave sash: not as a verb
 		// argument, a path, or a function argument.
 		if m.sawSecret && (info.key != "" || info.call != nil || inPath != "" || outPath != "" || len(st.Redirs) > 0) {
-			if _, svc := svcKeys[argv[0]]; svc || argv[0] == "service" {
+			if isSvcWord(argv[0]) {
 				return nil, &problem{exitType, msgSecretRefused}, refusal{}
 			}
 			return nil, &problem{exitType, "a secret cannot leave sash"}, refusal{}
@@ -1850,9 +1858,11 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		return nil, prob, refusal{}
 	}
 	for i := range exp {
-		// The service verbs need a boot grant: a sash/1 grant listing a
-		// boot key still authorizes none of them.
-		if exp[i].key != "" && (!m.g.Has(exp[i].key) || (bootKeys[exp[i].key] && !m.g.Boot())) {
+		// The service verbs need a boot grant and the boot verbs a sash/3
+		// boot grant: a sash/1 or sash/2 grant listing a boot key still
+		// authorizes none of them.
+		k := exp[i].key
+		if k != "" && (!m.g.Has(k) || (bootKeys[k] && !m.g.Boot()) || (bootOpsKey(k) && !m.g.BootOps())) {
 			return nil, &problem{exitDenied, "denied " + exp[i].key}, refusal{}
 		}
 	}
@@ -2227,6 +2237,9 @@ func (m *machine) bindPaths(st *expStage) (int, *problem) {
 		st.paths = append(st.paths, full)
 		st.outPath = full
 	default:
+		if bootOpsKey(st.key) {
+			return m.bindBoot(st)
+		}
 		if _, svc := svcKeys[st.argv[0]]; svc {
 			return m.bindSvc(st)
 		}
@@ -2485,6 +2498,9 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 	}
 	if rowTools[st.argv[0]] {
 		return m.runRowTool(st, in)
+	}
+	if bootOpsKey(st.key) {
+		return m.runBoot(st)
 	}
 	switch st.argv[0] {
 	case "echo":
@@ -3106,7 +3122,8 @@ func init() {
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
 		"retry", "timeout", "await", "args", "check", "checks", "log", "origin", "par", "atomic",
-		"service", "spawn", "signal", "wait", "proc", "probe", "output", "mkdir", "chown", "chmod", "touch", "ln", "rm", "mount", "umount"} {
+		"service", "spawn", "signal", "wait", "proc", "probe", "output", "mkdir", "chown", "chmod", "touch", "ln", "rm", "mount", "umount",
+		"module", "device", "network"} {
 		reservedNames[n] = true
 	}
 }

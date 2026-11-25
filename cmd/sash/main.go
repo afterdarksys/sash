@@ -80,7 +80,7 @@ func main() {
 		entry, args = args[1], args[2:]
 	}
 	if len(args) == 0 && line.IsTerm(os.Stdin) {
-		if plan || entry != "" || g.Purpose == grant.PurposeService {
+		if plan || entry != "" || g.Purpose == grant.PurposeService || g.Purpose == grant.PurposeBoot {
 			fmt.Fprintln(os.Stderr, "usage: sash --plan and --entry need a script")
 			os.Exit(2)
 		}

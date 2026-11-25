@@ -450,6 +450,9 @@ func knownKey(argv []string) string {
 	if len(argv) == 0 {
 		return ""
 	}
+	if f := bootFormOf(argv); f != nil {
+		return f.key
+	}
 	switch argv[0] {
 	case "ps":
 		return "ps"

@@ -26,6 +26,9 @@ type State struct {
 	noglob  bool
 	loopMax int
 	verbMax int
+	// bootCalls counts boot verbs against bootMax (boot.go). It is not a
+	// session option: set cannot raise it.
+	bootCalls int
 	// plan stops mutating verbs at the parent door; planLocked (sash
 	// --plan) keeps a script from turning it off.
 	plan       bool

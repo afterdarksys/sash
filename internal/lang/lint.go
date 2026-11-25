@@ -45,6 +45,7 @@ var lintRules = map[string]string{
 	"atomic-irreversible": lintWarning,
 	"spawn-shell":         lintWarning,
 	"check-mutates":       lintError,
+	"boot-outside-start":  lintError,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -114,6 +115,7 @@ func Lint(src string) Outcome {
 	l.recordFiles()
 	l.atomicBodies()
 	l.serviceRules()
+	l.bootOutsideStart()
 	l.needs()
 	return l.report(comments)
 }

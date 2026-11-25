@@ -66,20 +66,28 @@ var needsFlag = map[string]string{
 	"sysctl.get":      "--tweak-sysctl",
 	"sysctl.set":      "--tweak-sysctl",
 	"config.read":     "--config",
-	// Only a sash/2 boot grant carries these (bootKeys): no policy flag.
-	"svc.spawn":  "",
-	"svc.signal": "",
-	"svc.wait":   "",
-	"svc.proc":   "",
-	"svc.status": "",
-	"svc.probe":  "",
-	"svc.output": "",
-	"fs.mount":   "",
+	// Only a boot grant carries these (bootKeys, bootField): no policy
+	// flag. systemapi must never grant them.
+	"boot.module": "",
+	"boot.device": "",
+	"boot.mount":  "",
+	"boot.net":    "",
+	"boot.start":  "",
+	"boot.stop":   "",
+	"svc.spawn":   "",
+	"svc.signal":  "",
+	"svc.wait":    "",
+	"svc.proc":    "",
+	"svc.status":  "",
+	"svc.probe":   "",
+	"svc.output":  "",
+	"fs.mount":    "",
 }
 
 var needsMutates = map[string]bool{
 	"file.write": true, "unit.restart": true, "package.install": true, "sysctl.set": true,
 	"svc.spawn": true, "svc.signal": true, "fs.mount": true,
+	"boot.module": true, "boot.mount": true, "boot.net": true, "boot.start": true, "boot.stop": true,
 }
 
 // A path need lists a directory (cd, ls, pushd, with prefix, a glob) or
@@ -607,7 +615,8 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 		if (sub == "read" || dynSub) && len(args) == 2 {
 			n.config(args[1], b, dynSub)
 		}
-	case "service", "spawn", "signal", "wait", "proc", "probe", "output", "mkdir", "chown", "chmod", "touch", "ln", "rm", "mount", "umount":
+	case "service", "spawn", "signal", "wait", "proc", "probe", "output", "mkdir", "chown", "chmod", "touch", "ln", "rm", "mount", "umount",
+		"module", "device", "network":
 		n.svcStage(name, st, b)
 	default:
 		// A function's body is counted where it is defined. A call may
@@ -867,6 +876,8 @@ func (n *needsRun) policy(rows []*needRow) string {
 			why = "a command name from a value does not run; the run stops here"
 		case r.note == noteUse:
 			why = "use reads this file; the needs of what it defines are not listed"
+		case r.note == "" && bootOpsKey(r.key):
+			why = "only a sash/3 boot grant carries this: sash --describe --grant-request"
 		case r.note == "" && bootKeys[r.key]:
 			why = "only a sash/2 boot grant carries this: sash --describe --grant-request"
 		case r.note == noteUnpasteable:

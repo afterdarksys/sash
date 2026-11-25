@@ -35,7 +35,11 @@ import (
 )
 
 // irreversible are the verbs atomic cannot undo.
-var irreversible = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "svc.spawn": true, "svc.signal": true, "fs.mount": true}
+// The five mutating boot verbs are here too: none has a restore, and a
+// stop undone by a start is a compensating action, not a restore. device
+// wait is a read and is allowed.
+var irreversible = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "svc.spawn": true, "svc.signal": true, "fs.mount": true,
+	"boot.module": true, "boot.mount": true, "boot.net": true, "boot.start": true, "boot.stop": true}
 
 // atomicDeadlineMax is the agent's longest transaction.
 const atomicDeadlineMax = 600 * time.Second

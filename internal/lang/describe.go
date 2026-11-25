@@ -3,7 +3,8 @@ package lang
 // sash --describe: a service file's block and the needs of each lifecycle
 // entry, as one stable JSON document (docs/plans/2026-11-21-sash-init-
 // contract.md; sahinit derives a unit from it). --grant-request turns the
-// literal needs into an unsigned sash/2 body.
+// literal needs into an unsigned sash/2 body, or sash/3 when a boot verb
+// is among them.
 //
 // Threats: describe reads the parse tree only, as --needs does. It runs
 // nothing, takes no grant, calls no parent and opens no file. An entry's
@@ -209,12 +210,16 @@ func (n *needsRun) entryNeeds(fn *Fn, fns map[string]*Fn) {
 	}
 }
 
-// grantRequest is the unsigned sash/2 body the literal needs ask for. A
+// grantRequest is the unsigned body the literal needs ask for: sash/3
+// (purpose boot) when any boot verb is among them, else sash/2. A
 // row with a note is left out: the request never grants what a run might
 // not ask for, and the description says it is incomplete.
 func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
 	name := svc.Name
 	sets := map[string]map[string]bool{"ent": {}, "read": {}, "write": {}, "exec": {}, "caps": {}, "mounts": {}, "sources": {}, "env": {}}
+	for _, f := range bootForms {
+		sets[f.key] = map[string]bool{}
+	}
 	add := func(set, v string) { sets[set][v] = true }
 	private := false
 	for _, r := range rows {
@@ -225,6 +230,8 @@ func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
 			continue
 		}
 		switch r.key {
+		case "boot.module", "boot.device", "boot.mount", "boot.net", "boot.start", "boot.stop":
+			add(r.key, r.target)
 		case "file.read":
 			add("read", r.target)
 		case "file.write":
@@ -271,6 +278,8 @@ func grantRequest(svc *Service, rows []*needRow) ([]byte, error) {
 		Actor: "service:" + name, Entitlements: sorted("ent"), FileRead: sorted("read"), FileWrite: sorted("write"),
 		AllowPrivate: private, Service: name, Exec: sorted("exec"), Caps: sorted("caps"), Mounts: sorted("mounts"),
 		MountSources: sorted("sources"), User: svc.User, Group: svc.Group, EnvNames: sorted("env"),
+		Modules: sorted("boot.module"), Devices: sorted("boot.device"), HostMounts: sorted("boot.mount"),
+		NetProfiles: sorted("boot.net"), UnitsStart: sorted("boot.start"), UnitsStop: sorted("boot.stop"),
 	}
 	b, err := grant.Request(g)
 	if err != nil {

@@ -400,7 +400,7 @@ func entryRefused(src string, g grant.Grant, opt Options) (Outcome, bool) {
 		return Outcome{Status: exitType, Stderr: msg + "\n", Prefix: opt.Prefix}, true
 	}
 	if opt.Entry == "" {
-		if g.Purpose == grant.PurposeService {
+		if g.Purpose == grant.PurposeService || g.Purpose == grant.PurposeBoot {
 			return fail("entry_missing: a boot grant runs only a service entry")
 		}
 		return Outcome{}, false

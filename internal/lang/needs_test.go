@@ -426,6 +426,12 @@ func TestNeedsCoversEveryBuiltinKey(t *testing.T) {
 		"rm":             "rm /run/app/x",
 		"mount":          "mount tmpfs /run/app/tmp",
 		"umount":         "umount /run/app/tmp",
+		"module load":    "module load virtio_blk",
+		"device wait":    "device wait data timeout 30s",
+		"mount ensure":   "mount ensure data",
+		"network apply":  "network apply lan",
+		"service start":  "service start dhcp",
+		"service stop":   "service stop getty",
 	}
 	for _, b := range Builtins() {
 		if b.Key == "" {
@@ -466,9 +472,30 @@ func TestNeedsCoversEveryBuiltinKey(t *testing.T) {
 			t.Errorf("classify key %q has no needs mapping", key)
 		}
 	}
+	// D5: every key has a systemapi flag or a signed grant field that
+	// carries its targets, except ps and journal; bootKeys is exactly the
+	// key set of bootField, and no boot key has a systemapi flag.
 	for key := range needsFlag {
-		if key != "ps" && key != "journal" && !bootKeys[key] && needsFlag[key] == "" {
-			t.Errorf("%q has no policy flag", key)
+		if key != "ps" && key != "journal" && needsFlag[key] == "" && bootField[key] == "" {
+			t.Errorf("%q has no policy flag and no grant field", key)
+		}
+	}
+	for key := range bootField {
+		if !bootKeys[key] || needsFlag[key] != "" {
+			t.Errorf("%q: bootKeys %v, flag %q", key, bootKeys[key], needsFlag[key])
+		}
+		if _, ok := needsFlag[key]; !ok {
+			t.Errorf("%q has no needs mapping", key)
+		}
+	}
+	for key := range bootKeys {
+		if bootField[key] == "" {
+			t.Errorf("bootKeys has %q, bootField does not", key)
+		}
+	}
+	for _, b := range Builtins() {
+		if strings.HasPrefix(b.Key, "boot.") && bootField[b.Key] == "" {
+			t.Errorf("%q: boot key %q has no grant field", b.Form, b.Key)
 		}
 	}
 }

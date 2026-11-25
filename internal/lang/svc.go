@@ -51,13 +51,6 @@ var svcKeys = map[string]string{
 // is the operation; an agent that knows only "> path" denies them.
 var svcFileOps = map[string]bool{"mkdir": true, "chown": true, "chmod": true, "touch": true, "ln": true, "rm": true}
 
-// bootKeys are the keys only a sash/2 boot grant carries: no systemapi
-// policy flag grants them.
-var bootKeys = map[string]bool{
-	"svc.spawn": true, "svc.signal": true, "svc.wait": true, "svc.proc": true,
-	"svc.status": true, "svc.probe": true, "svc.output": true, "fs.mount": true,
-}
-
 // procName is a name given to spawn: the init's handle for the process.
 // It starts with a letter, so it never reads as a pid.
 var procName = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
@@ -138,6 +131,9 @@ func probeTCP(target string, loopbackOnly bool) string {
 // classifySvc is classify for the service verbs: their shape, before any
 // grant check. ok is false for a name that is not one.
 func classifySvc(argv []string) (classified, *problem, bool) {
+	if info, prob, ok := classifyBoot(argv); ok {
+		return info, prob, true
+	}
 	name := argv[0]
 	key, ok := svcKeys[name]
 	if name == "service" {
@@ -659,6 +655,9 @@ func svcPlan(v parent.Verb) string {
 	if len(v.Argv) == 0 {
 		return ""
 	}
+	if line := bootPlan(v); line != "" {
+		return line
+	}
 	isSvc := strings.HasPrefix(v.Key, "svc.") || v.Key == "fs.mount" || (v.Key == "file.write" && svcFileOps[v.Argv[0]])
 	if !isSvc {
 		return ""
@@ -709,6 +708,10 @@ func (m *machine) svcDoFailed(key string, err error) (int, bool) {
 func (n *needsRun) svcStage(name string, st Stage, b needBase) {
 	args := st.Argv[1:]
 	at := st.Argv[0].Pos
+	if bootWords[name] || (len(args) > 0 && (name == "mount" && plain(args[0]) == "ensure" || name == "service" && (plain(args[0]) == "start" || plain(args[0]) == "stop"))) {
+		n.bootStage(st)
+		return
+	}
 	switch name {
 	case "service":
 		if len(args) == 2 && plain(args[0]) == "status" {
