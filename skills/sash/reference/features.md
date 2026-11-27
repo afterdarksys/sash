@@ -82,6 +82,7 @@ For those values:
 - They print as `***`: `echo`, `trace`, `declare -p`, `log`, errors, and the `origin` hash.
 - They decide nothing: a condition that reads one (`if`, `while`, `do`, `filter`, `check`) is exit 2 `a secret cannot decide a branch`.
 - They cannot be a verb argument, a path, or the body of `>`: exit 2 `a secret cannot leave sash`. Only `template_file` writes a render it knows is secret, at mode `0600`.
+- Rows an `each` computed from one hold `***`; they are not written either, as they are or rendered later in the pipeline (`| cat`, `|> json`): `>` and `fs write-atomic` are exit 2 `a secret cannot leave sash`, and a `let` that binds such rows binds a secret.
 - One in a plain word is exit 2 `a secret in a word: build it inside [ ]`.
 - An evaluation that reads one and fails (`[ int($tok) ]`) ends the line with `a secret ended the line`, which `try` cannot catch.
 - The prompt does not keep a `declare -s` line in history, and `!!` cannot recall one.

@@ -256,6 +256,12 @@ type machine struct {
 	// secretWrite is set by a template_file whose render read a secret,
 	// so its write goes out with mode 0600 (jobs contract section 2).
 	secretWrite bool
+	// rowSecret is set while a pipeline runs when a per-row expression
+	// (each) read a secret: the evaluation's own taint, the mark that
+	// makes an expression's result a secret. Its rows then hold *** for a
+	// value derived from the secret, and nothing in the pipeline from
+	// there on may be written: not by >, not by fs write-atomic.
+	rowSecret bool
 	// confirm is Options.Confirm; declined is set when a verb was declined
 	// in the current retry attempt, so retry does not ask again.
 	confirm  func(string) (bool, bool)
@@ -761,6 +767,12 @@ func (m *machine) runLet(s *Let) (int, bool) {
 	st, stop, v := m.runPipe(*s.Pipe)
 	if stop {
 		return st, true
+	}
+	if m.rowSecret {
+		// Rows a per-row expression computed from a secret: the binding
+		// is a secret, so it cannot leave sash later either.
+		m.rowSecret = false
+		v = value{kind: valData, d: secretVal{toDatum(v)}}
 	}
 	if code, stop := m.bindLet(s.Name, v); stop {
 		return code, true
@@ -2091,6 +2103,7 @@ func (m *machine) traceStage(st expStage) error {
 }
 
 func (m *machine) execPrepared(exp []expStage) (int, value) {
+	m.rowSecret = false
 	if len(exp) == 1 && exp[0].call != nil {
 		if err := m.traceStage(exp[0]); err != nil {
 			return 1, value{}
@@ -2181,9 +2194,17 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			Body: []byte(body),
 		}
 		// Only template_file writes a secret, and only at 0600: a > of
-		// a secret is refused in prepare.
+		// a secret is refused in prepare, and a > of rows a per-row
+		// expression computed from a secret is refused here.
 		secret := m.secretWrite && exp[len(exp)-1].argv[0] == "template_file"
 		m.secretWrite = false
+		if m.rowSecret && !secret {
+			m.err.WriteString("a secret cannot leave sash\n")
+			if exp[len(exp)-1].sink {
+				m.err.WriteString(msgFsNotWritten + "\n")
+			}
+			return exitType, value{}
+		}
 		if secret {
 			v.Mode = "0600"
 			cur = value{kind: valData, d: secretVal{body}}

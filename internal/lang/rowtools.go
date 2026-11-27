@@ -306,6 +306,11 @@ func (m *machine) perRow(st expStage, rows []parent.Row, cols []string) (value, 
 		scalar = true
 		out = append(out, parent.Row{"value": textOf(d)})
 	}
+	if c.tainted {
+		// A row read a secret: what each wrote is *** or derived from
+		// it, and the pipeline may not write it out.
+		m.rowSecret = true
+	}
 	if scalar && mapped {
 		return fail("type each: map and value mixed")
 	}

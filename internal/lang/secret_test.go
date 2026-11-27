@@ -37,6 +37,14 @@ func TestSecretsCannotLeave(t *testing.T) {
 		`fn f(a) { echo $a }` + "\n" + `f $tok`:            "a secret cannot leave sash",
 		`echo [ {"tok": $tok} ] | template /srv/ops/t.tpl`: "",
 		`let x = "pre-$tok"`:                               "a secret in a word",
+		// Rows a per-row expression computed from the secret hold ***:
+		// they do not leave sash either, as they are or rendered.
+		`echo a | lines |> each [ $tok ] > /srv/ops/out/x`:                        "a secret cannot leave sash",
+		`echo a | lines |> each [ $tok + "x" ] > /srv/ops/out/x`:                  "a secret cannot leave sash",
+		`echo a | lines |> each [ {"k": $tok} ] > /srv/ops/out/x`:                 "a secret cannot leave sash",
+		`echo a | lines |> each [ $tok ] | cat > /srv/ops/out/x`:                  "a secret cannot leave sash",
+		`echo a | lines |> each [ $tok ] |> json > /srv/ops/out/x`:                "a secret cannot leave sash",
+		"let r = (echo a | lines |> each [ $tok ])\necho [ $r ] > /srv/ops/out/x": "a secret cannot leave sash",
 	} {
 		st := NewState()
 		Run(`declare -s tok = abc`, tplGrant(), p, Options{State: st})
@@ -45,6 +53,14 @@ func TestSecretsCannotLeave(t *testing.T) {
 		if out.Status == 0 || !strings.Contains(out.Stderr, msg) || p.writes != nil || strings.Contains(out.Stdout+out.Stderr, "abc") {
 			t.Errorf("%s: %+v writes %v", src, out, p.writes)
 		}
+	}
+	// Rows each computed without a secret are written as before, after a
+	// line whose rows held one.
+	st0 := NewState()
+	Run(`declare -s tok = abc`, tplGrant(), p, Options{State: st0})
+	p.writes = nil
+	if out := Run("echo a | lines |> each [ $tok ]\necho a | lines |> each [ $it.line + \"x\" ] > /srv/ops/out/x", tplGrant(), p, Options{State: st0}); out.Status != 0 || len(p.writes) != 1 {
+		t.Errorf("plain rows after secret rows: %+v writes %v", out, p.writes)
 	}
 	// The template refuses a secret var by name.
 	st := NewState()
