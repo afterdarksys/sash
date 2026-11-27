@@ -206,7 +206,8 @@ func (a *api) resolve(ctx context.Context, host string) (resolved, answer, strin
 	if how != answerOK {
 		return resolved{}, how, code
 	}
-	if body.HostID == nil || !hostIDRe.MatchString(*body.HostID) {
+	// An id must stand in a path as one segment: . and .. would not.
+	if body.HostID == nil || !hostIDRe.MatchString(*body.HostID) || *body.HostID == "." || *body.HostID == ".." {
 		return resolved{}, answerFailed, ""
 	}
 	r := resolved{HostID: *body.HostID}

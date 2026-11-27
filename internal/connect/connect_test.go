@@ -360,7 +360,7 @@ func TestServerHostNameIsEscaped(t *testing.T) {
 		checkClean(t, cp, con)
 	}
 	// A host id that could not stand in a path is not used at all.
-	for _, id := range []string{"../../admin", "a/b", "a b", "a%2fb", "", strings.Repeat("a", 129), "a?b"} {
+	for _, id := range []string{"../../admin", "a/b", "a b", "a%2fb", "", strings.Repeat("a", 129), "a?b", ".", ".."} {
 		cp := newFakeCP(t)
 		cp.resolve = func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"host_id": id}) }
 		con := newFakeCon()
