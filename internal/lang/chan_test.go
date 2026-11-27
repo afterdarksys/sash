@@ -595,6 +595,91 @@ func TestChanRecordSecretRedacted(t *testing.T) {
 	}
 }
 
+// recordFiles records src against a parent that serves files, and
+// returns the recording.
+func recordFiles(t *testing.T, src string, files map[string]string) []byte {
+	t.Helper()
+	clocks(t)
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, src, recNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Run(src, parGrant(), &tplParent{files: files}, Options{Tape: tape, State: NewState()})
+	if err := tape.Finish(); err != nil || out.Status != 0 {
+		t.Fatalf("record %q: %v %+v", src, err, out)
+	}
+	return buf.Bytes()
+}
+
+// A value holding a secret's text keeps no hash, which could be guessed
+// offline, whatever shape the text has: read from a file with its
+// newline (the value lines made has none), holding a quote or a
+// backslash (escaped in JSON), or under four runes (matched as a whole
+// leaf). Each is caught when the same file is read again in the branch
+// that bound it (its origin is hidden), when another file with the same
+// text is sent and the secret is bound only after the par (the leaves,
+// checked at the end), and when the secret is computed from the value
+// (the origin alone). A plain value next to it keeps its hash.
+func TestChanRecordSecretShapes(t *testing.T) {
+	plain := "send c [ \"plain-value\" ]"
+	for _, text := range []string{"hunter2-SECRET\n", "pw\"12345", "back\\slash9", "417", "417\n"} {
+		for name, src := range map[string]string{
+			"re-read": "par 2 chan c(1) { branch { declare -s tok = (cat /srv/ops/t); let l = (cat /srv/ops/t | lines); send c $l; " + plain + " }; for j in recv c { echo got } }",
+			"later":   "par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c $l; " + plain + " }; for j in recv c { echo got } }\ndeclare -s tok = (cat /srv/ops/t)",
+			"origin":  "par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); declare -s tok = [ upper($l[0].line) + \"-x\" ]; send c $l; " + plain + " }; for j in recv c { echo got } }",
+		} {
+			rec := recordFiles(t, src, map[string]string{"/srv/ops/t": text, "/srv/ops/u": text})
+			lines := recLines(rec)
+			var redacted, hashed int
+			for _, i := range chanEvents(t, lines) {
+				ev := chanEv(t, lines[i])
+				switch {
+				case ev.Op == "close":
+				case ev.Redacted && ev.Hash == "":
+					redacted++
+				default:
+					hashed++
+				}
+			}
+			// The secret's send and recv are redacted; the plain value's
+			// send and recv keep their hash.
+			if redacted != 2 || hashed != 2 {
+				t.Errorf("%q %s: %d redacted, %d hashed\n%s", text, name, redacted, hashed, rec)
+			}
+			if got, err := replay(t, rec, src); err != nil || got.Status != 0 {
+				t.Errorf("%q %s: replay %v %+v", text, name, err, got)
+			}
+		}
+	}
+}
+
+// A value whose provenance overflowed may have lost a hidden origin: it is
+// recorded redacted when its branch hides any origin, and keeps its hash
+// when the branch hides none.
+func TestChanRecordOverflowRedacted(t *testing.T) {
+	files := map[string]string{"/srv/ops/t": "hunter2-SECRET\n"}
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 17; i++ {
+		files[fmt.Sprintf("/srv/ops/f%d", i)] = fmt.Sprintf("f%d\n", i)
+		fmt.Fprintf(&b, "let c%d = (cat /srv/ops/f%d | lines); ", i, i)
+		sum += fmt.Sprintf(" + $c%d[0].line", i)
+	}
+	body := b.String() + "let y = [ \"\"" + sum + " ]; send c $y"
+	for hides, src := range map[bool]string{
+		true:  "par 2 chan c(1) { branch { declare -s tok = (cat /srv/ops/t); " + body + " }; for j in recv c { echo got } }",
+		false: "par 2 chan c(1) { branch { " + body + " }; for j in recv c { echo got } }",
+	} {
+		lines := recLines(recordFiles(t, src, files))
+		for _, i := range chanEvents(t, lines) {
+			if ev := chanEv(t, lines[i]); ev.Op != "close" && ev.Redacted != hides {
+				t.Errorf("hides %v: %s", hides, lines[i])
+			}
+		}
+	}
+}
+
 // A secret sent stays a secret: the receiver prints ***, a sink refuses
 // it, directly, through two channels, and nested in a list of maps, and
 // the session knows its text after the join.
@@ -615,9 +700,18 @@ func TestChanSecretCrosses(t *testing.T) {
 			t.Errorf("%q: the session does not know the secret", src)
 		}
 	}
+	// The receiver marks what it received: a response it reads after the
+	// value crossed, holding the secret's text, is secret there, so its
+	// origin hides its hash. Only the receiver's own marking can do this;
+	// the sender's sink reaches the session only at the join.
+	src := "par 2 chan c(1) { branch { declare -s s = \"content of /srv/x\"; send c $s }; for x in recv c { let r = (cat /srv/x); origin r |> select target hash } }"
+	out := Run(src, recGrant(), &hostParent{}, Options{})
+	if out.Status != 0 || !strings.Contains(out.Stdout, "/srv/x") || !strings.Contains(out.Stdout, "***") {
+		t.Fatalf("receiver did not mark: %+v", out)
+	}
 	// Spelled into a word, a secret would cross as plain text: refused,
 	// as let refuses it.
-	out := Run("declare -s s = \"hunter2-long\"\npar 2 chan c(1) { send c \"x$s\"; for x in recv c { echo $x } }", allow(), &fake{}, Options{})
+	out = Run("declare -s s = \"hunter2-long\"\npar 2 chan c(1) { send c \"x$s\"; for x in recv c { echo $x } }", allow(), &fake{}, Options{})
 	if out.Status != exitType || !strings.Contains(out.Stderr, "a secret in a word: build it inside [ ]") || strings.Contains(out.Stdout, "hunter2") {
 		t.Fatalf("word: %+v", out)
 	}

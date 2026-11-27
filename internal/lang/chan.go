@@ -19,7 +19,11 @@ package lang
 // secretVal crosses inside the datum, and the receiver marks its texts and
 // sinks them for the session); and a replay accepting another
 // interleaving (every completed op is a chan event with one cseq per par
-// and the value's hash, or redacted for a secret; replay lets an op
+// and the value's hash, or redacted for a secret: a value with a secret
+// in it, a hidden origin, an overflow while its branch hides any origin,
+// or a leaf holding any secret's text the run bound, with or without a
+// trailing newline, by the recording's whole-leaf rule for a short one;
+// replay lets an op
 // complete only when the next unused event by cseq names it, and anything
 // else, a hash that differs, or no branch able to go on, is
 // replay_diverged).
@@ -228,9 +232,12 @@ type chanItem struct {
 	// over is an overflowed provenance, or an id the sender could not
 	// name: the receiver keeps the overflow marker.
 	over bool
-	// enc is the value's JSON, kept only under a tape, for its hash;
-	// secret is a value holding a secret, recorded redacted.
-	enc    string
+	// Under a tape: hash is the sha256 of the value's JSON; leaves are
+	// its texts, for the check against secrets bound later (Finish);
+	// secret is a value known to hold a secret at send, recorded
+	// redacted.
+	hash   string
+	leaves []string
 	secret bool
 }
 
@@ -510,7 +517,7 @@ func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
 	}
 	if !t.replay {
 		t.cseq++
-		t.tapes[i].chanEvent(op, c, t.cseq, it.enc, it.secret)
+		t.tapes[i].chanEvent(op, c, t.cseq, it.hash, it.leaves, it.secret)
 		return true
 	}
 	if t.div {
@@ -549,7 +556,7 @@ func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
 		// The recorder redacts against secrets bound later in the run,
 		// which replay does not know yet: a redacted event keeps no hash.
 		return true
-	case !it.secret && rec.Hash == sha([]byte(it.enc)):
+	case !it.secret && rec.Hash == it.hash:
 		return true
 	default:
 		t.tapes[i].diverge(rec.Seq)
@@ -717,9 +724,21 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		it.orig = append(it.orig, chanOrigin{o: m.st.origins[id], secret: m.st.hideHash(id)})
 	}
 	if t.tapes != nil {
+		// The hash is taken now; the value itself is never kept for the
+		// tape. A value is secret when a secret is in it, when any of
+		// its origins is hidden, when its provenance overflowed while
+		// this branch hides any origin (a lost one could be hidden), or
+		// when a leaf holds a secret's text known here; Finish checks
+		// the leaves again against every secret the run bound.
 		var b strings.Builder
 		writeJSON(&b, toDatum(cp))
-		it.enc, it.secret = b.String(), holdsSecret(cp.d, 0)
+		it.hash = sha([]byte(b.String()))
+		it.leaves = chanLeaves(cp)
+		hides := len(m.st.secretOrigin) > 0 || len(m.st.secretHash) > 0
+		it.secret = (it.over && hides) || holdsSecret(cp.d, 0) || leavesHold(it.leaves, chanSecrets(m.secretTexts()))
+		for _, o := range it.orig {
+			it.secret = it.secret || o.secret
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -814,6 +833,86 @@ const (
 	whyDeep   = "value nested over 128 deep"
 	whyKind   = "value of a kind that cannot cross"
 )
+
+// chanLeaves is every text of v a secret's text could stand in: strings,
+// scalars as text, map keys, columns, row keys and cells. A secretVal's
+// inside is left out: holdsSecret marks the whole value.
+func chanLeaves(v value) []string {
+	var out []string
+	var walk func(d any, depth int)
+	walk = func(d any, depth int) {
+		if depth > chanDepthMax {
+			return
+		}
+		switch x := d.(type) {
+		case secretVal:
+		case []any:
+			for _, e := range x {
+				walk(e, depth+1)
+			}
+		case *omap:
+			for _, k := range x.keys {
+				out = append(out, k)
+				walk(x.m[k], depth+1)
+			}
+		default:
+			out = append(out, textOf(x))
+		}
+	}
+	row := func(r parent.Row) {
+		for k, c := range r {
+			out = append(out, k, c)
+		}
+	}
+	switch v.kind {
+	case valStr:
+		out = append(out, v.s)
+	case valRow:
+		row(v.row)
+	case valRows:
+		out = append(out, v.cols...)
+		for _, r := range v.rows {
+			row(r)
+		}
+	case valData:
+		walk(v.d, 0)
+	}
+	if v.gcol != "" {
+		out = append(out, v.gcol)
+	}
+	return out
+}
+
+// chanSecrets is each secret text and, when it ends in CR or LF, the text
+// without them: a secret read from a file keeps its newline, and a leaf
+// lines made from the same text does not.
+func chanSecrets(secrets []string) []string {
+	out := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		out = append(out, s)
+		if t := strings.TrimRight(s, "\r\n"); t != s {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// leavesHold reports whether any leaf holds a secret text by the
+// recording's rule (holdsAny): a text of secretMinRunes or more anywhere
+// in the leaf, a shorter one as the whole leaf. Leaves are compared as
+// they are, never as JSON, so a quote or a backslash in a secret is not
+// escaped away.
+func leavesHold(leaves, secrets []string) bool {
+	if len(secrets) == 0 {
+		return false
+	}
+	for _, l := range leaves {
+		if holdsAny(l, secrets) {
+			return true
+		}
+	}
+	return false
+}
 
 // holdsSecret reports a secret anywhere in d.
 func holdsSecret(d any, depth int) bool {

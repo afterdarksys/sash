@@ -150,10 +150,12 @@ type pending struct {
 	op     string
 	code   string
 	redact bool
-	// A chan event: its channel and cseq; op, value (the JSON hashed at
-	// Finish) and redact (a secret) as above.
-	ch   string
-	cseq int
+	// A chan event: its channel and cseq; op, value (the hash taken at
+	// send), leaves (the value's texts, checked at Finish against every
+	// secret the run bound) and redact (a secret at send) as above.
+	ch     string
+	cseq   int
+	leaves []string
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -382,9 +384,13 @@ func chanEventOK(ev recEvent) bool {
 	return false
 }
 
-// chanEvent records a completed channel op of this branch (record mode).
-func (t *Tape) chanEvent(op, name string, cseq int, enc string, secret bool) {
-	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: enc, redact: secret})
+// chanEvent records a completed channel op of this branch (record mode):
+// the value's hash, and its leaves unless it is already secret.
+func (t *Tape) chanEvent(op, name string, cseq int, hash string, leaves []string, secret bool) {
+	if secret {
+		leaves = nil
+	}
+	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: hash, leaves: leaves, redact: secret})
 }
 
 // chanScript is par p's chan events in cseq order (replay), or the seq of
@@ -466,6 +472,7 @@ func (t *Tape) Finish() error {
 		secrets = append(secrets, s)
 	}
 	sort.Strings(secrets)
+	chanSecs := chanSecrets(secrets)
 	evs := make([]recEvent, len(t.pend))
 	sizes := make([]int, len(t.pend))
 	zero := strings.Repeat("0", 64)
@@ -495,11 +502,13 @@ func (t *Tape) Finish() error {
 			ev.Chan, ev.Op, ev.CSeq = p.ch, p.op, p.cseq
 			if p.op != "close" {
 				// The hash of a value holding a secret's text could be
-				// guessed offline: such a value keeps no hash.
-				if p.redact || holdsAny(p.value, secrets) {
+				// guessed offline: such a value keeps no hash. Its leaves
+				// are checked, not its JSON, against each secret with and
+				// without a trailing newline.
+				if p.redact || leavesHold(p.leaves, chanSecs) {
 					ev.Redacted = true
 				} else {
-					ev.Hash = sha([]byte(p.value))
+					ev.Hash = p.value
 				}
 			}
 		}
@@ -682,6 +691,9 @@ func (t *Tape) add(p pending) {
 		return
 	}
 	n := int64(64 + len(p.value))
+	for _, l := range p.leaves {
+		n += int64(len(l))
+	}
 	if p.v != nil {
 		n += int64(len(p.v.Path) + len(p.v.Body))
 		for _, a := range p.v.Argv {
