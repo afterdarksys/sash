@@ -320,10 +320,12 @@ func unmapPrefix(p netip.Prefix) netip.Prefix {
 	return p
 }
 
-// fnIPIn is true when the address is in the prefix as written, or the
-// unmapped address is in the unmapped prefix. So a mapped address is in
-// every v6 prefix that holds it and in the v4 prefix it maps to; a v4
-// address is in no v6 prefix but a mapped one of /96 or longer.
+// fnIPIn is true when the address is in the prefix as written, when a v4
+// address's mapped form (::ffff:a.b.c.d) is in a v6 prefix, or when the
+// unmapped address is in the unmapped prefix. So containment never
+// shrinks as a prefix widens: a v4 or mapped address is in every v6
+// prefix that holds its mapped form and in the v4 prefix it maps to. A
+// v6 address that is not mapped is in no v4 prefix.
 func fnIPIn(a []any, _ *evalCtx) (any, error) {
 	ip, err := parseAddr("ip_in", a[0])
 	if err != nil {
@@ -332,6 +334,9 @@ func fnIPIn(a []any, _ *evalCtx) (any, error) {
 	p, err := parsePrefix("ip_in", a[1])
 	if err != nil {
 		return nil, err
+	}
+	if ip.Is4() && p.Addr().Is6() && p.Contains(netip.AddrFrom16(ip.As16())) {
+		return true, nil
 	}
 	return p.Contains(ip) || unmapPrefix(p).Contains(ip.Unmap()), nil
 }

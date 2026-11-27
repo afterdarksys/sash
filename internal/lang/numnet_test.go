@@ -219,13 +219,15 @@ func TestIPIn(t *testing.T) {
 		`echo [ ip_in("10.1.2.3", "10.0.0.0/8") ] [ ip_in("11.0.0.1", "10.0.0.0/8") ] [ ip_in("10.1.2.3", "10.1.2.3/8") ]`: "true false true",
 		// Both sides are unmapped first.
 		`echo [ ip_in("::ffff:10.0.0.1", "10.0.0.0/8") ] [ ip_in("10.0.0.1", "::ffff:10.0.0.0/104") ] [ ip_in("::ffff:11.0.0.1", "10.0.0.0/8") ]`: "true true false",
-		// Across families is false, not an error.
-		`echo [ ip_in("10.0.0.1", "::/0") ] [ ip_in("::1", "0.0.0.0/0") ] [ ip_in("::ffff:10.0.0.1", "::/0") ]`: "false false true",
+		// A v6 address that is not mapped is in no v4 prefix: false, not an
+		// error. A v4 address is compared as its mapped form in a v6 prefix.
+		`echo [ ip_in("10.0.0.1", "::/0") ] [ ip_in("::1", "0.0.0.0/0") ] [ ip_in("::ffff:10.0.0.1", "::/0") ] [ ip_in("2001:db8::1", "0.0.0.0/0") ]`: "true false true false",
 		// Containment is monotone for a mapped address: every v6 prefix
 		// that holds it as written, down to ::/0, holds it.
 		`echo [ ip_in("::ffff:127.0.0.1", "::ffff:0:0/96") ] [ ip_in("::ffff:127.0.0.1", "::ffff:0:0/95") ] [ ip_in("::ffff:127.0.0.1", "::/8") ] [ ip_in("::ffff:127.0.0.1", "::/0") ] [ ip_in("::ffff:127.0.0.1", "127.0.0.0/8") ]`: "true true true true true",
-		// A v4 address is in no v6 prefix but a mapped one of /96 or longer.
-		`echo [ ip_in("127.0.0.1", "::/0") ] [ ip_in("127.0.0.1", "::ffff:0:0/95") ] [ ip_in("127.0.0.1", "::ffff:0:0/96") ] [ ip_in("127.0.0.1", "::ffff:127.0.0.0/104") ]`: "false false true true",
+		// A v4 address is in a v6 prefix when its mapped form is.
+		`echo [ ip_in("127.0.0.1", "::/0") ] [ ip_in("127.0.0.1", "::ffff:0:0/95") ] [ ip_in("127.0.0.1", "::ffff:0:0/96") ] [ ip_in("127.0.0.1", "::ffff:127.0.0.0/104") ]`: "true true true true",
+		`echo [ ip_in("127.0.0.1", "::1/128") ] [ ip_in("127.0.0.1", "2001:db8::/32") ] [ ip_in("127.0.0.1", "::/96") ] [ ip_in("127.0.0.2", "::ffff:127.0.0.1/128") ]`:      "false false false false",
 		`echo [ ip_in("2001:db8::5", "2001:db8::/32") ] [ ip_in("2001:db9::5", "2001:db8::/32") ] [ ip_in("0.0.0.0", "0.0.0.0/0") ]`:                                         "true false true",
 	})
 	checkRefused(t, map[string]string{
@@ -412,6 +414,33 @@ func TestParseCapBoundary(t *testing.T) {
 		}
 		if out.Status != exitType || out.Stderr != want {
 			t.Errorf("%s: status %d err %q want %q", src, out.Status, out.Stderr, want)
+		}
+	}
+}
+
+// Containment never shrinks as a prefix widens: for a v4 address and its
+// mapped form, against the v6 prefixes ::ffff:127.0.0.1/128 down to /0 and
+// the v4 prefixes 127.0.0.1/32 down to /0, every answer is true.
+func TestIPInIsMonotone(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1", "::ffff:127.0.0.1"} {
+		for _, net := range []struct {
+			base string
+			bits int
+		}{{"::ffff:127.0.0.1", 128}, {"127.0.0.1", 32}} {
+			var src []string
+			for n := net.bits; n >= 0; n-- {
+				src = append(src, `[ ip_in("`+addr+`", "`+net.base+"/"+strconv.Itoa(n)+`") ]`)
+			}
+			out := runExpr(t, "echo "+strings.Join(src, " "))
+			got := strings.Fields(out.Stdout)
+			if out.Status != 0 || len(got) != net.bits+1 {
+				t.Fatalf("%s in %s: %+v", addr, net.base, out)
+			}
+			for i, g := range got {
+				if g != "true" {
+					t.Errorf("%s not in %s/%d (narrower answers: %v)", addr, net.base, net.bits-i, got[:i])
+				}
+			}
 		}
 	}
 }
