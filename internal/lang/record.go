@@ -198,7 +198,8 @@ type tapeCore struct {
 	truncated bool
 	warn      bool
 	truncAt   int
-	// both
+	// both: chanKept is the bytes of leaves held (chanKeep)
+	chanKept int
 	pars     int
 	nl       []int
 	err      error // first write error or divergence
@@ -382,6 +383,25 @@ func chanEventOK(ev recEvent) bool {
 		return ev.Hash == "" && !ev.Redacted
 	}
 	return false
+}
+
+// chanKeepMax bounds the bytes of channel values' leaves a tape holds for
+// the check at Finish. Past it a value keeps none and is recorded
+// redacted: a recording of large channel traffic still fits, and fails
+// closed.
+const chanKeepMax = 16 << 20
+
+// chanKeep charges n bytes of a value's leaves to the tape's keep budget,
+// or reports that they do not fit. Record and replay call it in the same
+// order (cseq), so they decide the same.
+func (t *Tape) chanKeep(n int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.chanKept+n > chanKeepMax {
+		return false
+	}
+	t.chanKept += n
+	return true
 }
 
 // chanEvent records a completed channel op of this branch (record mode):
@@ -690,10 +710,9 @@ func (t *Tape) add(p pending) {
 	if t.err != nil {
 		return
 	}
+	// A chan event's value is its hash: its leaves are held under the
+	// keep budget (chanKeep), not written, so they do not count here.
 	n := int64(64 + len(p.value))
-	for _, l := range p.leaves {
-		n += int64(len(l))
-	}
 	if p.v != nil {
 		n += int64(len(p.v.Path) + len(p.v.Body))
 		for _, a := range p.v.Argv {

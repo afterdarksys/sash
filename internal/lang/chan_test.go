@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -651,6 +652,31 @@ func TestChanRecordSecretShapes(t *testing.T) {
 				t.Errorf("%q %s: replay %v %+v", text, name, err, got)
 			}
 		}
+	}
+}
+
+// A recording counts what it writes for a chan event, a hash, never the
+// value: six values of 6 MB record. The tape holds the leaves of the
+// first values for the check at Finish within its keep budget; past it a
+// value keeps none and is recorded redacted, and the recording replays.
+func TestChanRecordLargeValues(t *testing.T) {
+	src := "let s = [ \"a\" * 6000000 ]\npar 2 chan c(1) { for i in [ range(1, 6) ] { send c $s }; for x in recv c { echo [ len($x) ] } }"
+	rec, out := record(t, src)
+	if out.Status != 0 || out.Stdout != strings.Repeat("6000000\n", 6) || len(rec) > 1<<16 {
+		t.Fatalf("%d %q %q %d", out.Status, out.Stdout, out.Stderr, len(rec))
+	}
+	lines := recLines(rec)
+	var got []string
+	for _, i := range chanEvents(t, lines) {
+		if ev := chanEv(t, lines[i]); ev.Op == "send" {
+			got = append(got, strconv.FormatBool(ev.Redacted))
+		}
+	}
+	if strings.Join(got, " ") != "false false true true true true" {
+		t.Fatalf("redacted sends: %v", got)
+	}
+	if r, err := replay(t, rec, src); err != nil || r.Stdout != out.Stdout {
+		t.Fatalf("replay: %v %+v", err, r)
 	}
 }
 

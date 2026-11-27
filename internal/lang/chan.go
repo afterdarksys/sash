@@ -233,11 +233,14 @@ type chanItem struct {
 	// name: the receiver keeps the overflow marker.
 	over bool
 	// Under a tape: hash is the sha256 of the value's JSON; leaves are
-	// its texts, for the check against secrets bound later (Finish);
+	// its texts, for the check against secrets bound later (Finish),
+	// keep their cost and kept whether the tape's budget held them;
 	// secret is a value known to hold a secret at send, recorded
 	// redacted.
 	hash   string
 	leaves []string
+	keep   int
+	kept   bool
 	secret bool
 }
 
@@ -480,7 +483,7 @@ func (t *chanTable) end(m *machine, i int, failed bool) {
 			}
 			ch.senders--
 			if ch.senders == 0 {
-				t.took(i, "close", c, chanItem{}, late)
+				t.took(i, "close", c, &chanItem{}, late)
 			}
 		case "recv":
 			ch.receivers--
@@ -511,13 +514,22 @@ func (t *chanTable) turn(i int, op, c string) bool {
 // and a chan event; on replay, the recorded event it matched, taken from
 // the par's order and the branch's own stream, its hash checked. A late
 // close may match out of order. false is a divergence. Under t.mu.
-func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
+//
+// A send first charges its leaves to the tape's keep budget, in cseq
+// order on record and on replay alike, so both decide the same: a value
+// past it keeps no leaves and is recorded redacted.
+func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 	if t.tapes == nil {
 		return true
 	}
+	if op == "send" {
+		if it.kept = t.tapes[i].chanKeep(it.keep); !it.kept {
+			it.leaves = nil
+		}
+	}
 	if !t.replay {
 		t.cseq++
-		t.tapes[i].chanEvent(op, c, t.cseq, it.hash, it.leaves, it.secret)
+		t.tapes[i].chanEvent(op, c, t.cseq, it.hash, it.leaves, it.secret || !it.kept)
 		return true
 	}
 	if t.div {
@@ -734,6 +746,9 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		writeJSON(&b, toDatum(cp))
 		it.hash = sha([]byte(b.String()))
 		it.leaves = chanLeaves(cp)
+		for _, l := range it.leaves {
+			it.keep += len(l) + 16
+		}
 		hides := len(m.st.secretOrigin) > 0 || len(m.st.secretHash) > 0
 		it.secret = (it.over && hides) || holdsSecret(cp.d, 0) || leavesHold(it.leaves, chanSecrets(m.secretTexts()))
 		for _, o := range it.orig {
@@ -761,7 +776,7 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("send " + s.Chan + ": buffers over 32 MiB\n")
 		return exitType, true
 	}
-	if !t.took(i, "send", s.Chan, it, false) {
+	if !t.took(i, "send", s.Chan, &it, false) {
 		t.changed()
 		return m.chanFail(errChanDiverged)
 	}
@@ -1018,7 +1033,7 @@ func (m *machine) runRecv(s *For) (int, bool) {
 		if err == nil && len(ch.q) > 0 {
 			it, ch.q, got = ch.q[0], ch.q[1:], true
 			t.bytes -= it.size
-			if !t.took(i, "recv", s.Recv, it, false) {
+			if !t.took(i, "recv", s.Recv, &it, false) {
 				err = errChanDiverged
 			}
 			t.changed()
