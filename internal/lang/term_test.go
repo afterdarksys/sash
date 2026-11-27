@@ -2,6 +2,7 @@ package lang
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -556,6 +557,10 @@ func TestTermLintRules(t *testing.T) {
 		{"fn ask() { term confirm \"ready?\" }\nretry 3 { ask }\n", []string{"2 prompt-in-retry"}, nil},
 		{"retry 3 { unit status nginx }\nterm confirm \"a\"\nterm confirm \"b\"\n", []string{"2 prompt-needs-terminal"}, []string{"prompt-in-retry", "3 prompt-needs-terminal"}},
 		{"let u = nginx\nunit restart $u\n", nil, []string{"prompt-"}},
+		{"let x = (term prompt \"q\")\nunit $x nginx\n", []string{"2 prompt-subcommand error", "($x) selects what unit does"}, nil},
+		{"let x = (term prompt \"q\")\nlet y = \"$x\"\npackage $y curl\n", []string{"3 prompt-subcommand error"}, nil},
+		{"let x = (term prompt \"q\")\nsysctl $x vm.swappiness 1\n", []string{"prompt-subcommand"}, nil},
+		{"let x = (term prompt \"q\")\nunit status $x\n", nil, []string{"prompt-subcommand"}},
 	} {
 		got := Lint(c.src)
 		// Column widths vary with the rules reported.
@@ -881,5 +886,54 @@ func TestTermShowsOutputBeforeTheQuestion(t *testing.T) {
 	out = Run(src, grant.Grant{}, skillParent{t}, Options{Term: &fakeTerm{answers: []string{"nginx", "x"}, yes: []bool{true}}})
 	if out.Stdout != "about to wipe\nyes\ninside\nnginx\nend\n" || !strings.Contains(out.Stderr, "careful") || !strings.Contains(out.Stderr, "held") {
 		t.Errorf("no Show: %+v", out)
+	}
+}
+
+// The word that selects what unit, package, or sysctl does never carries
+// an answer: directly, through another binding, through a fn's parameter
+// or its return, or an expression, it is exit 2 before any
+// call. The answer as an argument, and a literal or a value from
+// elsewhere as the subcommand, run as before.
+func TestTermAnswerSelectsNoSubcommand(t *testing.T) {
+	refused := []string{
+		"let x = (term prompt \"q\")\nunit $x nginx\n",
+		"let x = (term prompt \"q\")\nlet y = \"$x\"\npackage $y curl\n",
+		"let x = (term prompt \"q\")\nsysctl $x vm.swappiness 1\n",
+		"fn ask() { let a = (term prompt \"q\"); return $a }\nlet u = (ask)\nunit $u nginx\n",
+		"fn go(s) { unit $s nginx }\nlet x = (term prompt \"q\")\ngo $x\n",
+		"let x = (term prompt \"q\")\nlet y = [ lower(upper($x)) ]\nunit $y nginx\n",
+	}
+	for _, src := range refused {
+		p := &recParent{}
+		out := Run(src, termGrant(), p, Options{Term: &fakeTerm{answers: []string{"restart", "restart"}}})
+		if out.Status != exitType || out.Stderr != "command_from_value: a term prompt answer selects no subcommand\n" || len(p.calls) != 0 {
+			t.Errorf("%q: %+v calls %v", src, out, p.calls)
+		}
+	}
+	// Past 16 origins a value keeps an overflow marker: the answer it may
+	// hide still selects nothing.
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 16; i++ {
+		fmt.Fprintf(&b, "let c%d = (cat /srv/f%d)\n", i, i)
+		sum += fmt.Sprintf("$c%d + ", i)
+	}
+	b.WriteString("let x = (term prompt \"q\")\nlet y = [ " + sum + "$x ]\nunit $y nginx\n")
+	refused = append(refused, b.String())
+	for _, src := range refused[len(refused)-1:] {
+		out := Run(src, termGrant(), &recParent{}, Options{Term: &fakeTerm{answers: []string{"restart"}}})
+		if out.Status != exitType || !strings.Contains(out.Stderr, "a term prompt answer selects no subcommand") {
+			t.Errorf("overflow: %+v", out)
+		}
+	}
+	for _, src := range []string{
+		"let x = (term prompt \"q\")\nunit restart $x\n",
+		"let x = restart\nunit $x nginx\n",
+	} {
+		p := &recParent{}
+		out := Run(src, termGrant(), p, Options{Term: &fakeTerm{answers: []string{"nginx"}}})
+		if out.Status != 0 || len(p.calls) != 1 || p.calls[0].Key != "unit.restart" {
+			t.Errorf("%q: %+v calls %v", src, out, p.calls)
+		}
 	}
 }

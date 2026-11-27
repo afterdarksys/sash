@@ -271,3 +271,14 @@ func (m *machine) showPending() {
 		m.show(out, safeText(errText))
 	}
 }
+
+// fromAnswer reports a provenance that holds a term prompt answer, or an
+// overflow marker that may hide one.
+func (m *machine) fromAnswer(prov []uint32) bool {
+	for _, id := range prov {
+		if id == provOverflow || int(id) >= len(m.st.origins) || m.st.origins[id].key == "term prompt" {
+			return true
+		}
+	}
+	return false
+}

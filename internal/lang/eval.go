@@ -1454,6 +1454,10 @@ const msgFsUsage = "usage fs write-atomic"
 // failed.
 const msgFsNotWritten = "fs write-atomic: not written"
 
+// msgSubFromAnswer refuses a subcommand word that carries a term prompt
+// answer.
+const msgSubFromAnswer = "command_from_value: a term prompt answer selects no subcommand"
+
 // msgCommandFromValue refuses a stage whose command name is not a literal.
 const msgCommandFromValue = "command_from_value"
 
@@ -1562,6 +1566,13 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 			argv = append(argv, exprMark)
 		} else if argv, argProv, err = m.expandArgvProv(st.Argv); err != nil {
 			return nil, &problem{exitType, err.Error()}, refusal{}
+		}
+		// The word that selects what unit, package, or sysctl does to the
+		// host never comes from a person's answer: an answer is data, and
+		// a value carrying one (or whose origins were cut, so it might)
+		// cannot choose restart over status or set over get.
+		if (name == "unit" || name == "package" || name == "sysctl") && len(argProv) > 1 && m.fromAnswer(argProv[1]) {
+			return nil, &problem{exitType, msgSubFromAnswer}, refusal{}
 		}
 		type redirText struct {
 			kind string

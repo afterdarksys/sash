@@ -47,6 +47,7 @@ var lintRules = map[string]string{
 	"prompt-to-mutation":    lintWarning,
 	"prompt-in-retry":       lintWarning,
 	"prompt-needs-terminal": lintInfo,
+	"prompt-subcommand":     lintError,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -1152,6 +1153,9 @@ func asksPrompt(st Stage) bool {
 // prompt-in-retry: a retry body that asks, directly or through a fn called
 // by literal name, asks again on every attempt.
 //
+// prompt-subcommand (an error): an answer reaches the word that selects
+// what unit, package, or sysctl does; the run refuses it with exit 2.
+//
 // prompt-needs-terminal: once per script, at the first question: without
 // a terminal the script stops there with exit 2.
 func (l *linter) prompts() {
@@ -1225,6 +1229,11 @@ func (l *linter) prompts() {
 						flowing = "$" + name
 					} else if asksPrompt(st) {
 						flowing = "the answer"
+					}
+				}
+				if n := plain(st.Argv[0]); (n == "unit" || n == "package" || n == "sysctl") && len(st.Argv) > 1 {
+					if name := reaches(refsOf(func(o map[string]bool) { wordRefs(st.Argv[1], o) })); name != "" {
+						l.add(st.Argv[1].Pos, "prompt-subcommand", "what a person typed at term prompt ($"+name+") selects what "+n+" does: exit 2 command_from_value")
 					}
 				}
 				if flowing == "" {

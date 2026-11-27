@@ -335,7 +335,7 @@ Each is one line on stderr.
 | `unknown <name>` | not in the closed table and not a `fn` (127) |
 | `denied <key>` | the grant lacks the key, or a path is outside the roots; earlier statements already ran (126) |
 | `declined <key>` | answered no at a confirm prompt (126) |
-| `command_from_value` | a command word that comes from a value, `$x status nginx` (2) |
+| `command_from_value` | a command word that comes from a value, `$x status nginx` (2); `command_from_value: a term prompt answer selects no subcommand`, a `term prompt` answer as the word that selects what `unit`, `package`, or `sysctl` does (2) |
 | `type \|>` | bytes piped into `\|>` (2) |
 | `type value` | an unset name, or a field on a value with none (2) |
 | `type fn` | a function used as a pipe stage or with a redirect (2) |
