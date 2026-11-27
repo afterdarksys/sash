@@ -715,15 +715,9 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("type send: send outside its par\n")
 		return exitType, true
 	}
-	// Bytes do not cross, as a lone $b or read anywhere in the word: an
-	// expression or an expansion would turn them into text that does.
-	refs := map[string]bool{}
-	wordRefs(s.Word, refs)
-	for name := range refs {
-		if v, ok := m.vars[name]; ok && v.kind == valBytes {
-			m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
-			return exitType, true
-		}
+	if m.sendsBytes(s.Word) {
+		m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
+		return exitType, true
 	}
 	// A lone $name of a row or rows keeps its kind, with its provenance;
 	// anything else is the word's value.
@@ -828,6 +822,49 @@ const chanNodeBytes = 24
 
 // chanDepthMax is the deepest a value may nest to cross.
 const chanDepthMax = 128
+
+// sendsBytes reports a send word whose value is bytes or holds them as a
+// value: a lone $b, or a [ ] expression that is $b, or a list or map
+// holding $b at any depth. Text made from bytes ("x$b", [ len($b) ]) is
+// text, as echo makes it, and crosses.
+func (m *machine) sendsBytes(w Word) bool {
+	isBytes := func(name string) bool {
+		v, ok := m.vars[name]
+		return ok && v.kind == valBytes
+	}
+	var holds func(x Expr) bool
+	holds = func(x Expr) bool {
+		switch x := x.(type) {
+		case exprRef:
+			name, _ := pathSteps(x.name)
+			return isBytes(name)
+		case exprList:
+			for _, it := range x.items {
+				if holds(it) {
+					return true
+				}
+			}
+		case exprMap:
+			for _, v := range x.vals {
+				if holds(v) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if len(w.Parts) != 1 {
+		return false
+	}
+	switch p := w.Parts[0]; {
+	case p.X != nil:
+		return holds(p.X)
+	case p.Exp:
+		name, _ := pathSteps(p.Lit)
+		return isBytes(name)
+	}
+	return false
+}
 
 // chanCopy deep-copies v, so the receiver shares no map or slice with the
 // sender, and sizes it: chanNodeBytes per node, row, and cell, plus the

@@ -148,7 +148,8 @@ func TestChanValueRefusals(t *testing.T) {
 	for src, want := range map[string]string{
 		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c $b; for x in recv c { echo $x } }":                                                   "type send: bytes cannot cross a channel; lift with lines or rows",
 		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ $b ]; for x in recv c { echo $x } }":                                               "type send: bytes cannot cross a channel; lift with lines or rows",
-		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c \"x$b\"; for x in recv c { echo $x } }":                                              "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ [ {\"k\": $b} ] ]; for x in recv c { echo $x } }":                                  "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c ${b}; for x in recv c { echo $x } }":                                                 "type send: bytes cannot cross a channel; lift with lines or rows",
 		"let s = (cat /srv/ops/g | lines)\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }":                                           "send c: value over 8 MiB",
 		"let s = [ repeat(\"a\", 3145728) ]\npar 2 chan c(64) { for i in [ range(1, 20) ] { send c $s }; for x in recv c { echo [ len($x) ] } }": "send c: buffers over 32 MiB",
 	} {
@@ -156,6 +157,17 @@ func TestChanValueRefusals(t *testing.T) {
 		out := Run(src, g, p, Options{})
 		if out.Status != exitType || !strings.Contains(out.Stderr, want) {
 			t.Errorf("%q: %d %q", src[:30], out.Status, firstLine(out.Stderr))
+		}
+	}
+	// Text made from bytes is text, as echo makes it: it crosses.
+	for src, want := range map[string]string{
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ len($b) ]; for x in recv c { echo $x } }":         "4\n",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c \"x$b\"; for x in recv c { echo $x } }":             "xabc\n\n",
+		"let b = (cat /srv/ops/f)\nlet s = \"x$b\"\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }": "xabc\n\n",
+	} {
+		out := Run(src, g, &tplParent{files: map[string]string{"/srv/ops/f": "abc\n"}}, Options{})
+		if out.Status != 0 || out.Stdout != want {
+			t.Errorf("%q: %+v", src, out)
 		}
 	}
 }
