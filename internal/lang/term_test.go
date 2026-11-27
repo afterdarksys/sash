@@ -125,7 +125,7 @@ func TestIsTTYIsRecordedAndReplayed(t *testing.T) {
 	rec := strings.Replace(buf.String(), sha([]byte(other)), sha([]byte(src)), 1)
 	replay, err = LoadReplay(strings.NewReader(rec), src, time.Now())
 	if err != nil {
-		t.Skipf("the header is chained to its script: %v", err)
+		t.Fatalf("a recording with its script hash swapped no longer loads: %v", err)
 	}
 	if out := Run(src, grant.Grant{}, skillParent{t}, Options{Tape: replay, Term: &fakeTerm{}}); out.Status != exitType || !strings.Contains(out.Stderr, "replay_diverged") {
 		t.Errorf("a replay with no tty event: %+v", out)
