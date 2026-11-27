@@ -84,6 +84,13 @@
     "fix": "A person reads which: the receivers ended early, or the values are too large for a channel."
   },
   {
+    "code": "chan_unread",
+    "exit": 1,
+    "area": "verb",
+    "meaning": "\"par: chan <c>: N unread\": values were left in a par channel at the join, so the par failed rather than drop them",
+    "fix": "A person corrects the script: a receiver broke out or failed before its channel was empty."
+  },
+  {
     "code": "check_max",
     "exit": 2,
     "area": "parse",
@@ -570,7 +577,7 @@
     "code": "replay_diverged",
     "exit": 2,
     "area": "replay",
-    "meaning": "the script did something the recording does not hold at that point",
+    "meaning": "the script did something the recording does not hold at that point, or a par's channel ops left the recorded order or carried another value",
     "fix": "A person replays the script that was recorded, unchanged."
   },
   {

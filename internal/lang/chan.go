@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -931,6 +932,10 @@ func (m *machine) internOrigins(it chanItem) []uint32 {
 	return prov
 }
 
+// msgChanUnread starts the line for values left in a channel at the
+// join: par: chan <c>: N unread.
+const msgChanUnread = "par: chan "
+
 // unread is a line per channel with values left at the join.
 func (t *chanTable) unread() []string {
 	t.mu.Lock()
@@ -938,7 +943,7 @@ func (t *chanTable) unread() []string {
 	var out []string
 	for _, c := range t.order {
 		if n := len(t.chans[c].q); n > 0 {
-			out = append(out, fmt.Sprintf("par: chan %s: %d unread", c, n))
+			out = append(out, msgChanUnread+c+": "+strconv.Itoa(n)+" unread")
 		}
 	}
 	return out
