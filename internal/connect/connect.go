@@ -473,6 +473,11 @@ func (r *run) session(ctx context.Context, conn *wsclient.Conn, sigs <-chan os.S
 		lastSent  time.Time
 		resizeDue <-chan time.Time
 	)
+	// One deadline from the upgrade bounds the wait for started: the
+	// first frame is due within firstFrameTimeout, and started within
+	// startTimeout. A starting frame moves the wait to that deadline once;
+	// more starting frames do not extend it.
+	startBy := time.Now().Add(startTimeout)
 	wait := time.NewTimer(firstFrameTimeout)
 	defer wait.Stop()
 	resize := func() bool {
@@ -563,10 +568,10 @@ func (r *run) session(ctx context.Context, conn *wsclient.Conn, sigs <-chan os.S
 				}
 				return end(Result{Code: 126}, msgRefused+r.listed(code))
 			case known && msg.Type == "pty_status" && msg.Payload.Status != nil && *msg.Payload.Status == "starting":
-				gotStatus = true
-				if !started {
-					wait.Reset(startTimeout)
+				if !started && !gotStatus {
+					wait.Reset(time.Until(startBy))
 				}
+				gotStatus = true
 			case known && msg.Type == "pty_status" && msg.Payload.Status != nil && *msg.Payload.Status == "started":
 				gotStatus = true
 				if started {

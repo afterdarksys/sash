@@ -1062,3 +1062,48 @@ func TestResetTailOnEveryEnd(t *testing.T) {
 		})
 	}
 }
+
+// The wait for started is one deadline from the upgrade: twenty starting
+// frames cannot extend it, and a starting frame after started does not
+// end a session that outlives that deadline.
+func TestStartDeadlineIsNotExtended(t *testing.T) {
+	defer func(a, b time.Duration) { firstFrameTimeout, startTimeout = a, b }(firstFrameTimeout, startTimeout)
+	firstFrameTimeout, startTimeout = 400*time.Millisecond, 400*time.Millisecond
+	t.Run("twenty starting frames", func(t *testing.T) {
+		cp := newFakeCP(t)
+		cp.terminal = func(ctx context.Context, c *wstest.Conn, r *http.Request) {
+			for i := 0; i < 20; i++ {
+				sendFrame(ctx, c, `{"type":"pty_status","payload":{"status":"starting"}}`)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			start(ctx, c)
+			sendFrame(ctx, c, `{"type":"pty_exit","payload":{"code":0}}`)
+		}
+		con := newFakeCon()
+		begun := time.Now()
+		res := begin(con, goodEnv(t, cp), "web1").wait(t)
+		if took := time.Since(begun); res.Code != 1 || con.err.String() != "connect: request_failed\n" || took > 1500*time.Millisecond || con.raws.Load() != 0 {
+			t.Errorf("code %d stderr %q after %v", res.Code, con.err.String(), took)
+		}
+		checkClean(t, cp, con)
+	})
+	t.Run("starting after started", func(t *testing.T) {
+		cp := newFakeCP(t)
+		cp.terminal = func(ctx context.Context, c *wstest.Conn, r *http.Request) {
+			start(ctx, c)
+			sendFrame(ctx, c, `{"type":"pty_status","payload":{"status":"starting"}}`)
+			time.Sleep(900 * time.Millisecond)
+			sendFrame(ctx, c, `{"type":"pty_exit","payload":{"code":0}}`)
+		}
+		con := newFakeCon()
+		res := begin(con, goodEnv(t, cp), "web1").wait(t)
+		if res.Code != 0 || con.err.String() != "connect: session on web1 ("+testHostID+")\n" {
+			t.Errorf("code %d stderr %q", res.Code, con.err.String())
+		}
+		checkClean(t, cp, con)
+	})
+}
