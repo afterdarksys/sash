@@ -270,6 +270,20 @@ atomic {
 
 A recording keeps a plain answer in clear, as a `term` event; a replay answers from the recording and asks nobody. A plain `term prompt` echoes what is typed and is not for a secret.
 
+To read a secret, write exactly `declare -s name = (term prompt -s "<question>")`. Nothing is echoed, not even a `*`, and the value is a secret from its first byte: every rule under Secrets applies. `-s` is legal only there, as the single stage of that value with no redirect: in a `let`, a bare statement, a pipeline with another stage, a condition, or with `term confirm` it is refused before anything runs. A recording stores only that a secret was asked for, with no value and no length, and a replay of such a recording is exit 2 `replay_secret <seq>`.
+
+```sash
+# expect: host 2 term needs a terminal
+# nostdout: after
+declare -s tok = (term prompt -s "token?")
+echo after
+```
+
+```sash
+# expect: parse term prompt -s: only as declare -s name = (term prompt -s "question")
+let tok = (term prompt -s "token?")
+```
+
 ## `check`
 
 `check "name" [ expr ]` records a row and prints `ok name` or `FAIL name`. A failed check is status 1 and stops the script only under `set -e` (or rolls back an `atomic`). `checks` returns the rows (`check`, `result`). Names are at most 256 bytes; a run keeps at most 10000 checks.

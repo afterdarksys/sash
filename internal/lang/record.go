@@ -136,9 +136,11 @@ type pending struct {
 	err     error
 	hasResp bool
 	value   string
-	// A term event: its op and its outcome, "" for an answer.
-	op   string
-	code string
+	// A term event: its op and its outcome, "" for an answer. redact is a
+	// term prompt -s: the event holds no value, no length, and no outcome.
+	op     string
+	code   string
+	redact bool
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -436,6 +438,9 @@ func (t *Tape) Finish() error {
 			ev.Resp = &recResp{Op: p.op, Value: p.value, Error: p.code}
 			if holdsAny(p.value, secrets) {
 				ev.Resp.Value = redacted3
+			}
+			if p.redact {
+				ev.Resp = &recResp{Op: p.op, Redacted: true}
 			}
 		}
 		// Every prev is 64 hex digits, so a line's size is known before
@@ -890,11 +895,32 @@ func (t *Tape) term(op string, ask func() (string, string)) (answer, code string
 	if !ok {
 		return "", "", false
 	}
-	if ev.Resp == nil || ev.Resp.Op != op {
+	if ev.Resp == nil || ev.Resp.Op != op || ev.Resp.Redacted {
 		t.diverge(ev.Seq)
 		return "", "", false
 	}
 	return ev.Resp.Value, ev.Resp.Error, true
+}
+
+// termSecret records that a secret was asked for (term prompt -s) and
+// nothing else: the pending event never holds the answer. A replay cannot
+// answer it, so it refuses: replay_secret <seq>, and nobody is asked.
+func (t *Tape) termSecret(ask func() (string, string)) (answer, code string, ok bool) {
+	if !t.replay {
+		answer, code = ask()
+		t.add(pending{kind: "term", op: "prompt-s", redact: true})
+		return answer, code, t.Err() == nil
+	}
+	ev, ok := t.next("term")
+	if !ok {
+		return "", "", false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.err == nil {
+		t.err = &TapeError{"replay_secret", ev.Seq}
+	}
+	return "", "", false
 }
 
 // module records a loaded wasm module's hash in the header, or, on

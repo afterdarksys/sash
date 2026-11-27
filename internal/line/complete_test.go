@@ -253,12 +253,13 @@ func TestFlagsAreForms(t *testing.T) {
 		forms[b.Form] = true
 		n += len(b.Flags)
 	}
-	for _, f := range []string{"set", "shopt", "declare", "template_file", "from csv"} {
+	for _, f := range []string{"set", "shopt", "declare", "template_file", "from csv", "term prompt"} {
 		if !forms[f] {
 			t.Errorf("%s not a form", f)
 		}
 	}
-	if n != 1+5+2+6+1+1 {
+	// template_file, set, shopt, declare, from csv, from tsv, term prompt.
+	if n != 1+5+2+6+1+1+1 {
 		t.Fatalf("%d flags", n)
 	}
 }

@@ -348,6 +348,8 @@ Each is one line on stderr.
 | `term prompt: answer over 4096 bytes`, `term prompt: answer is not text` | an answer that is too long or not UTF-8; there is no value (2) |
 | `term: interrupted` | Ctrl-C at a question; the script stops, `try` cannot catch it (130) |
 | `term inside par`, `atomic_irreversible: term` | a question inside `par` or `atomic { }` (2) |
+| `term prompt -s: only as declare -s name = (term prompt -s "question")` | `-s` anywhere but the whole value of a `declare -s` (2) |
+| `replay_secret <seq>` | a replay reached a `term prompt -s`; a recording never holds that answer (2) |
 | `a secret cannot decide a branch`, `a secret cannot leave sash`, `a secret ended the line` | secret rules, `features.md` (2) |
 | `atomic_irreversible: <what>`, `atomic: rolled back` | `features.md` (2) |
 | `wasm_unsupported` | the release build has no wasm (2) |

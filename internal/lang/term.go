@@ -137,7 +137,15 @@ func (m *machine) runTerm(st expStage) (value, int) {
 	}
 	op := st.argv[1]
 	question := st.argv[len(st.argv)-1]
+	secret := len(st.argv) == 4
+	if secret {
+		op = "prompt-s"
+	}
 	switch {
+	case secret && (!m.secretPipe || !st.solo):
+		// The parser allows -s only as the whole value of a declare -s;
+		// this refuses to read when it is reached any other way.
+		return fail(exitType, msgSecretPrompt)
 	case m.pb != nil:
 		// A branch has no terminal of its own: the parser refuses a
 		// literal term in a par body, and this a call that reaches one.
@@ -151,7 +159,7 @@ func (m *machine) runTerm(st expStage) (value, int) {
 	case m.pastDeadline():
 		return fail(exitType, "timeout")
 	}
-	ask := TermAsk{Question: question, Hung: m.st.HungUp}
+	ask := TermAsk{Question: question, Secret: secret, Hung: m.st.HungUp}
 	if !m.deadline.IsZero() {
 		// Waiting counts against timeout: the read ends at the deadline.
 		if ask.Wait = m.deadline.Sub(m.now()); ask.Wait <= 0 {
@@ -178,7 +186,14 @@ func (m *machine) runTerm(st expStage) (value, int) {
 	var answer, code string
 	if m.tape != nil {
 		var ok bool
-		if answer, code, ok = m.tape.term(op, live); !ok {
+		if secret {
+			// The answer never reaches the tape: not its text, not its
+			// length, not how the question ended.
+			answer, code, ok = m.tape.termSecret(live)
+		} else {
+			answer, code, ok = m.tape.term(op, live)
+		}
+		if !ok {
 			// Run reports the tape's error once, at the end.
 			m.ctl = ctlHalt
 			return value{}, exitType
@@ -218,5 +233,8 @@ func (m *machine) runTerm(st expStage) (value, int) {
 	// The answer is untrusted text a person typed: origin names it.
 	id := m.st.addOrigin(origin{src: m.provSrcName(), line: m.provLine(), key: "term prompt", nohash: true})
 	m.prov = addProv(m.prov, id)
+	if secret {
+		return value{kind: valData, d: secretVal{answer}}, 0
+	}
 	return value{kind: valStr, s: answer}, 0
 }

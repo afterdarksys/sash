@@ -104,7 +104,7 @@ var builtins = []builtinRow{
 	{"checks", "builtin", "", "the check rows so far", true},
 	{"origin", "builtin", "", "origin name: where a name's value came from", true},
 	{"log", "builtin", "", "log level msg [ {fields} ]: one line on stderr", true},
-	{"term prompt", "builtin", "", "term prompt \"question\": ask the person at the terminal for one line", true},
+	{"term prompt", "builtin", "", "term prompt [-s] \"question\": ask the person at the terminal for one line; -s only in declare -s, no echo", true},
 	{"term confirm", "builtin", "", "term confirm \"question\": 0 for y or Y then Enter, else 1", true},
 	{"with", "keyword", "", "with set -e, loopmax N, prefix P, x = v { ... }: restored after", true},
 	{"else", "keyword", "", "the other branch of if", false},
@@ -125,6 +125,7 @@ var builtinFlags = map[string][]string{
 	"set":           {"-e", "-u", "-x", "-f", "-o"},
 	"shopt":         {"-s", "-u"},
 	"declare":       {"-r", "-i", "-a", "-A", "-p", "-s"},
+	"term prompt":   {"-s"},
 	"from csv":      {"--noheader"},
 	"from tsv":      {"--noheader"},
 }

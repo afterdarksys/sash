@@ -25,7 +25,7 @@ sash is the login and emergency shell of the SAH fleet: one Go binary that runs 
 - **Pick the right pipe.** `|` carries bytes, `|>` carries rows; `rows`, `lines`, `parse`, or `from json` lift text into rows. Bytes into `|>` is exit 2.
 - **Write absolute paths and globs in scripts.** A script starts with no prefix, and globs expand before it runs.
 - **`>` writes even when a stage fails.** A failed or empty pipeline still truncates its target, also under `set -e`. Write to a new path, or inside `atomic { }`, which rolls back on a non-zero statement.
-- **Ask only where a person is.** Ask with `term prompt` only in a script a person runs at a terminal; without one it is exit 2.
+- **Ask only where a person is.** Ask with `term prompt` only in a script a person runs at a terminal; without one it is exit 2. Read a secret only as `declare -s name = (term prompt -s "...")`.
 - **Keep mutations out of `retry`.**
 
 ```sash

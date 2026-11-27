@@ -182,3 +182,63 @@ func TestBinaryTermAtThePrompt(t *testing.T) {
 		t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
 	}
 }
+
+// term prompt -s at a real terminal echoes nothing, the value prints as
+// ***, and the typed secret is nowhere on the terminal or in the output.
+func TestBinaryTermSecretIsNotEchoed(t *testing.T) {
+	bin := ptyBin(t)
+	rep := runPTY(t, ptyRun{
+		Argv:  []string{bin, "-c", "declare -s tok = (term prompt -s \"token?\")\necho $tok [ len($tok) ]\n"},
+		Steps: []ptyStep{{Expect: "token? "}, {Send: "hunter2\x7f3\r"}},
+	})
+	if rep.Code != 0 || !rep.Restored || !strings.HasSuffix(rep.TTY, "token? \r\r\n\x1b[?2004l*** ***\r\n") || strings.Contains(rep.TTY, "hunter") {
+		t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
+	}
+	// Misplaced, nobody is asked and nothing before it runs.
+	rep = runPTY(t, ptyRun{Argv: []string{bin, "-c", "echo before\nlet tok = (term prompt -s \"token?\")\n"}})
+	if rep.Code != 2 || strings.Contains(rep.TTY, "before") || strings.Contains(rep.TTY, "token? ") || !strings.Contains(rep.TTY, "term prompt -s: only as declare -s name") {
+		t.Errorf("misplaced: code %d tty %q", rep.Code, rep.TTY)
+	}
+}
+
+// A recording made at a terminal holds no byte of the secret, and its
+// replay refuses instead of asking.
+func TestBinaryTermSecretRecordAndReplay(t *testing.T) {
+	bin := ptyBin(t)
+	dir := t.TempDir()
+	fixture := filepath.Join(dir, "fx.json")
+	if err := os.WriteFile(fixture, []byte(`{"grant":{"entitlements":[],"file_read":[],"file_write":[]},"results":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const src = "let who = (term prompt \"who?\")\ndeclare -s tok = (term prompt -s \"token?\")\necho $who $tok\n"
+	rec := filepath.Join(dir, "rec.jsonl")
+	rep := runPTY(t, ptyRun{
+		Argv:  []string{bin, "--record", rec, "--fixture", fixture, "-c", src},
+		Steps: []ptyStep{{Expect: "who? "}, {Send: "bob\r"}, {Expect: "token? "}, {Send: "hunter2-SECRET\r"}},
+	})
+	if rep.Code != 0 || !rep.Restored || !strings.Contains(rep.TTY, "bob ***") {
+		t.Fatalf("record: code %d tty %q", rep.Code, rep.TTY)
+	}
+	b, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); strings.Contains(got, "hunter2") || !strings.Contains(got, `"op":"prompt-s","redacted":true`) || !strings.Contains(got, `"op":"prompt","value":"bob"`) {
+		t.Errorf("recording:\n%s", got)
+	}
+	rep = runPTY(t, ptyRun{Argv: []string{bin, "--replay", rec, "--fixture", fixture, "-c", src}})
+	if rep.Code != 2 || !strings.Contains(rep.TTY, "replay_secret 2") || strings.Contains(rep.TTY, "who? ") || strings.Contains(rep.TTY, "token? ") {
+		t.Errorf("replay: code %d tty %q", rep.Code, rep.TTY)
+	}
+	// A recording with only a plain answer replays with no terminal at all.
+	const plain = "let who = (term prompt \"who?\")\necho hi $who [ is_tty() ]\n"
+	rec = filepath.Join(dir, "plain.jsonl")
+	rep = runPTY(t, ptyRun{Argv: []string{bin, "--record", rec, "--fixture", fixture, "-c", plain}, Steps: []ptyStep{{Expect: "who? "}, {Send: "bob\r"}}})
+	if rep.Code != 0 || !strings.Contains(rep.TTY, "hi bob true") {
+		t.Fatalf("record plain: code %d tty %q", rep.Code, rep.TTY)
+	}
+	rep = runPTY(t, ptyRun{Argv: []string{bin, "--replay", rec, "--fixture", fixture, "-c", plain}, Stdin: "pipe", Stdout: "pipe", Stderr: "pipe"})
+	if rep.Code != 0 || rep.Stdout != "hi bob true\n" || rep.TTY != "" {
+		t.Errorf("replay plain: code %d stdout %q stderr %q tty %q", rep.Code, rep.Stdout, rep.Stderr, rep.TTY)
+	}
+}

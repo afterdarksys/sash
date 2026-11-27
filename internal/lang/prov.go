@@ -187,7 +187,10 @@ func (m *machine) markSecret(v value) {
 				continue
 			}
 			st.secretOrigin[id] = true
-			st.secretHash[st.origins[id].hash] = true
+			// A typed answer has no response hash to hide.
+			if !st.origins[id].nohash {
+				st.secretHash[st.origins[id].hash] = true
+			}
 		}
 	}
 	mark(v.prov)
@@ -199,7 +202,9 @@ func (m *machine) markSecret(v value) {
 	if overflow {
 		for id := range st.origins {
 			st.secretOrigin[uint32(id)] = true
-			st.secretHash[st.origins[id].hash] = true
+			if !st.origins[id].nohash {
+				st.secretHash[st.origins[id].hash] = true
+			}
 		}
 	}
 	var add func(d any)

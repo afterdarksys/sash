@@ -1412,6 +1412,8 @@ type expStage struct {
 	mover   bool
 	// x is the [ ] of filter or each, kept unevaluated for each row.
 	x Expr
+	// solo is a stage that is its whole pipeline, with no redirect.
+	solo bool
 }
 
 // msgCommandFromValue refuses a stage whose command name is not a literal.
@@ -1467,6 +1469,11 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 			}
 			if len(st.Argv) > 3 && plain(st.Argv[2]) == "" {
 				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) == 3 && plain(st.Argv[2]) == "-s" {
+				// -s with no question is not a plain prompt that asks
+				// "-s" and echoes what is typed.
+				return nil, &problem{exitType, "usage term"}, refusal{}
 			}
 			if i != 0 {
 				return nil, &problem{exitType, "usage term"}, refusal{}
@@ -1569,7 +1576,7 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
-			argProv: argProv,
+			argProv: argProv, solo: len(pipe.Stages) == 1 && len(st.Redirs) == 0,
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -1687,10 +1694,12 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 	case "template_file":
 		return classifyTemplateFile(argv)
 	case "term":
-		if len(argv) != 3 || (argv[1] != "prompt" && argv[1] != "confirm") {
+		// -s stands only between prompt and the question, once.
+		secret := len(argv) == 4 && argv[1] == "prompt" && argv[2] == "-s"
+		if !secret && (len(argv) != 3 || (argv[1] != "prompt" && argv[1] != "confirm")) {
 			return classified{}, &problem{exitType, "usage term"}
 		}
-		if len(argv[2]) > termQuestionMax {
+		if len(argv[len(argv)-1]) > termQuestionMax {
 			return classified{}, &problem{exitType, "usage term: question over 1024 bytes"}
 		}
 		return classified{in: inNone, out: inBytes}, nil

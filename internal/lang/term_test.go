@@ -574,3 +574,232 @@ func TestTermNeedsNoKey(t *testing.T) {
 		t.Errorf("builtin: %+v", out)
 	}
 }
+
+// term prompt -s reads a secret with no echo, only as the whole value of
+// a declare -s: the value prints as ***, and cannot be a verb argument or
+// a > body.
+func TestTermPromptSecret(t *testing.T) {
+	term := &fakeTerm{answers: []string{"hunter2-SECRET"}}
+	p := &countParent{}
+	out := Run("declare -s tok = (term prompt -s \"token?\")\necho $tok\necho [ len($tok) ]\n", termGrant(), p, Options{Term: term})
+	if out.Status != 0 || out.Stdout != "***\n***\n" || strings.Contains(out.Stdout+out.Stderr, "hunter2") {
+		t.Errorf("secret: %+v", out)
+	}
+	if len(term.asked) != 1 || !term.asked[0].Secret || term.asked[0].Question != "token?" {
+		t.Errorf("asked %+v", term.asked)
+	}
+	for src, want := range map[string]string{
+		"declare -s tok = (term prompt -s \"t?\")\nunit restart $tok\n":             "a secret cannot leave sash",
+		"declare -s tok = (term prompt -s \"t?\")\necho $tok > /srv/out\n":          "a secret cannot leave sash",
+		"declare -s tok = (term prompt -s \"t?\")\nif [ $tok == \"x\" ] { echo }\n": "a secret cannot decide a branch",
+	} {
+		p := &countParent{}
+		out := Run(src, termGrant(), p, Options{Term: &fakeTerm{answers: []string{"hunter2-SECRET"}}})
+		if out.Status != exitType || !strings.Contains(out.Stderr, want) || p.n != 0 || strings.Contains(out.Stdout+out.Stderr, "hunter2") {
+			t.Errorf("%q: %d calls %+v", src, p.n, out)
+		}
+	}
+	// Flags may stand together, and the plain prompt is not secret.
+	out = Run("declare -rs tok = (term prompt -s \"t?\")\necho $tok\nlet a = (term prompt \"plain?\")\necho $a\n", grant.Grant{}, p, Options{Term: &fakeTerm{answers: []string{"s3cret-value", "seen"}}})
+	if out.Status != 0 || out.Stdout != "***\nseen\n" {
+		t.Errorf("declare -rs: %+v", out)
+	}
+	// origin shows no hash for it, and a later plain answer keeps its own.
+	out = Run("declare -s tok = (term prompt -s \"t?\")\nlet a = (term prompt \"p?\")\norigin tok\norigin a\n", grant.Grant{}, p, Options{Term: &fakeTerm{answers: []string{"s3cret-value", "plain"}}})
+	if out.Status != 0 || !strings.Contains(out.Stdout, "  1  ***") || !strings.Contains(out.Stdout, "  2  -") {
+		t.Errorf("origin: %+v", out)
+	}
+	// No terminal, and each way a question ends, is the same as for a prompt.
+	if out = Run("declare -s tok = (term prompt -s \"t?\")\necho after\n", grant.Grant{}, p, Options{}); out.Status != exitType || !strings.Contains(out.Stderr, "term needs a terminal") || out.Stdout != "" {
+		t.Errorf("no terminal: %+v", out)
+	}
+	if out = Run("declare -s tok = (term prompt -s \"t?\")\necho after\n", grant.Grant{}, p, Options{Term: &fakeTerm{errs: []error{ErrTermInterrupted}}}); out.Status != 130 || out.Stdout != "" {
+		t.Errorf("interrupted: %+v", out)
+	}
+}
+
+// Every place -s may not stand is a parse error, so nothing before it
+// runs and nobody is asked.
+func TestTermPromptSecretMisplaced(t *testing.T) {
+	const only = "term prompt -s: only as declare -s name = (term prompt -s \"question\")"
+	for name, src := range map[string]string{
+		"a let":                     "let tok = (term prompt -s \"t?\")\n",
+		"a bare statement":          "term prompt -s \"t?\"\n",
+		"a declare without -s":      "declare -r tok = (term prompt -s \"t?\")\n",
+		"a declare with no flag":    "declare tok = (term prompt -s \"t?\")\n",
+		"piped on":                  "declare -s tok = (term prompt -s \"t?\" | head -n 1)\n",
+		"piped into":                "declare -s tok = (echo x | term prompt -s \"t?\")\n",
+		"redirected":                "declare -s tok = (term prompt -s \"t?\" > /srv/out)\n",
+		"a redirect on a bare one":  "term prompt -s \"t?\" > /srv/out\n",
+		"an if condition":           "if term prompt -s \"t?\" { echo x }\n",
+		"a while condition":         "while term prompt -s \"t?\" { break }\n",
+		"a for source":              "for x in term prompt -s \"t?\" { echo x }\n",
+		"a chain":                   "term prompt -s \"t?\" && echo x\n",
+		"a with value":              "with tok = (term prompt -s \"t?\") { echo x }\n",
+		"inside a fn, in a let":     "fn f() { let tok = (term prompt -s \"t?\") }\n",
+		"inside try":                "try { term prompt -s \"t?\" } catch e { echo x }\n",
+		"one placed, one misplaced": "declare -s a = (term prompt -s \"a?\")\nlet b = (term prompt -s \"b?\")\n",
+		"a quoted flag is the flag": "let tok = (term prompt \"-s\" \"t?\")\n",
+	} {
+		term := &fakeTerm{answers: []string{"hunter2-SECRET"}}
+		out := Run("echo before\n"+src, termGrant(), &countParent{}, Options{Term: term})
+		if out.Status != exitType || !strings.Contains(out.Stderr, "parse: "+only) || out.Stdout != "" || len(term.asked) != 0 {
+			t.Errorf("%s: %+v asked %d", name, out, len(term.asked))
+		}
+		if l := Lint(src); l.Status != exitType || !strings.Contains(l.Stderr, only) {
+			t.Errorf("%s: lint %+v", name, l)
+		}
+	}
+	// A fn argument, a flag from a value, -s with confirm, after the
+	// question, or twice: refused before anyone is asked.
+	for src, want := range map[string]string{
+		"fn f(x) { echo $x }\nf (term prompt -s \"t?\")\n":                          "parse:",
+		"fn f(a, b, c, d) { echo $a }\nf term prompt -s \"t?\"\n":                   "",
+		"let f = -s\ndeclare -s tok = (term prompt $f \"t?\")\n":                    msgCommandFromValue,
+		"declare -s tok = (term confirm -s \"t?\")\n":                               "usage term",
+		"term confirm -s \"t?\"\n":                                                  "usage term",
+		"declare -s tok = (term prompt \"t?\" -s)\n":                                "usage term",
+		"declare -s tok = (term prompt -s -s \"t?\")\n":                             "usage term",
+		"declare -s tok = (term prompt -s)\n":                                       "usage term",
+		"declare -s tok = (term prompt -s \"" + strings.Repeat("q", 1025) + "\")\n": "usage term: question over 1024 bytes",
+	} {
+		term := &fakeTerm{answers: []string{"hunter2-SECRET"}}
+		out := Run(src, termGrant(), &countParent{}, Options{Term: term})
+		if want == "" {
+			// The words are a fn's arguments, not a question: nobody is asked.
+			if out.Status != 0 || out.Stdout != "term\n" || len(term.asked) != 0 {
+				t.Errorf("%q: %+v", src, out)
+			}
+			continue
+		}
+		if out.Status != exitType || !strings.Contains(out.Stderr, want) || len(term.asked) != 0 {
+			t.Errorf("%q: want %q, got %+v asked %d", src, want, out, len(term.asked))
+		}
+	}
+}
+
+// The evaluator's own backstop, with the parser bypassed: the -s stage
+// refuses to read unless a declare -s value pipe is running and it is
+// that pipe's single stage.
+func TestTermPromptSecretEvaluatorBackstop(t *testing.T) {
+	stage := expStage{argv: []string{"term", "prompt", "-s", "t?"}, solo: true}
+	for name, set := range map[string]func(m *machine, st *expStage){
+		"not in a declare -s":  func(m *machine, st *expStage) {},
+		"not the single stage": func(m *machine, st *expStage) { m.secretPipe = true; st.solo = false },
+	} {
+		term := &fakeTerm{answers: []string{"hunter2-SECRET"}}
+		m := newMachine(grant.Grant{}, &countParent{}, nil)
+		m.term = term
+		st := stage
+		set(m, &st)
+		v, code := m.runTerm(st)
+		if code != exitType || !strings.Contains(m.err.String(), msgSecretPrompt) || len(term.asked) != 0 || v.kind != valStr || v.s != "" || v.d != nil {
+			t.Errorf("%s: code %d stderr %q asked %d value %+v", name, code, m.err.String(), len(term.asked), v)
+		}
+	}
+	// In its place it reads, and the value is a secret.
+	term := &fakeTerm{answers: []string{"hunter2-SECRET"}}
+	m := newMachine(grant.Grant{}, &countParent{}, nil)
+	m.term, m.secretPipe = term, true
+	v, code := m.runTerm(stage)
+	if code != 0 || len(term.asked) != 1 || !isSecret(toDatum(v)) {
+		t.Errorf("in place: code %d value %+v", code, v)
+	}
+}
+
+// A recording holds no byte of a -s answer and not its length; the event
+// says only that a secret was asked for. A replay refuses it.
+func TestTermPromptSecretIsNotRecordedAndNotReplayed(t *testing.T) {
+	const src = "declare -s tok = (term prompt -s \"token?\")\necho $tok\nlet a = (term prompt \"again?\")\n"
+	record := func(secret string) string {
+		t.Helper()
+		var buf bytes.Buffer
+		tape, err := NewRecorder(&buf, src, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out := Run(src, grant.Grant{}, skillParent{t}, Options{Tape: tape, Term: &fakeTerm{answers: []string{secret, "say " + secret}}}); out.Status != 0 || out.Stdout != "***\n" {
+			t.Fatalf("record: %+v", out)
+		}
+		if err := tape.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	// The tape never holds the answer, even in memory before it is written.
+	{
+		var buf bytes.Buffer
+		tape, err := NewRecorder(&buf, src, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		Run("declare -s tok = (term prompt -s \"token?\")\n", grant.Grant{}, skillParent{t}, Options{Tape: tape, Term: &fakeTerm{answers: []string{"hunter2-SECRET"}}})
+		held := 0
+		for _, p := range tape.pend {
+			if p.kind == "term" {
+				held++
+				if p.value != "" || !p.redact {
+					t.Errorf("the tape holds a -s answer: %+v", p)
+				}
+			}
+		}
+		if held != 1 {
+			t.Errorf("%d term events held", held)
+		}
+	}
+	rec := record("hunter2-SECRET")
+	if strings.Contains(rec, "hunter2") || strings.Contains(rec, "aHVudGVyMi1TRUNSRVQ") {
+		t.Fatalf("the secret is in the recording:\n%s", rec)
+	}
+	if !strings.Contains(rec, `"kind":"term","resp":{"op":"prompt-s","redacted":true}`) {
+		t.Errorf("no prompt-s event:\n%s", rec)
+	}
+	// A later plain answer that holds the secret's text is redacted too.
+	if !strings.Contains(rec, `"resp":{"op":"prompt","value":"***"}`) {
+		t.Errorf("a plain answer holding the secret is in clear:\n%s", rec)
+	}
+	// No length: a secret of another length gives the same events, byte
+	// for byte, but for the chain hashes.
+	strip := func(r string) string {
+		var out []string
+		for _, l := range strings.Split(r, "\n") {
+			if i := strings.Index(l, `,"prev":`); i >= 0 {
+				l = l[:i]
+			}
+			out = append(out, l)
+		}
+		return strings.Join(out, "\n")
+	}
+	if a, b := strip(rec), strip(record("a-much-longer-secret-than-the-first-one-was")); a != b {
+		t.Errorf("the recording depends on the secret:\n%s\n%s", a, b)
+	}
+	replay, err := LoadReplay(strings.NewReader(rec), src, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	term := &fakeTerm{answers: []string{"typed-at-replay"}}
+	out := Run(src, grant.Grant{}, skillParent{t}, Options{Tape: replay, Term: term})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "replay_secret 1") || out.Stdout != "" || len(term.asked) != 0 {
+		t.Errorf("replay: %+v asked %d", out, len(term.asked))
+	}
+	// A plain prompt cannot be answered from a redacted event either.
+	replay, err = LoadReplay(strings.NewReader(rec), src, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := replay.term("prompt-s", func() (string, string) { return "x", "" }); ok || !strings.Contains(replay.Err().Error(), "replay_diverged") {
+		t.Errorf("a redacted event answered a plain question: %v", replay.Err())
+	}
+}
+
+// The editor keeps no declare -s line, and Tab offers -s after term prompt.
+func TestTermPromptSecretLineIsNotHistory(t *testing.T) {
+	if !DeclaresSecret(`declare -s tok = (term prompt -s "token?")`) {
+		t.Errorf("the line would be kept in history")
+	}
+	for _, b := range Builtins() {
+		if b.Form == "term prompt" && strings.Join(b.Flags, " ") != "-s" {
+			t.Errorf("flags %q", b.Flags)
+		}
+	}
+}
