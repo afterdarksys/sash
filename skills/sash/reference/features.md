@@ -217,7 +217,7 @@ timeout 30s { package query nginx }
 
 `... | fs write-atomic <path> [--mode 0600|0640|0644]` is a sink: the last stage of a pipeline, with input, and no `>` after it (anything else is exit 2 `usage fs write-atomic`). It writes what was piped to `<path>` through the same `file.write` as `>`: the same key, the same write roots (`denied file.write` before any call), the same plan line, the same confirm question, the same refusals, and a secret body is exit 2 `a secret cannot leave sash`. `write-atomic` and `--mode` are literal words, and so is the mode.
 
-What it adds over `>`: when an earlier stage failed, nothing is sent. stderr says `fs write-atomic: not written`, the status is the failing stage's, and the file on the host is as it was.
+What it adds over `>`: when an earlier stage, or its `<` read, failed, nothing is sent. stderr says `fs write-atomic: not written`, the status is the failing stage's, and the file on the host is as it was.
 
 ```sash
 # expect: host 1 fs write-atomic: not written

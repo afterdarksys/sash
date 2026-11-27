@@ -76,6 +76,8 @@ func TestFsWriteAtomicWritesNothingAfterAFailedStage(t *testing.T) {
 		{"sysctl get fail.three | fs write-atomic /srv/app/out\n", 3},
 		{"cat /srv/app/app.conf | egrep zzz | head -n 1 | fs write-atomic /srv/app/out\n", 1},
 		{"cat /srv/app/missing | fs write-atomic /srv/app/out\n", 1},
+		{"fs write-atomic /srv/app/out < /srv/app/missing\n", 1},
+		{"echo '\"x\"' | from json |> fs write-atomic /srv/app/out\n", exitType},
 		{"set -e\ncat /srv/app/app.conf | egrep zzz | fs write-atomic /srv/app/out\n", 1},
 		{"cat /srv/app/app.conf | from json | fs write-atomic /srv/app/out\n", exitType},
 	} {

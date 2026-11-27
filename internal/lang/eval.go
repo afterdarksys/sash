@@ -2113,6 +2113,10 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"<", exp[0].inPath}, Path: exp[0].inPath})
 		if err != nil {
 			m.err.WriteString("parent file.read\n")
+			if exp[len(exp)-1].sink {
+				// The < read is the sink's earlier stage: nothing is sent.
+				m.err.WriteString(msgFsNotWritten + "\n")
+			}
 			return 1, value{}
 		}
 		cur = fromResult(res)
@@ -2126,6 +2130,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			rows, ok := datumRows(cur.d)
 			if !ok {
 				m.err.WriteString("type |> " + typeName(cur.d) + "\n")
+				if exp[len(exp)-1].sink {
+					m.err.WriteString(msgFsNotWritten + "\n")
+				}
 				return exitType, value{}
 			}
 			cur = rows

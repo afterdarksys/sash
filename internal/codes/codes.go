@@ -7,8 +7,8 @@
 // none says to turn a mode off, widen a grant, use another credential or
 // channel, or names an override, and a test holds each to a banned-phrase
 // list and to a reviewed fixture. A second test scans the fixed messages
-// of internal/lang, internal/grant, internal/session, internal/proto and
-// internal/connect and fails when one has no entry here or its exit
+// of internal/lang, internal/grant, internal/session, internal/proto,
+// internal/connect, internal/line and cmd/sash and fails when one has no entry here or its exit
 // differs. The connect area also holds the codes a control plane or a host
 // may send to sash connect: the client prints this build's meaning for a
 // code and never the sender's own text (Connect). The catalog
@@ -65,6 +65,10 @@ var table = []Code{
 	{"check_max", 2, "parse", "\"check max\": more check rows than a session keeps", fixScript, []string{"check max"}},
 	{"set_ceiling", 2, "parse", "\"set ... above the ceiling\": set may lower loopmax or verbmax, never raise one past its ceiling", "A person keeps the cap at or below its ceiling; the ceiling is the grant's.", []string{"set "}},
 	{"timeout", 2, "parse", "a timeout block's deadline passed, before a statement, a verb, or while a person was asked", "A person decides whether the work or the deadline is wrong; a verb already in flight finished.", []string{"timeout"}},
+	{"hand_start", 0, "session", "\"sash: no session grant: verbs are denied, filters run\": sash was started by hand, without a session, at a terminal; printed once", fixNothing, []string{"sash: no session grant"}},
+	{"line_failed", 1, "session", "\"sash line failed\": the prompt could not put the terminal in raw mode", "A person checks the terminal sash was started on.", []string{"sash line failed"}},
+	{"skill_failed", 1, "file", "\"skill: ...\": sash --skill could not read its embedded files or write them to stdout", "A person checks where stdout goes; nothing else ran.", []string{"skill:"}},
+	{"codes_unreadable", 1, "file", "\"codes: catalog unreadable\": sash version --json or sash codes --json could not encode the catalog", "The operator decides which build is installed.", []string{"codes: catalog unreadable"}},
 	{"hangup", 129, "session", "the session's terminal hung up (SIGHUP); the run stopped at its next statement or verb", fixNothing, []string{"hangup"}},
 	{"prefix_unset", 2, "file", "a relative path or glob with no session prefix", "A person writes the absolute path; a script starts with no prefix.", []string{"prefix_unset"}},
 	{"json", 2, "parse", "JSON text that could not be read or written", fixScript, []string{"json"}},
@@ -88,17 +92,17 @@ var table = []Code{
 	{"grant_missing", 2, "grant", "the session was started without a grant document", "The operator checks how the session was started; no verb ran.", []string{"grant_missing"}},
 	{"grant_bad_shape", 2, "grant", "the grant document is not a sash/1 grant", "The operator checks the control plane and the agent; no verb ran.", []string{"grant_bad_shape"}},
 	{"grant_bad_sig", 2, "grant", "the grant's signature does not verify against the fleet key", "The operator checks the control plane and the agent; no verb ran.", []string{"grant_bad_sig"}},
-	{"grant_expired", 2, "grant", "the grant's expiry has passed", "A person opens a new session.", []string{"grant_expired"}},
+	{"grant_expired", 2, "grant", "the grant's expiry has passed", "A person decides whether the work is still needed; no verb ran.", []string{"grant_expired"}},
 	{"grant_star", 2, "grant", "the grant holds \"*\", which sash never accepts as an entitlement", "The operator checks the control plane; no verb ran.", []string{"grant_star"}},
 	{"grant_root_slash", 2, "grant", "the grant names \"/\" as a file root, which sash never accepts", "The operator checks the control plane; no verb ran.", []string{"grant_root_slash"}},
 
 	// verb: a call to the host's agent.
 	{"declined", 126, "verb", "a person answered no at a confirm question; the verb did not run", fixNothing, []string{"declined"}},
-	{"confirm_no_terminal", 2, "verb", "\"confirm needs a terminal\": confirm mode is on and there is no terminal to ask, so the mutating verb did not run", "A person runs the mutating step at a terminal.", []string{"confirm needs a terminal"}},
+	{"confirm_no_terminal", 2, "verb", "\"confirm needs a terminal\": confirm mode is on and there is no terminal to ask, so the mutating verb did not run", "A person decides whether that step is needed; it did not run.", []string{"confirm needs a terminal"}},
 	{"confirm_locked", 2, "verb", "\"confirm is locked\": confirm mode cannot be cleared from a script or a line", fixNothing, []string{"confirm is locked"}},
 	{"parent", 1, "verb", "\"parent <key>\": the call to the agent failed or the agent could not perform it", "A person reads the host's state before running the step again; the operator checks the agent.", []string{"parent"}},
 	{"refused", 2, "file", "\"refused file.write: <code>\": the agent refused a file write; the code and its meaning follow", "A person reads the code; the file is as the agent reports it.", []string{"refused"}},
-	{"fs_not_written", 1, "file", "\"fs write-atomic: not written\": an earlier stage of the pipeline failed, so nothing was sent and the file is as it was; the status is the failing stage's", "A person reads the failing stage's output above this line.", []string{"fs write-atomic: not written"}},
+	{"fs_not_written", 1, "file", "\"fs write-atomic: not written\": an earlier stage of the pipeline, or its < read, failed, so nothing was sent and the file is as it was; the status is the failing stage's, not always 1: 1 for a failed read or a stage that ended 1, 2, 126 or 127 for a stage that was refused", "A person reads the failing stage's output above this line.", []string{"fs write-atomic: not written"}},
 	{"mode_unsupported", 2, "file", "\"agent too old for file.write mode\": the write needs a file mode this agent cannot set, and it is never sent without one", "The operator decides when the host's agent is updated.", []string{"agent too old for file.write mode"}},
 	{"outcome_unknown", 1, "verb", "a verb passed the agent's deadline, or its par stopped waiting: it may have run", "A person checks the host's state before running it again.", []string{"outcome_unknown", "outcome unknown"}},
 	{"cancelled", 1, "verb", "the agent dropped the verb before it started: nothing ran", fixNothing, []string{"cancelled"}},
@@ -114,12 +118,13 @@ var table = []Code{
 	{"atomic_rolled_back", 2, "atomic", "\"atomic: rolled back\": the block failed and the agent restored its file writes; the run does not end 0", "A person reads the failure above this line.", []string{"atomic:"}},
 
 	// secret.
-	{"secret_cannot_leave", 2, "secret", "\"a secret cannot leave sash\": a secret was a verb argument, a path, a > body, or a fn argument", "A person keeps the secret inside sash; the binding is what makes it secret.", []string{"a secret cannot leave sash"}},
+	{"secret_cannot_leave", 2, "secret", "\"a secret cannot leave sash\": a secret was a verb argument, a path, a > body, or a fn argument", "A person keeps the secret inside sash.", []string{"a secret cannot leave sash"}},
 	{"secret_cannot_decide", 2, "secret", "\"a secret cannot decide a branch\": a secret was an if, while, or for condition", fixScript, []string{"a secret cannot decide a branch"}},
 	{"secret_fault", 2, "secret", "\"a secret ended the line\": an evaluation that read a secret failed, and the line ended so the failure tells nothing", fixScript, []string{"a secret ended the line"}},
 	{"secret_in_word", 2, "secret", "\"a secret in a word: build it inside [ ]\": a secret was pasted into a word", fixScript, []string{"a secret in a word"}},
 
 	// term: asking the person.
+	{"terminal_not_restored", 2, "term", "\"sash: terminal not restored\": the terminal's mode could not be put back after a question, or when a signal ended sash; the question has no answer", "A person checks the terminal before typing more.", []string{"sash: terminal not restored"}},
 	{"term_no_terminal", 2, "term", "\"term needs a terminal\": the script asks a person and there is no terminal to ask; it stopped there", "A person runs the script at a terminal.", []string{"term needs a terminal"}},
 	{"term_eof", 1, "term", "\"term prompt: end of input\": Ctrl-D on an empty line, or the input ended; the value is empty", fixNothing, []string{"term prompt: end of input", "end of input"}},
 	{"term_empty", 1, "term", "\"term prompt: empty answer\": the person pressed Enter on an empty line; the value is empty, as at the end of input", fixNothing, []string{"term prompt: empty answer"}},
@@ -130,6 +135,8 @@ var table = []Code{
 	{"term_secret_misplaced", 2, "term", "\"term prompt -s: only as declare -s name = (term prompt -s \"question\")\": -s anywhere else", "A person binds the secret with declare -s.", []string{"term prompt -s"}},
 
 	// replay and record.
+	{"record_exists", 2, "replay", "\"record_exists\": the --record path already exists, as a file, a link, or anything else; it is never overwritten and nothing ran", "A person names a new path for the recording.", []string{"record_exists"}},
+	{"fixture", 2, "replay", "\"fixture: ...\" or \"fixture too large\": the --record or --replay fixture is over 8 MiB, is not strict JSON of the fixture's shape, holds \"*\", an empty entitlement or a root that is not clean and absolute, or has no result for a call", "A person corrects the fixture.", []string{"fixture:", "fixture too large"}},
 	{"record_failed", 2, "replay", "the recording could not be built or written", "A person records again.", []string{"record_failed"}},
 	{"record_too_large", 2, "replay", "the recording passed its size or event cap", "A person records a shorter run.", []string{"record_too_large"}},
 	{"replay_bad_format", 2, "replay", "the recording is not a sash recording, or a line of it is malformed", "A person checks which file was given.", []string{"replay_bad_format"}},
@@ -139,7 +146,7 @@ var table = []Code{
 	{"replay_expired", 2, "replay", "the recording is past its expiry", "A person records again.", []string{"replay_expired"}},
 	{"replay_module", 2, "replay", "a wasm module's hash differs from the one in the recording", "A person replays with the module that was recorded.", []string{"replay_module"}},
 	{"replay_other_script", 2, "replay", "the recording was made from another script", "A person replays the script that was recorded.", []string{"replay_other_script"}},
-	{"replay_secret", 2, "replay", "the replay reached a term prompt -s; a recording never holds that answer", "A person runs the script at a terminal instead of replaying it.", []string{"replay_secret"}},
+	{"replay_secret", 2, "replay", "the replay reached a term prompt -s; a recording never holds that answer", "Nothing to change: a recording that asked for a secret cannot be replayed.", []string{"replay_secret"}},
 	{"replay_too_large", 2, "replay", "the recording is larger than a replay reads", "A person checks which file was given.", []string{"replay_too_large"}},
 	{"replay_truncated", 2, "replay", "the recording stopped at its size cap, and the run went past that point", "A person records a shorter run.", []string{"replay_truncated"}},
 }

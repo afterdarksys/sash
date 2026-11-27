@@ -215,6 +215,8 @@ var notRefusals = map[string]string{
 	"<U+003C>":            "TermText's own escape",
 	"connect: session on": "sash connect's line naming the host of an opened session",
 	"<credential>":        "what sash connect prints in place of the token or the ticket",
+	"no flush":            "the flush error a question maps to term needs a terminal; never printed",
+	"no parent":           "the hand start's parent error; printed as parent <key>",
 }
 
 var exitIdents = map[string]int{"exitType": 2, "exitDenied": 126, "exitUnknown": 127, "exitHangup": 129, "exitInterrupt": 130}
@@ -233,6 +235,24 @@ func leftLit(e ast.Expr) (string, bool) {
 		return leftLit(x.X)
 	}
 	return "", false
+}
+
+// errStream reports a writer that is an error stream: &m.err (any
+// selector err), os.Stderr, or an identifier named errOut or stderr.
+func errStream(e ast.Expr) bool {
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		e = u.X
+	}
+	switch x := e.(type) {
+	case *ast.SelectorExpr:
+		if id, ok := x.X.(*ast.Ident); ok && id.Name == "os" {
+			return x.Sel.Name == "Stderr"
+		}
+		return x.Sel.Name == "err"
+	case *ast.Ident:
+		return x.Name == "errOut" || x.Name == "stderr"
+	}
+	return false
 }
 
 // scanMessages collects the fixed messages of one package directory: the
@@ -267,9 +287,20 @@ func scanMessages(t *testing.T, dir string) []scanned {
 						name = id.Name
 					}
 					if name == "problem" && len(x.Elts) == 2 {
-						if s, ok := leftLit(x.Elts[1]); ok {
+						// Positional, or keyed in any order.
+						status, msg := x.Elts[0], x.Elts[1]
+						for _, el := range x.Elts {
+							if kv, ok := el.(*ast.KeyValueExpr); ok {
+								if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "status" {
+									status = kv.Value
+								} else if ok && k.Name == "msg" {
+									msg = kv.Value
+								}
+							}
+						}
+						if s, ok := leftLit(msg); ok {
 							exit := -1
-							if id, ok := x.Elts[0].(*ast.Ident); ok {
+							if id, ok := status.(*ast.Ident); ok {
 								if e, known := exitIdents[id.Name]; known {
 									exit = e
 								}
@@ -292,6 +323,21 @@ func scanMessages(t *testing.T, dir string) []scanned {
 						}
 					case *ast.Ident:
 						fn = f.Name
+					}
+					// line's writeAll(w, []byte("...")).
+					if fn == "writeAll" && len(x.Args) == 2 {
+						if c, ok := x.Args[1].(*ast.CallExpr); ok && len(c.Args) == 1 {
+							if s, ok := leftLit(c.Args[0]); ok {
+								add(x.Pos(), s, -1)
+							}
+						}
+					}
+					// A print to an error stream: a machine's err, a
+					// writer named for stderr, or os.Stderr.
+					if (fn == "fmt.Fprintf" || fn == "fmt.Fprintln" || fn == "fmt.Fprint") && len(x.Args) > 1 && errStream(x.Args[0]) {
+						if s, ok := leftLit(x.Args[1]); ok {
+							add(x.Pos(), s, -1)
+						}
 					}
 					if fn == "errors.New" || fn == "fmt.Errorf" || strings.HasSuffix(fn, "WriteString") || fn == "fail" || fn == "halt" {
 						for _, a := range x.Args {
@@ -330,7 +376,7 @@ func scanMessages(t *testing.T, dir string) []scanned {
 func TestEveryFixedMessageIsCatalogued(t *testing.T) {
 	total := 0
 	used := map[string]bool{}
-	for _, dir := range []string{"../lang", "../grant", "../session", "../proto", "../connect"} {
+	for _, dir := range []string{"../lang", "../grant", "../session", "../proto", "../connect", "../line", "../../cmd/sash"} {
 		msgs := scanMessages(t, dir)
 		if dir == "../connect" && len(msgs) < 10 {
 			t.Fatalf("%s: only %d messages found; the scan no longer sees the source", dir, len(msgs))
@@ -362,7 +408,7 @@ func TestEveryFixedMessageIsCatalogued(t *testing.T) {
 	// Every entry is something the source prints: no entry for a message
 	// that does not exist.
 	var all []scanned
-	for _, dir := range []string{"../lang", "../grant", "../session", "../proto", "../parent", "../connect"} {
+	for _, dir := range []string{"../lang", "../grant", "../session", "../proto", "../parent", "../connect", "../line", "../../cmd/sash"} {
 		all = append(all, scanMessages(t, dir)...)
 	}
 	// A code sent to sash connect is printed after one of its two fixed
@@ -504,5 +550,52 @@ func TestConnectHoldsThePTYErrors(t *testing.T) {
 		if _, ok := Connect(string(n[1])); !ok {
 			t.Errorf("PTY_ERRORS holds %q, which this build does not list", n[1])
 		}
+	}
+}
+
+// The scan sees each form a refusal is written in: a positional or keyed
+// problem literal, a write or a formatted print to a machine's err, a
+// print to os.Stderr or an errOut writer, and line's writeAll.
+func TestScanSeesEveryForm(t *testing.T) {
+	dir := t.TempDir()
+	src := `package x
+
+import (
+	"fmt"
+	"os"
+)
+
+type problem struct {
+	status int
+	msg    string
+}
+
+const exitType = 2
+
+func f(m *machine, errOut *os.File) {
+	_ = &problem{exitType, "novel positional"}
+	_ = &problem{msg: "novel keyed", status: exitType}
+	m.err.WriteString("novel write\n")
+	fmt.Fprintf(&m.err, "novel fprintf %d\n", 1)
+	fmt.Fprintln(os.Stderr, "novel stderr")
+	fmt.Fprintln(errOut, "novel errout")
+	_ = writeAll(errOut, []byte("novel writeall\n"))
+	fmt.Fprintln(os.Stdout, "not an error stream")
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, m := range scanMessages(t, dir) {
+		got[m.msg] = m.exit
+	}
+	for msg, exit := range map[string]int{"novel positional": 2, "novel keyed": 2, "novel write": -1, "novel fprintf %d": -1, "novel stderr": -1, "novel errout": -1, "novel writeall": -1} {
+		if e, ok := got[msg]; !ok || e != exit {
+			t.Errorf("%q: found %v exit %d, want exit %d", msg, ok, e, exit)
+		}
+	}
+	if _, ok := got["not an error stream"]; ok {
+		t.Errorf("a print to stdout was taken as a refusal")
 	}
 }

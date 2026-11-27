@@ -77,6 +77,13 @@
     "fix": "A person corrects the script; nothing on that line ran."
   },
   {
+    "code": "codes_unreadable",
+    "exit": 1,
+    "area": "file",
+    "meaning": "\"codes: catalog unreadable\": sash version --json or sash codes --json could not encode the catalog",
+    "fix": "The operator decides which build is installed."
+  },
+  {
     "code": "command_from_value",
     "exit": 2,
     "area": "parse",
@@ -95,7 +102,7 @@
     "exit": 2,
     "area": "verb",
     "meaning": "\"confirm needs a terminal\": confirm mode is on and there is no terminal to ask, so the mutating verb did not run",
-    "fix": "A person runs the mutating step at a terminal."
+    "fix": "A person decides whether that step is needed; it did not run."
   },
   {
     "code": "connect_closed",
@@ -203,6 +210,13 @@
     "fix": "Nothing to change: this reports what happened."
   },
   {
+    "code": "fixture",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "\"fixture: ...\" or \"fixture too large\": the --record or --replay fixture is over 8 MiB, is not strict JSON of the fixture's shape, holds \"*\", an empty entitlement or a root that is not clean and absolute, or has no result for a call",
+    "fix": "A person corrects the fixture."
+  },
+  {
     "code": "fn_depth",
     "exit": 2,
     "area": "parse",
@@ -241,7 +255,7 @@
     "code": "fs_not_written",
     "exit": 1,
     "area": "file",
-    "meaning": "\"fs write-atomic: not written\": an earlier stage of the pipeline failed, so nothing was sent and the file is as it was; the status is the failing stage's",
+    "meaning": "\"fs write-atomic: not written\": an earlier stage of the pipeline, or its < read, failed, so nothing was sent and the file is as it was; the status is the failing stage's, not always 1: 1 for a failed read or a stage that ended 1, 2, 126 or 127 for a stage that was refused",
     "fix": "A person reads the failing stage's output above this line."
   },
   {
@@ -270,7 +284,7 @@
     "exit": 2,
     "area": "grant",
     "meaning": "the grant's expiry has passed",
-    "fix": "A person opens a new session."
+    "fix": "A person decides whether the work is still needed; no verb ran."
   },
   {
     "code": "grant_missing",
@@ -299,6 +313,13 @@
     "area": "grant",
     "meaning": "the grant holds \"*\", which sash never accepts as an entitlement",
     "fix": "The operator checks the control plane; no verb ran."
+  },
+  {
+    "code": "hand_start",
+    "exit": 0,
+    "area": "session",
+    "meaning": "\"sash: no session grant: verbs are denied, filters run\": sash was started by hand, without a session, at a terminal; printed once",
+    "fix": "Nothing to change: this reports what happened."
   },
   {
     "code": "hangup",
@@ -348,6 +369,13 @@
     "area": "parse",
     "meaning": "the text could not be split into words: an unclosed quote, a bare !, a bad $ reference, or & (there are no background jobs)",
     "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "line_failed",
+    "exit": 1,
+    "area": "session",
+    "meaning": "\"sash line failed\": the prompt could not put the terminal in raw mode",
+    "fix": "A person checks the terminal sash was started on."
   },
   {
     "code": "loop_max",
@@ -462,6 +490,13 @@
     "fix": "A person decides whether to record again; the session's verbs were not stopped."
   },
   {
+    "code": "record_exists",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "\"record_exists\": the --record path already exists, as a file, a link, or anything else; it is never overwritten and nothing ran",
+    "fix": "A person names a new path for the recording."
+  },
+  {
     "code": "record_failed",
     "exit": 2,
     "area": "replay",
@@ -543,7 +578,7 @@
     "exit": 2,
     "area": "replay",
     "meaning": "the replay reached a term prompt -s; a recording never holds that answer",
-    "fix": "A person runs the script at a terminal instead of replaying it."
+    "fix": "Nothing to change: a recording that asked for a secret cannot be replayed."
   },
   {
     "code": "replay_too_large",
@@ -599,7 +634,7 @@
     "exit": 2,
     "area": "secret",
     "meaning": "\"a secret cannot leave sash\": a secret was a verb argument, a path, a > body, or a fn argument",
-    "fix": "A person keeps the secret inside sash; the binding is what makes it secret."
+    "fix": "A person keeps the secret inside sash."
   },
   {
     "code": "secret_fault",
@@ -628,6 +663,13 @@
     "area": "parse",
     "meaning": "\"set ... above the ceiling\": set may lower loopmax or verbmax, never raise one past its ceiling",
     "fix": "A person keeps the cap at or below its ceiling; the ceiling is the grant's."
+  },
+  {
+    "code": "skill_failed",
+    "exit": 1,
+    "area": "file",
+    "meaning": "\"skill: ...\": sash --skill could not read its embedded files or write them to stdout",
+    "fix": "A person checks where stdout goes; nothing else ran."
   },
   {
     "code": "spec",
@@ -705,6 +747,13 @@
     "area": "term",
     "meaning": "\"term prompt -s: only as declare -s name = (term prompt -s \"question\")\": -s anywhere else",
     "fix": "A person binds the secret with declare -s."
+  },
+  {
+    "code": "terminal_not_restored",
+    "exit": 2,
+    "area": "term",
+    "meaning": "\"sash: terminal not restored\": the terminal's mode could not be put back after a question, or when a signal ended sash; the question has no answer",
+    "fix": "A person checks the terminal before typing more."
   },
   {
     "code": "ticket_invalid",
