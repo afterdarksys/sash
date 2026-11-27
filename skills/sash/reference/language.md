@@ -96,7 +96,7 @@ set -e
 cat /etc/nginx/nginx.conf | egrep zzz > /srv/app/out
 ```
 
-So write to a new path and check it, or put the writes in `atomic { }` (which rolls back on a non-zero statement), and read the byte count in the plan output before the real run:
+So write with `| fs write-atomic <path>` (`features.md`), which sends nothing when a stage failed, or write to a new path and check it, or put the writes in `atomic { }` (which rolls back on a non-zero statement), and read the byte count in the plan output before the real run:
 
 ```sash
 # expect: plan 1 plan: would write /srv/app/out (0 bytes)
@@ -347,6 +347,8 @@ Each is one line on stderr.
 | `type glob` | a glob qualifier other than `(/)`, or a glob that matches nothing (2) |
 | `parse: ...` | `parse: try needs catch`, `parse: too deep` (65 nested blocks), `parse: env not in this series` (2) |
 | `usage <form>...` | wrong arguments to a form (2) |
+| `usage fs write-atomic` | the sink given the wrong words, or not last, or with no input, or with a `>` after it (2) |
+| `fs write-atomic: not written` | an earlier stage failed, so the sink sent nothing; the status is that stage's |
 | `term needs a terminal` | `term` with no terminal to ask; the script stops (2) |
 | `term prompt: end of input` | Ctrl-D on an empty line, or the input ended (1) |
 | `term prompt: answer over 4096 bytes`, `term prompt: answer is not text` | an answer that is too long or not UTF-8; there is no value (2) |

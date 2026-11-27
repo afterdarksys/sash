@@ -98,6 +98,13 @@
     "fix": "The operator checks the agent; the session cannot go on."
   },
   {
+    "code": "fs_not_written",
+    "exit": 1,
+    "area": "file",
+    "meaning": "\"fs write-atomic: not written\": an earlier stage of the pipeline failed, so nothing was sent and the file is as it was; the status is the failing stage's",
+    "fix": "A person reads the failing stage's output above this line."
+  },
+  {
     "code": "grant_bad_shape",
     "exit": 2,
     "area": "grant",

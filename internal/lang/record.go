@@ -1068,7 +1068,7 @@ func (m *machine) secretTexts() []string {
 
 // tapeDo is machine.do's call through the tape.
 func (m *machine) tapeDo(v parent.Verb) (parent.Result, error) {
-	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
+	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe || (v.Mode != "" && !m.sinkWrite), m.secretTexts())
 	if terr := m.tape.Err(); terr != nil {
 		m.ctl = ctlHalt
 		return parent.Result{}, terr

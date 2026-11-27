@@ -45,6 +45,7 @@ Paths go through the agent's file helper under the grant's `file_read` and `file
 | `wc` | filter | - | no | Counts lines of text, or rows. Flags are ignored: `wc -c` and `wc -w` print the line count too. |
 | `template_file` | verb | file.write | yes | `template_file <spec> <tpl> <out> [--check]`: validate and render to `<out>`. `--check` writes nothing and prints a diff (only `file.read`). |
 | `template` | verb | file.read | no | `... \| template <tpl>`: render a template with the piped value. |
+| `fs write-atomic` | verb | file.write | yes | `... \| fs write-atomic <path> [--mode 0600\|0640\|0644]`: the last stage of a pipeline; writes what was piped to `<path>`, a `>` target under a write root. Unlike `>`, it sends nothing when an earlier stage failed (`fs write-atomic: not written`, the failing stage's status). `--mode` never loosens an existing file. |
 
 ```sash
 # expect: host 0

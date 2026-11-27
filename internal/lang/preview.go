@@ -495,6 +495,8 @@ func knownKey(argv []string) string {
 		return ""
 	case "template":
 		return "file.read"
+	case "fs":
+		return "file.write"
 	case "template_file":
 		if len(argv) == 5 && argv[4] == "--check" {
 			return "file.read"

@@ -213,6 +213,32 @@ retry 3 delay 2s { package query nginx }
 timeout 30s { package query nginx }
 ```
 
+## `fs`
+
+`... | fs write-atomic <path> [--mode 0600|0640|0644]` is a sink: the last stage of a pipeline, with input, and no `>` after it (anything else is exit 2 `usage fs write-atomic`). It writes what was piped to `<path>` through the same `file.write` as `>`: the same key, the same write roots (`denied file.write` before any call), the same plan line, the same confirm question, the same refusals, and a secret body is exit 2 `a secret cannot leave sash`. `write-atomic` and `--mode` are literal words, and so is the mode.
+
+What it adds over `>`: when an earlier stage failed, nothing is sent. stderr says `fs write-atomic: not written`, the status is the failing stage's, and the file on the host is as it was.
+
+```sash
+# expect: host 1 fs write-atomic: not written
+# nocall: file.write
+cat /etc/nginx/nginx.conf | egrep zzz | fs write-atomic /srv/app/out
+```
+
+```sash
+# expect: host 0
+# call: file.write argv=> /srv/app/app.conf.new path=/srv/app/app.conf.new mode= body="listen 9090\n"
+cat /srv/app/app.conf | lines |> sub line "8080" with "9090" | fs write-atomic /srv/app/app.conf.new
+```
+
+```sash
+# expect: plan 0 plan: would write /srv/app/app.conf.new (12 bytes) (mode 0640)
+# nocall: file.write
+cat /srv/app/app.conf | fs write-atomic /srv/app/app.conf.new --mode 0640
+```
+
+Atomic here means one thing: the agent writes a temporary file beside the target and renames it over, so no reader ever sees a partial file, and a crash leaves the old file or the new one. It is not isolation: two writers of one path still race, and the last rename wins. It is not `atomic { }`: a later failure does not roll this write back, unless the write is inside an `atomic { }` block, where it is journalled and restored like any `file.write`. `--mode` is one of the agent's three modes and never loosens a file that exists; an agent too old for a mode refuses (`agent too old for file.write mode`, exit 2), and the write is not sent without it. `--needs` reports `file.write` and the path; lint's `par-same-target` and `retry-on-mutation` apply.
+
 ## Asking the person
 
 `term prompt "<question>"` prints the question on the terminal and gives the line the person types, without its Enter. `term confirm "<question>"` prints `<question> [y + Enter / N]`; its status is 0 for `y` or `Y` then Enter and 1 for anything else. Both take exactly one question word, at most 1024 bytes, and no input: `term` is the first stage of its pipeline. `prompt` and `confirm` are literal words: from a value they are exit 2 `command_from_value`.

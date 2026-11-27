@@ -272,6 +272,9 @@ type machine struct {
 	text   string
 	// recWriting is set while finishRecord writes the recording.
 	recWriting bool
+	// sinkWrite is set while fs write-atomic's write goes out: its mode
+	// is the one asked for, not the mark of a secret render.
+	sinkWrite bool
 	// atomic is the transaction of the atomic block running, if any;
 	// rolledBack is set once a block in this run rolled back.
 	atomic     *atomicTx
@@ -389,6 +392,9 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 	return st, stop
 }
 
+// fsModes are the file modes the agent sets (its three).
+var fsModes = map[string]bool{"0600": true, "0640": true, "0644": true}
+
 // mutating names the verbs plan mode stops.
 var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true}
 
@@ -429,13 +435,13 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		}
 		if v.Key == "file.write" && v.Mode != "" {
 			what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
-			if m.recWriting {
+			if m.recWriting || m.sinkWrite {
 				what = fmt.Sprintf("write %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
 			}
 		}
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
-			m.tape.plan(v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
+			m.tape.plan(v, m.sawSecret || m.secretPipe || (v.Mode != "" && !m.sinkWrite), m.secretTexts())
 			if err := m.tape.Err(); err != nil {
 				m.ctl = ctlHalt
 				return parent.Result{}, err
@@ -1414,7 +1420,18 @@ type expStage struct {
 	x Expr
 	// solo is a stage that is its whole pipeline, with no redirect.
 	solo bool
+	// sink is fs write-atomic: outPath is written only when every earlier
+	// stage succeeded, with mode when one was given.
+	sink bool
+	mode string
 }
+
+// msgFsUsage is fs write-atomic given the wrong words or the wrong place.
+const msgFsUsage = "usage fs write-atomic"
+
+// msgFsNotWritten says the sink sent nothing because an earlier stage
+// failed.
+const msgFsNotWritten = "fs write-atomic: not written"
 
 // msgCommandFromValue refuses a stage whose command name is not a literal.
 const msgCommandFromValue = "command_from_value"
@@ -1442,6 +1459,8 @@ type refusal struct {
 // prepareAt is prepare, plus where a path denial points.
 func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 	exp := make([]expStage, len(pipe.Stages))
+	// pipeSecret is set once any stage's words read a secret.
+	pipeSecret := false
 	for i, st := range pipe.Stages {
 		// A command name is a literal on the line, never a value: the
 		// verb a line runs is the verb its reader sees. This is checked
@@ -1482,6 +1501,30 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 				if r.Kind != ">" {
 					return nil, &problem{exitType, "usage term"}, refusal{}
 				}
+			}
+		}
+		// fs's second word selects what is done to the host and its flag
+		// how, so both are literals, and so is the mode. It is a sink: the
+		// last stage, with input, and no redirect of its own.
+		if name == "fs" {
+			if len(st.Argv) > 1 && plain(st.Argv[1]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) > 3 && plain(st.Argv[3]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) > 4 && plain(st.Argv[4]) == "" {
+				return nil, &problem{exitType, msgFsUsage}, refusal{}
+			}
+			input := i > 0
+			for _, r := range st.Redirs {
+				if r.Kind == ">" {
+					return nil, &problem{exitType, msgFsUsage}, refusal{}
+				}
+				input = true
+			}
+			if !input || i != len(pipe.Stages)-1 {
+				return nil, &problem{exitType, msgFsUsage}, refusal{}
 			}
 		}
 		// A recording's path is a literal, so needs can report it.
@@ -1573,10 +1616,22 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		if i > 0 {
 			op = pipe.Ops[i-1]
 		}
+		pipeSecret = pipeSecret || m.sawSecret
+		if argv[0] == "fs" && pipeSecret {
+			// A secret in any stage would be the body: it does not leave
+			// sash, as with >.
+			return nil, &problem{exitType, "a secret cannot leave sash"}, refusal{}
+		}
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
 			argProv: argProv, solo: len(pipe.Stages) == 1 && len(st.Redirs) == 0,
+		}
+		if argv[0] == "fs" {
+			exp[i].sink = true
+			if len(argv) == 5 {
+				exp[i].mode = argv[4]
+			}
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -1693,6 +1748,14 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{in: inNone, out: inBytes}, nil
 	case "template_file":
 		return classifyTemplateFile(argv)
+	case "fs":
+		// fs write-atomic <path> [--mode 0600|0640|0644]: the agent's three
+		// modes, and no other subcommand.
+		ok := len(argv) == 3 || (len(argv) == 5 && argv[3] == "--mode" && fsModes[argv[4]])
+		if !ok || argv[1] != "write-atomic" || argv[2] == "" {
+			return classified{}, &problem{exitType, msgFsUsage}
+		}
+		return classified{key: "file.write", in: inAny, out: inBytes}, nil
 	case "term":
 		// -s stands only between prompt and the question, once.
 		secret := len(argv) == 4 && argv[1] == "prompt" && argv[2] == "-s"
@@ -1867,7 +1930,7 @@ func stageShape(st expStage) (int, int) {
 		return inRows, inRows
 	case "rows":
 		return inBytes, inRows
-	case "json", "to":
+	case "json", "to", "fs":
 		return inAny, inBytes
 	case "from":
 		return inAny, inRows
@@ -1926,6 +1989,17 @@ func (m *machine) bindPaths(st *expStage) (int, *problem) {
 		return 2, m.needRead(st, st.argv[2])
 	case "cd", "pushd", "template":
 		return 1, m.needRead(st, st.argv[1])
+	case "fs":
+		// The target is a > target: clean absolute or prefix-relative,
+		// under a file_write root, checked before any call.
+		full, err := resolvePath(m.prefix(), st.argv[2])
+		if err != nil {
+			return 2, &problem{exitType, "prefix_unset"}
+		}
+		if !m.g.AllowsWrite(full) {
+			return 2, &problem{exitDenied, "denied file.write"}
+		}
+		st.outPath = full
 	case "template_file":
 		if !m.g.Has("file.read") {
 			return -1, &problem{exitDenied, "denied file.read"}
@@ -2040,6 +2114,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		exits[i] = code
 		cur = v
 		if code == exitType || code == exitDenied || code == exitUnknown {
+			if exp[len(exp)-1].sink {
+				m.err.WriteString(msgFsNotWritten + "\n")
+			}
 			return code, cur
 		}
 	}
@@ -2049,6 +2126,12 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			status = exits[i]
 			break
 		}
+	}
+	if last := exp[len(exp)-1]; last.sink && (status != 0 || m.ctl != ctlNone) {
+		// Unlike >, the sink sends nothing when an earlier stage failed:
+		// the file on the host stays as it was.
+		m.err.WriteString(msgFsNotWritten + "\n")
+		return status, cur
 	}
 	if exp[len(exp)-1].outPath != "" {
 		body := render(cur)
@@ -2065,6 +2148,18 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		if secret {
 			v.Mode = "0600"
 			cur = value{kind: valData, d: secretVal{body}}
+		}
+		if last := exp[len(exp)-1]; last.sink {
+			if isSecret(toDatum(cur)) {
+				m.err.WriteString("a secret cannot leave sash\n")
+				return exitType, value{}
+			}
+			// The mode asked for rides in the frame as it is: an agent
+			// too old for it refuses, and the write is not sent again
+			// without it.
+			v.Mode = last.mode
+			m.sinkWrite = true
+			defer func() { m.sinkWrite = false }()
 		}
 		if _, err := m.do(v); err != nil {
 			return m.doFailed("file.write", err), cur
@@ -2157,6 +2252,9 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return m.runLog(st)
 	case "term":
 		return m.runTerm(st)
+	case "fs":
+		// The sink passes its input on; execPrepared writes it at the end.
+		return in, 0
 	case "template":
 		return m.runTemplate(st, in)
 	case "sub":
@@ -2708,7 +2806,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs"} {
 		reservedNames[n] = true
 	}
 }

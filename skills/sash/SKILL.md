@@ -26,6 +26,7 @@ sash is the login and emergency shell of the SAH fleet: one Go binary that runs 
 - **Write absolute paths and globs in scripts.** A script starts with no prefix, and globs expand before it runs.
 - **`>` writes even when a stage fails.** A failed or empty pipeline still truncates its target, also under `set -e`. Write to a new path, or inside `atomic { }`, which rolls back on a non-zero statement.
 - **Ask only where a person is.** Ask with `term prompt` only in a script a person runs at a terminal; without one it is exit 2. Read a secret only as `declare -s name = (term prompt -s "...")`.
+- **Use `fs write-atomic` for a file that must not be half written.** Write a file that must never be seen half written with `| fs write-atomic <path>`; unlike `>`, it writes nothing when an earlier stage failed.
 - **Keep mutations out of `retry`.**
 
 ```sash
@@ -40,7 +41,7 @@ Read the one you need; each stands alone.
 
 - `reference/verbs.md`: the closed table, every name with its kind, entitlement key, and whether it mutates. Read it before using a name you are not sure exists.
 - `reference/language.md`: values, quoting, `|` and `|>`, redirection, `[ ]` expressions and functions, `let`, `if`, `for`, `while`, `fn`, `try`/`catch`, `set` options and caps, globs, exit statuses, and the error strings a run prints. Read it for anything past a one-line pipeline, or to explain an error.
-- `reference/features.md`: plan mode, `--needs`, `--lint`, confirm, secrets, templates, `atomic`, `par`, `retry`/`timeout`, `check`, `log`, `origin`, `with`, `use`, asking the person (`term`), recording and replay, `why`, abbreviations, and wasm. Read it before a script that changes a host, runs in parallel, or touches a secret.
+- `reference/features.md`: plan mode, `--needs`, `--lint`, confirm, secrets, templates, `atomic`, `par`, `retry`/`timeout`, `check`, `log`, `origin`, `with`, `use`, asking the person (`term`), `fs write-atomic`, recording and replay, `why`, abbreviations, and wasm. Read it before a script that changes a host, runs in parallel, or touches a secret.
 
 ## Installing
 

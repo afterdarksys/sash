@@ -95,6 +95,7 @@ var table = []Code{
 	{"confirm_locked", 2, "verb", "\"confirm is locked\": confirm mode cannot be cleared from a script or a line", fixNothing, []string{"confirm is locked"}},
 	{"parent", 1, "verb", "\"parent <key>\": the call to the agent failed or the agent could not perform it", "A person reads the host's state before running the step again; the operator checks the agent.", []string{"parent"}},
 	{"refused", 2, "file", "\"refused file.write: <code>\": the agent refused a file write; the code and its meaning follow", "A person reads the code; the file is as the agent reports it.", []string{"refused"}},
+	{"fs_not_written", 1, "file", "\"fs write-atomic: not written\": an earlier stage of the pipeline failed, so nothing was sent and the file is as it was; the status is the failing stage's", "A person reads the failing stage's output above this line.", []string{"fs write-atomic: not written"}},
 	{"mode_unsupported", 2, "file", "\"agent too old for file.write mode\": the write needs a file mode this agent cannot set, and it is never sent without one", "The operator decides when the host's agent is updated.", []string{"agent too old for file.write mode"}},
 	{"outcome_unknown", 1, "verb", "a verb passed the agent's deadline, or its par stopped waiting: it may have run", "A person checks the host's state before running it again.", []string{"outcome_unknown", "outcome unknown"}},
 	{"cancelled", 1, "verb", "the agent dropped the verb before it started: nothing ran", fixNothing, []string{"cancelled"}},

@@ -537,6 +537,14 @@ func (n *needsRun) stage(st Stage, b needBase) needBase {
 		if len(args) == 1 {
 			n.path("file.read", args[0], needFile, b)
 		}
+	case "fs":
+		// fs write-atomic <path>: the write target, as a > target is. A
+		// subcommand from a value does not run.
+		if dynSub {
+			n.add("-", "$", noteCommandFromValue, at, "")
+		} else if len(args) >= 2 {
+			n.path("file.write", args[1], needFile, b)
+		}
 	case "template_file":
 		if len(args) == 3 || len(args) == 4 {
 			n.path("file.read", args[0], needFile, b)
