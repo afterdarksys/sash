@@ -41,7 +41,8 @@ func TestContains(t *testing.T) {
 
 // secretCalls is a call with a secret argument for every expression
 // function. A function missing here fails the test, so a new one cannot
-// skip the taint check. uuid takes no argument and so reads no secret.
+// skip the taint check. uuid and is_tty take no argument and so read no
+// secret.
 var secretCalls = map[string]string{
 	"len": "len($s)", "upper": "upper($s)", "lower": "lower($s)", "trim": "trim($s)",
 	"split": `split($s, "b")`, "join": `join($l, ",")`, "replace": `replace($s, "a", "z")`,
@@ -61,7 +62,7 @@ var secretCalls = map[string]string{
 func TestEveryFunctionTaints(t *testing.T) {
 	const setup = "declare -s s = abc\ndeclare -s n = [ 3 ]\ndeclare -s l = [ [1, 2, 3] ]\ndeclare -s m = [ {\"a\": 1} ]\ndeclare -s b = YWJj\n"
 	for name := range exprFuncs {
-		if name == "uuid" {
+		if name == "uuid" || name == "is_tty" {
 			continue
 		}
 		call, ok := secretCalls[name]

@@ -103,6 +103,10 @@ type Options struct {
 	// first interrupt cancels the branches; a second stops the wait.
 	// Under confirm it is never asked, so the prompt keeps the keys.
 	Interrupts func() (ch <-chan struct{}, stop func())
+	// Term is the person at the terminal, for is_tty() and term (term.go).
+	// Only a caller whose stdin and stderr are both terminals, and whose
+	// stdin is not the script, sets it; nil is no terminal.
+	Term Term
 }
 
 // Run expands src, then parses and executes it. Toolkit names call p.
@@ -148,6 +152,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m.trace = opt.Trace
 	m.confirm = opt.Confirm
 	m.interrupts = opt.Interrupts
+	m.term = opt.Term
 	if opt.Tape != nil {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
@@ -251,6 +256,8 @@ type machine struct {
 	// Options.Interrupts.
 	pb         *parBranch
 	interrupts func() (<-chan struct{}, func())
+	// term is Options.Term: nil when there is no terminal to ask.
+	term Term
 	// drains is set on a Run's own machine: it drains the State's late
 	// queue before each top-level statement. src is the Run's source as
 	// given (a session recording's header hashes it, as --record does)
@@ -2342,7 +2349,7 @@ func (m *machine) evalX(x Expr) (any, error) {
 }
 
 func (m *machine) evalXRaw(x Expr) (any, error) {
-	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), func(name string) (any, bool) {
+	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), m.isTTY, func(name string) (any, bool) {
 		m.readProv(name)
 		v, ok := m.vars[name]
 		if !ok {

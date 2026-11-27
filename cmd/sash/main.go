@@ -76,7 +76,7 @@ func main() {
 		os.Exit(langExit(2))
 	}
 	stopHup := watchHangup(st, hupGrace, os.Exit)
-	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts})
+	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts, Term: scriptTerm(args)})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	// A recording set -o record started is written when the script ends,
@@ -170,6 +170,16 @@ func readSource(args []string) (string, error) {
 		return string(b), nil
 	}
 	return "", errors.New(usage)
+}
+
+// scriptTerm is the terminal a script may ask (is_tty, term): only when
+// the script came from -c or a file, so stdin is not the script, and stdin
+// and stderr are both terminals. sash < script and a pipe have none.
+func scriptTerm(args []string) lang.Term {
+	if len(args) == 0 {
+		return nil
+	}
+	return line.ScriptTerm(os.Stdin, os.Stderr)
 }
 
 const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"

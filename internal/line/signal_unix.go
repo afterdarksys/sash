@@ -13,9 +13,14 @@ import (
 // signal to exit, so the process still ends as the signal says. stop
 // undoes the watch.
 func watchSignals(restore func() error, exit func(os.Signal, error)) (stop func()) {
+	return watchSignalsOf(restore, exit, syscall.SIGTERM, syscall.SIGHUP)
+}
+
+// watchSignalsOf is watchSignals for the signals named.
+func watchSignalsOf(restore func() error, exit func(os.Signal, error), sigs ...os.Signal) (stop func()) {
 	ch := make(chan os.Signal, 1)
 	done := make(chan struct{})
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(ch, sigs...)
 	go func() {
 		select {
 		case sig := <-ch:

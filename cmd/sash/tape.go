@@ -180,7 +180,9 @@ func runTape(args []string) int {
 		return 2
 	}
 	if mode == "--record" {
-		return record(src, recPath, g, fixtureParent{fx.Results}, expires)
+		// A recording at a terminal may ask the person, as any script run
+		// may; a replay never does: its answers come from the recording.
+		return record(src, recPath, g, fixtureParent{fx.Results}, expires, scriptTerm(args))
 	}
 	return replay(src, recPath, g)
 }
@@ -247,7 +249,7 @@ func (a *atomicFile) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Duration) int {
+func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Duration, term lang.Term) int {
 	if _, err := os.Lstat(recPath); err == nil || !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintln(os.Stderr, "record_exists")
 		return 2
@@ -258,7 +260,7 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 		fmt.Fprintln(os.Stderr, "record_failed")
 		return 2
 	}
-	got := lang.Run(src, g, p, lang.Options{Tape: tape})
+	got := lang.Run(src, g, p, lang.Options{Tape: tape, Term: term})
 	fmt.Fprint(os.Stdout, got.Stdout)
 	fmt.Fprint(os.Stderr, got.Stderr)
 	if err := tape.Finish(); err != nil {

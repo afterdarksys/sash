@@ -419,7 +419,7 @@ func (t *Tape) Finish() error {
 		if p.hasResp {
 			ev.Resp = respOf(p.res, p.err, secrets, p.tainted)
 		}
-		if p.kind == "now" || p.kind == "sleep" || p.kind == "uuid" {
+		if p.kind == "now" || p.kind == "sleep" || p.kind == "uuid" || p.kind == "tty" {
 			ev.Resp = &recResp{Value: p.value}
 			if holdsAny(p.value, secrets) {
 				ev.Resp = &recResp{Value: redacted3}
@@ -849,7 +849,7 @@ func (t *Tape) plan(v parent.Verb, tainted bool, secrets []string) {
 	}
 }
 
-// value records a reading (now, sleep, uuid) from read, or returns the
+// value records a reading (now, sleep, uuid, tty) from read, or returns the
 // recorded one on replay without calling read.
 func (t *Tape) value(kind string, read func() string) string {
 	if !t.replay {

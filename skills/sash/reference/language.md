@@ -121,6 +121,15 @@ Functions, pure and in process (`builtin` lists them; a name not here is exit 2 
 | list | `len` `sum` `min` `max` `avg` `sort` `uniq` `reverse` `first(l, n)` `last(l, n)` `range(a, b)` `contains(list, x)` |
 | map | `keys` `values` `has(m, k)` `get(m, k, default)` `merge(a, b)` |
 | encode | `sha256(s)` `base64(s)` `unbase64(s)` `hex(s)` `uuid()` |
+| terminal | `is_tty()` |
+
+`is_tty()` takes no argument and is `true` only when a person can be asked: sash's stdin and stderr are both terminals and the script is not on stdin (`sash -c`, `sash file`, or the prompt). `sash < script`, a pipe, a job, and a replay are `false`. It is not pure like the others: it reads the terminal, and a recording pins it.
+
+```sash
+# expect: host 0
+# stdout: unattended
+if [ is_tty() ] { echo "a person is here" } else { echo unattended }
+```
 
 ```sash
 let n = [ 1 + 2 ]

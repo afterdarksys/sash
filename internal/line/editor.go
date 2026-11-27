@@ -1302,6 +1302,11 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		return askConfirm(keys, out, func() error { return flushInput(int(in.Fd())) }, prompt)
 	}
 	e.opt.Interrupts = parInterrupts(keys)
+	if IsTerm(errOut) {
+		// A person can be asked (is_tty, term): the prompt is in raw mode
+		// already, and the question starts on its own line.
+		e.opt.Term = &asker{in: in, out: errOut, keys: keys, lead: "\r\n\x1b[J", flush: func() error { return flushInput(int(in.Fd())) }}
+	}
 	status := e.loop(keys, out, errOut)
 	// Logout writes a recording set -o record started, asking under
 	// confirm like any file.write.

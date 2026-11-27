@@ -1072,7 +1072,7 @@ func (l *linter) blocks(p *Program) {
 
 // lintConstant is a [ ] that reads no name and calls only pure
 // functions: every expression function is pure (contains included)
-// except uuid, which is random.
+// except uuid, which is random, and is_tty, which reads the terminal.
 func lintConstant(x Expr) bool {
 	if len(refsOf(func(o map[string]bool) { exprRefs(x, o) })) > 0 {
 		return false
@@ -1082,7 +1082,7 @@ func lintConstant(x Expr) bool {
 	walk = func(x Expr) {
 		switch x := x.(type) {
 		case exprCall:
-			if x.name == "uuid" {
+			if x.name == "uuid" || x.name == "is_tty" {
 				pure = false
 			}
 			for _, a := range x.args {
