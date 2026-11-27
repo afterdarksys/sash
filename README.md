@@ -14,6 +14,7 @@ sash --skill [features | language | verbs]      print the embedded Claude skill
 sash --skill --list                             list the embedded skill files
 sash version --json                             what this build is, one JSON line
 sash codes --json                               the catalog of what sash prints when it refuses or fails
+sash connect [--root] <host>                    a terminal on a fleet host, for a person at a workstation
 ```
 
 Without `--session` the grant is empty: verbs are denied and filters still run. `--session` reads the grant and the verb socket from fds 3 to 6, as the systemapi agent or `adssh` sets them up.
@@ -36,6 +37,18 @@ It reads no `/etc/profile`, `~/.profile`, rc file, or `ENV` file, takes no envir
 ## Version and codes
 
 `sash version --json` prints one object: the module version, commit and whether the tree was modified (from the binary's own build information), OS and architecture, the grant and mux versions, whether wasm is built in, the number of forms in the closed table, and the number and SHA-256 of the catalog's codes. It is a claim the binary makes about itself: for display, never to gate anything. `sash codes --json` prints the catalog (`internal/codes`): each code with its exit status, area, meaning, and fix. A code is a token; where sash prints a sentence, the meaning quotes it. Both take exactly those two arguments, read no grant, and open no file. Every fix that names a change has a person, the operator, or an admin as its subject; a test scans the fixed messages of the language, grant, session, and wire packages against the catalog, and another pins every sentence in `internal/codes/testdata/codes.golden.json`.
+
+## Connecting to a host
+
+`sash connect <host>` runs on a person's workstation. It is the client half of the control plane's existing terminal protocol, which it calls "sah/3" and names in its `User-Agent`; nothing is negotiated, and a server that does not answer as that protocol does is refused (`connect: the server does not speak sah/3`). It resolves the host (`GET /api/v1/hosts/resolve`), asks for a ticket for `terminal:open`, or `terminal:root` with `--root` (`POST /api/v1/ws-ticket`), and opens the terminal WebSocket with that ticket, which is used once. The host's agent still checks the signed grant and starts the host's sash. The client holds no grant and no key, records nothing, and never speaks to an agent.
+
+It is an argument of the process and nothing else: no script, `-c` line, function, or session can reach it, and behind any flag it is the usage line. It takes no script, and stdin, stdout, and stderr must all be terminals. Scripts go through the control plane's jobs path, which has its own gate.
+
+It reads two environment variables and no other. `SYSTEMAPI_URL` is the control plane's `https` address, with no user, query, or path. `SYSTEMAPI_TOKEN_FILE` is the absolute path of the file the systemapi CLI's login writes; sash does not log in. The file is opened without following a symlink and must be a regular file owned by this user, with no group or other permission bit, at most 4096 bytes, holding one token. The token is sent only as the bearer of the two HTTPS calls: never on the WebSocket upgrade, in a URL or argv, or in anything printed. TLS is 1.3 or later with the system's roots, no redirect is followed, and no proxy is read from the environment; sash has no option that changes any of these.
+
+A refusal is printed and the client stops. With `--root` it asks for `terminal:root` and nothing else, and a refusal of it is final: it never asks again for another purpose. Everything the client prints is its own fixed text. A code the control plane or the host sends is shown only when it is a plain token, with this build's meaning for it (area `connect` of `sash codes --json`), and the server's own words are never shown. The host's terminal output is filtered, always: text and the cursor, colour, and erase sequences pass; window titles, clipboard writes (OSC 52), hyperlinks, DCS, APC, PM, and SOS strings, and every sequence that makes the terminal answer are dropped. After Enter, `~.` closes the session here and `~~` sends one `~`. The terminal mode is put back on every way out, SIGTERM and SIGHUP included.
+
+The exit status is the host shell's own; 2 for usage, the environment, the token file, or no terminal; 1 for a failed request, a server that does not speak sah/3, or a lost connection; 126 for a refusal; 130 for Ctrl-C before the session starts.
 
 ## The Claude skill
 
