@@ -458,3 +458,32 @@ func TestNeedsCoversEveryBuiltinKey(t *testing.T) {
 		}
 	}
 }
+
+// Channels add no key, no target and no grant: send and recv are in
+// process. A verb on a received value is dynamic, as on any binding, so
+// the manifest is incomplete; a subcommand from one lists both.
+func TestNeedsChannels(t *testing.T) {
+	src := `par 4 chan jobs(16), done(16) {
+  branch {
+    for p in ps |> where cmd == nginx { send jobs $p }
+    for p in ps |> where cmd == redis { send jobs $p }
+  }
+  for j in recv jobs { unit status $j.cmd; send done [ {"cmd": $j.cmd} ] }
+  for j in recv jobs { unit status $j.cmd; send done [ {"cmd": $j.cmd} ] }
+  for r in recv done { echo $r.cmd }
+}`
+	out := Needs(src, NeedsOptions{})
+	want := "key          target  mutates  lines  note\nps           -       no       3,4    \nunit.status  $       no       6,7    dynamic\n"
+	if out.Status != 1 || out.Stdout != want {
+		t.Fatalf("%d %q %q", out.Status, out.Stdout, out.Stderr)
+	}
+	out = Needs("par 2 chan c(1) { send c restart; for j in recv c { unit $j.op nginx } }", NeedsOptions{})
+	if out.Status != 1 || !strings.Contains(out.Stdout, "unit.restart  nginx   yes") || !strings.Contains(out.Stdout, "unit.status   nginx   no") || strings.Contains(out.Stdout, noteNotGrantable) {
+		t.Fatalf("%d %q", out.Status, out.Stdout)
+	}
+	// Literal targets only: complete, and nothing for the channel itself.
+	out = Needs("par 2 chan c(1) { send c 1; for j in recv c { echo $j } }", NeedsOptions{})
+	if out.Status != 0 || out.Stdout != "" && strings.Count(out.Stdout, "\n") > 1 {
+		t.Fatalf("%d %q", out.Status, out.Stdout)
+	}
+}

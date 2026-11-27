@@ -429,6 +429,10 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 		return b
 	case *Jump:
 		return b
+	case *Send:
+		// In process: a channel adds no key and no target. A verb on a
+		// received value is dynamic, as on any binding.
+		return b
 	default:
 		// A statement needs does not know: say so rather than skip it.
 		n.add("-", "-", noteNotGrantable, 0, "")
