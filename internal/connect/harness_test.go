@@ -49,7 +49,11 @@ func TestMain(m *testing.M) {
 				os.Exit(97)
 			}
 		}
-		res := Run(os.Args[1:], os.Getenv, OSConsole(os.Stdin, os.Stdout, os.Stderr), "test")
+		con := OSConsole(os.Stdin, os.Stdout, os.Stderr)
+		if os.Getenv("SASH_CONNECT_TEST_PANIC") == "1" {
+			con.Out = &panicOnce{w: con.Out, at: "BOOM"}
+		}
+		res := Run(os.Args[1:], os.Getenv, con, "test")
 		if res.Signal != nil {
 			line.EndBySignal(res.Signal, res.RestoreErr)
 		}
@@ -313,6 +317,7 @@ type fakeCon struct {
 	sig      chan os.Signal
 	raws     atomic.Int32
 	restores atomic.Int32
+	stops    atomic.Int32
 }
 
 func newFakeCon() *fakeCon {
@@ -334,6 +339,7 @@ func (c *fakeCon) console() Console {
 			return func() error { once.Do(func() { c.restores.Add(1) }); return nil }, nil
 		},
 		Signals: func() (<-chan os.Signal, func()) { return c.sig, func() {} },
+		Stop:    func() { c.stops.Add(1) },
 	}
 }
 
@@ -418,7 +424,23 @@ func checkClean(t *testing.T, cp *fakeCP, con *fakeCon) {
 			}
 		}
 	}
-	if raws, restores := con.raws.Load(), con.restores.Load(); raws > 1 || raws != restores {
+	// Raw mode is entered once, and once more after each stop.
+	if raws, restores := con.raws.Load(), con.restores.Load(); raws > 1+con.stops.Load() || raws != restores {
 		t.Errorf("raw mode entered %d times, restored %d", raws, restores)
 	}
+}
+
+// panicOnce panics the first time a write holds at, and passes every
+// write on otherwise: a fault in the session loop while raw mode is on.
+type panicOnce struct {
+	w     io.Writer
+	at    string
+	fired atomic.Bool
+}
+
+func (p *panicOnce) Write(b []byte) (int, error) {
+	if strings.Contains(string(b), p.at) && p.fired.CompareAndSwap(false, true) {
+		panic("test fault")
+	}
+	return p.w.Write(b)
 }

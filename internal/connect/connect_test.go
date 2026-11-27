@@ -1242,3 +1242,134 @@ func TestProxyChild(t *testing.T) {
 		}
 	}
 }
+
+// SIGTSTP in a session puts the terminal back, stops, and enters raw mode
+// again when continued, and the session goes on; SIGTSTP before the
+// session stops with no mode to change; SIGQUIT restores the terminal and
+// ends with 131.
+func TestStopAndQuit(t *testing.T) {
+	session := func(t *testing.T, cp *fakeCP, typed chan<- string) chan struct{} {
+		up := make(chan struct{})
+		cp.terminal = func(ctx context.Context, c *wstest.Conn, r *http.Request) {
+			start(ctx, c)
+			sendBytes(ctx, c, []byte("\x1b[?7lX"))
+			close(up)
+			got, ok := inputUntil(ctx, c, "ok\r")
+			if ok {
+				typed <- got
+				sendFrame(ctx, c, `{"type":"pty_exit","payload":{"code":0}}`)
+			}
+		}
+		return up
+	}
+	waitFor := func(con *fakeCon, s string) {
+		deadline := time.Now().Add(5 * time.Second)
+		for !strings.Contains(con.out.String(), s) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	t.Run("SIGTSTP in the session", func(t *testing.T) {
+		cp := newFakeCP(t)
+		typed := make(chan string, 1)
+		up := session(t, cp, typed)
+		con := newFakeCon()
+		run := begin(con, goodEnv(t, cp), "web1")
+		<-up
+		waitFor(con, "X")
+		con.sig <- syscall.SIGTSTP
+		deadline := time.Now().Add(5 * time.Second)
+		for con.raws.Load() < 2 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if _, err := con.keys.Write([]byte("ok\r")); err != nil {
+			t.Fatal(err)
+		}
+		res := run.wait(t)
+		if res.Code != 0 || con.stops.Load() != 1 || con.raws.Load() != 2 || con.restores.Load() != 2 {
+			t.Errorf("code %d stops %d raws %d restores %d", res.Code, con.stops.Load(), con.raws.Load(), con.restores.Load())
+		}
+		if got := <-typed; got != "ok\r" {
+			t.Errorf("typed %q", got)
+		}
+		// Put back before the stop, and again at the end.
+		if out := con.out.String(); strings.Count(out, resetTail) != 2 || !strings.HasPrefix(out, "\x1b[?7lX"+resetTail) {
+			t.Errorf("screen %q", out)
+		}
+		checkClean(t, cp, con)
+	})
+	t.Run("SIGTSTP before the session", func(t *testing.T) {
+		cp := newFakeCP(t)
+		reached := make(chan struct{})
+		release := make(chan struct{})
+		cp.resolve = func(w http.ResponseWriter, r *http.Request) {
+			close(reached)
+			<-release
+			writeJSON(w, 200, map[string]any{"host_id": testHostID, "hostname": "web1"})
+		}
+		typed := make(chan string, 1)
+		session(t, cp, typed)
+		con := newFakeCon()
+		run := begin(con, goodEnv(t, cp), "web1")
+		<-reached
+		con.sig <- syscall.SIGTSTP
+		deadline := time.Now().Add(5 * time.Second)
+		for con.stops.Load() < 1 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(release)
+		waitFor(con, "X")
+		if _, err := con.keys.Write([]byte("ok\r")); err != nil {
+			t.Fatal(err)
+		}
+		res := run.wait(t)
+		if res.Code != 0 || con.stops.Load() != 1 || con.raws.Load() != 1 {
+			t.Errorf("code %d stops %d raws %d", res.Code, con.stops.Load(), con.raws.Load())
+		}
+		checkClean(t, cp, con)
+	})
+	t.Run("SIGQUIT in the session", func(t *testing.T) {
+		cp := newFakeCP(t)
+		up := session(t, cp, make(chan string, 1))
+		con := newFakeCon()
+		run := begin(con, goodEnv(t, cp), "web1")
+		<-up
+		waitFor(con, "X")
+		con.sig <- syscall.SIGQUIT
+		res := run.wait(t)
+		if res.Code != 131 || res.Signal != nil || con.restores.Load() != 1 || !strings.HasSuffix(con.out.String(), "X"+resetTail) {
+			t.Errorf("%+v restores %d screen %q", res, con.restores.Load(), con.out.String())
+		}
+		checkClean(t, cp, con)
+	})
+}
+
+// A panic while raw mode is on puts the terminal back, reset tail and
+// all, and then goes on as a panic.
+func TestPanicRestoresTheTerminal(t *testing.T) {
+	cp := newFakeCP(t)
+	cp.terminal = func(ctx context.Context, c *wstest.Conn, r *http.Request) {
+		start(ctx, c)
+		sendBytes(ctx, c, []byte("\x1b(0BOOM"))
+		<-ctx.Done()
+	}
+	con := newFakeCon()
+	cons := con.console()
+	var screen safeBuf
+	cons.Out = &panicOnce{w: &screen, at: "BOOM"}
+	got := make(chan any, 1)
+	go func() {
+		defer func() { got <- recover() }()
+		Run([]string{"web1"}, goodEnv(t, cp).get, cons, "v1.2.3")
+	}()
+	select {
+	case p := <-got:
+		if p != "test fault" {
+			t.Errorf("recovered %v", p)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no panic")
+	}
+	if con.raws.Load() != 1 || con.restores.Load() != 1 || screen.String() != resetTail {
+		t.Errorf("raws %d restores %d screen %q", con.raws.Load(), con.restores.Load(), screen.String())
+	}
+}

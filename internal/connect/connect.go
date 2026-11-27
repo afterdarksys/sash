@@ -40,8 +40,9 @@ import (
 // bounded); frames of any size (a message over 1 MiB ends the session),
 // or frames that break the WebSocket rules (the session ends with
 // protocol); and a terminal left in raw mode or in a mode the host set
-// (it is restored once on every way out, on SIGTERM and SIGHUP too, after
-// resetTail). The client holds no grant and no key, records nothing, and
+// (it is restored, after resetTail, on every way out, SIGTERM, SIGHUP,
+// SIGQUIT and a panic too, and while SIGTSTP has the client stopped;
+// raw mode is entered again when it continues). The client holds no grant and no key, records nothing, and
 // never speaks to an agent. It does not protect what the screen shows,
 // which is the host's, nor a workstation whose user or root is hostile.
 
@@ -77,8 +78,9 @@ const (
 	nameMax     = 253
 )
 
-// sigResize is the window-size signal, where there is one.
-var sigResize os.Signal
+// sigResize is the window-size signal, sigStop the stop signal from the
+// terminal or kill (SIGTSTP), and sigQuit SIGQUIT, where there are such.
+var sigResize, sigStop, sigQuit os.Signal
 
 // Console is the person's terminal.
 type Console struct {
@@ -90,9 +92,12 @@ type Console struct {
 	Size func() (rows, cols int)
 	// Raw enters raw mode; restore puts the mode back, and acts once.
 	Raw func() (restore func() error, err error)
-	// Signals delivers interrupt, terminate, hangup and window-size
-	// signals until stop is called.
+	// Signals delivers interrupt, terminate, hangup, quit, stop and
+	// window-size signals until stop is called.
 	Signals func() (ch <-chan os.Signal, stop func())
+	// Stop stops the process as SIGTSTP asks and returns once it is
+	// continued (at once, if the process could not be stopped).
+	Stop func()
 }
 
 // Result is how a run ended. Signal is set when SIGTERM or SIGHUP ended
@@ -201,6 +206,16 @@ func agentName(version string) string {
 // getenv reads SYSTEMAPI_URL and SYSTEMAPI_TOKEN_FILE and nothing else.
 func Run(args []string, getenv func(string) string, con Console, version string) Result {
 	r := &run{con: con}
+	// A panic puts the terminal back, reset tail and all, before it goes
+	// on: nothing leaves the terminal raw.
+	defer func() {
+		if p := recover(); p != nil {
+			if rerr := r.restoreTerm(); rerr != nil {
+				r.say("sash: terminal not restored")
+			}
+			panic(p)
+		}
+	}()
 	host, root, ok := parseArgs(args)
 	if !ok {
 		r.say(msgUsage)
@@ -247,6 +262,11 @@ func Run(args []string, getenv func(string) string, con Console, version string)
 			select {
 			case sig := <-sigs:
 				if sig == sigResize {
+					continue
+				}
+				if sig == sigStop {
+					// Raw mode is not on yet: stop as a program does.
+					con.Stop()
 					continue
 				}
 				earlyMu.Lock()
@@ -334,11 +354,15 @@ func clampSize(n int) int {
 }
 
 // bySignal is the end a signal asks for: the terminal is restored first.
+// SIGQUIT ends with 131 and no core dump or stack trace.
 func (r *run) bySignal(sig os.Signal) Result {
 	rerr := r.restoreTerm()
 	if sig == os.Interrupt {
 		r.say(msgInterrupted)
 		return r.done(Result{Code: 130}, rerr)
+	}
+	if sig == sigQuit {
+		return r.done(Result{Code: 131}, rerr)
 	}
 	code := 143
 	if sig == syscall.SIGHUP {
@@ -378,6 +402,29 @@ func (r *run) restoreTerm() error {
 	}
 	r.restore = nil
 	return rerr
+}
+
+// suspend is SIGTSTP: the terminal is put back (reset tail and mode), the
+// process stops, and once it is continued raw mode is entered again. It
+// is false when raw mode cannot be entered again: the session then ends,
+// closed, rather than run on a terminal in the wrong mode.
+func (r *run) suspend() bool {
+	wasRaw := r.restore != nil
+	if wasRaw {
+		if err := r.restoreTerm(); err != nil {
+			r.say("sash: terminal not restored")
+		}
+	}
+	r.con.Stop()
+	if !wasRaw {
+		return true
+	}
+	restore, err := r.con.Raw()
+	if err != nil {
+		return false
+	}
+	r.restore = restore
+	return true
 }
 
 // done says when the terminal could not be restored.
@@ -506,6 +553,16 @@ func (r *run) session(ctx context.Context, conn *wsclient.Conn, sigs <-chan os.S
 					continue
 				}
 				if !resize() {
+					return end(Result{Code: 1}, msgLost)
+				}
+				continue
+			}
+			if sig == sigStop {
+				if !r.suspend() {
+					return end(Result{Code: 2}, msgNoTerminal)
+				}
+				// The window may have changed while stopped.
+				if started && !resize() {
 					return end(Result{Code: 1}, msgLost)
 				}
 				continue

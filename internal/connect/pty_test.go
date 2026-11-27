@@ -30,12 +30,14 @@ type ptyStep struct {
 	Signal  string  `json:"signal,omitempty"`
 	Sleep   float64 `json:"sleep,omitempty"`
 	Winsize []int   `json:"winsize,omitempty"`
+	Check   bool    `json:"check,omitempty"`
 }
 
 type ptyReport struct {
 	Code     int    `json:"code"`
 	TTY      string `json:"tty"`
 	Restored bool   `json:"restored"`
+	Checks   []bool `json:"checks"`
 	Error    string `json:"error"`
 }
 
@@ -228,4 +230,46 @@ func TestEnvironmentCannotChangeTheRoots(t *testing.T) {
 			}
 		})
 	}
+}
+
+// On a real terminal: SIGTSTP puts the terminal's mode back while the
+// process is stopped and raw mode is entered again when it is continued
+// (^D then reaches the host as input, not as the end of a line); SIGQUIT
+// restores the terminal and ends with 131; a panic while raw restores the
+// terminal before the process ends.
+func TestStopQuitAndPanicOnAPTY(t *testing.T) {
+	ready := ptyStep{Expect: "READY"}
+	t.Run("SIGTSTP then SIGCONT", func(t *testing.T) {
+		cp := newFakeCP(t)
+		cp.terminal = ptyTerminal(make(chan string, 1))
+		rep := runConnectPTYEnv(t, cp, []ptyStep{
+			ready, {Check: true}, {Signal: "TSTP"}, {Sleep: 0.5}, {Check: true}, {Signal: "CONT"}, {Sleep: 0.5}, {Check: true}, {Send: "\x04"},
+		}, nil)
+		if rep.Code != 0 || !rep.Restored || len(rep.Checks) != 3 || rep.Checks[0] || !rep.Checks[1] || rep.Checks[2] {
+			t.Errorf("code %d restored %v checks %v tty %q", rep.Code, rep.Restored, rep.Checks, rep.TTY)
+		}
+		if strings.Count(rep.TTY, resetTail+"\x1b[?2004l") != 2 {
+			t.Errorf("tty %q", rep.TTY)
+		}
+	})
+	t.Run("SIGQUIT", func(t *testing.T) {
+		cp := newFakeCP(t)
+		cp.terminal = ptyTerminal(make(chan string, 1))
+		rep := runConnectPTYEnv(t, cp, []ptyStep{ready, {Signal: "QUIT"}}, nil)
+		if rep.Code != 131 || !rep.Restored || !strings.Contains(rep.TTY, resetTail+"\x1b[?2004l") || strings.Contains(rep.TTY, "goroutine") {
+			t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
+		}
+	})
+	t.Run("a panic", func(t *testing.T) {
+		cp := newFakeCP(t)
+		cp.terminal = func(ctx context.Context, c *wstest.Conn, r *http.Request) {
+			start(ctx, c)
+			sendBytes(ctx, c, []byte("BOOM"))
+			<-ctx.Done()
+		}
+		rep := runConnectPTYEnv(t, cp, []ptyStep{{Expect: "test fault"}}, map[string]string{"SASH_CONNECT_TEST_PANIC": "1"})
+		if rep.Code != 2 || !rep.Restored || !strings.Contains(rep.TTY, resetTail+"\x1b[?2004l") {
+			t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
+		}
+	})
 }

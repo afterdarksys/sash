@@ -13,5 +13,6 @@ func OSConsole(in, out, errOut *os.File) Console {
 		Size:    func() (int, int) { return 24, 80 },
 		Raw:     func() (func() error, error) { return nil, os.ErrInvalid },
 		Signals: func() (<-chan os.Signal, func()) { return make(chan os.Signal), func() {} },
+		Stop:    func() {},
 	}
 }
