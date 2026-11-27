@@ -829,3 +829,57 @@ func TestTermPromptSecretLineIsNotHistory(t *testing.T) {
 		}
 	}
 }
+
+// showTerm records what Options.Show had handed over when each question
+// was asked.
+type showTerm struct {
+	fakeTerm
+	shown *[]string
+	at    []string
+}
+
+func (s *showTerm) Prompt(a TermAsk) (string, error) {
+	s.at = append(s.at, strings.Join(*s.shown, "|"))
+	return s.fakeTerm.Prompt(a)
+}
+
+func (s *showTerm) Confirm(a TermAsk) (bool, error) {
+	s.at = append(s.at, strings.Join(*s.shown, "|"))
+	return s.fakeTerm.Confirm(a)
+}
+
+// What a run printed is handed to Options.Show before a question, and
+// only what was not handed over is in the Outcome; stderr inside a try
+// or retry waits, since the try may move it into its catch.
+func TestTermShowsOutputBeforeTheQuestion(t *testing.T) {
+	var shown []string
+	term := &showTerm{fakeTerm: fakeTerm{answers: []string{"nginx", "x"}, yes: []bool{true}}, shown: &shown}
+	show := func(o, e string) { shown = append(shown, o+"/"+e) }
+	src := "echo about to wipe\nlog warn \"careful\"\nterm confirm \"ok?\" && echo yes\n" +
+		"try { echo inside; log warn \"held\"; let a = (term prompt \"name?\") } catch e { echo caught }\necho $a\n" +
+		"retry 2 { let b = (term prompt \"again?\") }\necho end\n"
+	out := Run(src, grant.Grant{}, skillParent{t}, Options{Term: term, Show: show})
+	if len(term.at) != 3 || !strings.HasPrefix(term.at[0], "about to wipe\n/") || !strings.Contains(term.at[0], "warn careful") {
+		t.Fatalf("shown at each question: %q", term.at)
+	}
+	if !strings.HasSuffix(term.at[1], "|yes\ninside\n/") || strings.Contains(term.at[1], "held") {
+		t.Errorf("inside a try, stdout is shown and stderr held: %q", term.at[1])
+	}
+	if !strings.Contains(term.at[2], "held") {
+		t.Errorf("after the try, its stderr is shown: %q", term.at[2])
+	}
+	all := strings.Join(shown, "") + out.Stdout + out.Stderr
+	for _, want := range []string{"about to wipe", "careful", "yes", "inside", "held", "nginx", "end"} {
+		if strings.Count(all, want) != 1 {
+			t.Errorf("%q appears %d times in %q", want, strings.Count(all, want), all)
+		}
+	}
+	if out.Status != 0 || out.Stdout != "end\n" || out.Stderr != "" {
+		t.Errorf("the Outcome holds only what was not shown: %+v", out)
+	}
+	// Without Show the Outcome holds everything, as before.
+	out = Run(src, grant.Grant{}, skillParent{t}, Options{Term: &fakeTerm{answers: []string{"nginx", "x"}, yes: []bool{true}}})
+	if out.Stdout != "about to wipe\nyes\ninside\nnginx\nend\n" || !strings.Contains(out.Stderr, "careful") || !strings.Contains(out.Stderr, "held") {
+		t.Errorf("no Show: %+v", out)
+	}
+}

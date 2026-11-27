@@ -1307,6 +1307,18 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		// already, and the question starts on its own line.
 		e.opt.Term = &asker{in: in, out: errOut, keys: keys, lead: "\r\n\x1b[J", flush: func() error { return flushInput(int(in.Fd())) }}
 	}
+	// What a line printed before it asks is on the screen before the
+	// question, below the line as typed, escaped as writeSubmit does; the
+	// rest follows the line's end as before. A failed write is not
+	// retried here: the question and the line's end still go out.
+	e.opt.Show = func(stdout, stderr string) {
+		if err := writeAll(out, []byte("\r\n\x1b[J"+termBytes(out, stdout))); err != nil {
+			return
+		}
+		if err := writeAll(errOut, []byte(termBytes(errOut, stderr))); err != nil {
+			return
+		}
+	}
 	status := e.loop(keys, out, errOut)
 	// Logout writes a recording set -o record started, asking under
 	// confirm like any file.write.

@@ -173,6 +173,7 @@ func (m *machine) runTerm(st expStage) (value, int) {
 		if m.term == nil {
 			return "", termNone
 		}
+		m.showPending()
 		if op == "confirm" {
 			yes, err := m.term.Confirm(ask)
 			if err == nil && yes {
@@ -249,4 +250,24 @@ func (m *machine) runTerm(st expStage) (value, int) {
 		return value{kind: valData, d: secretVal{answer}}, 0
 	}
 	return value{kind: valStr, s: answer}, 0
+}
+
+// showPending hands Options.Show what the run has printed and not yet
+// shown, just before a person is asked: stdout whole, stderr up to the
+// first try or retry still running.
+func (m *machine) showPending() {
+	if m.show == nil {
+		return
+	}
+	lim := m.err.Len()
+	if len(m.errHolds) > 0 {
+		lim = m.errHolds[0]
+	}
+	lim = max(lim, m.shownErr)
+	out := m.out.String()[m.shownOut:]
+	errText := m.err.String()[m.shownErr:lim]
+	m.shownOut, m.shownErr = m.out.Len(), lim
+	if out != "" || errText != "" {
+		m.show(out, safeText(errText))
+	}
 }

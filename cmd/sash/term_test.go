@@ -46,8 +46,9 @@ func TestBinaryTermAtATerminal(t *testing.T) {
 			{Expect: "again? [y + Enter / N] "}, {Sleep: 0.4}, {Send: "y"}, {Sleep: 0.1}, {Send: "\r"},
 		},
 	})
-	// A script's output is written when it ends, after both questions.
-	if rep.Code != 0 || !rep.Restored || !strings.HasSuffix(rep.TTY, "got nginx\r\nyes\r\n") {
+	// What the script printed is written before the next question, and
+	// the rest when it ends.
+	if rep.Code != 0 || !rep.Restored || !strings.Contains(rep.TTY, "got nginx\r\n") || strings.Index(rep.TTY, "got nginx") > strings.Index(rep.TTY, "again?") || !strings.HasSuffix(rep.TTY, "yes\r\n") {
 		t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
 	}
 	// The question goes to stderr's terminal even when stdout is a pipe,
@@ -260,5 +261,39 @@ func TestBinaryTermANoDoesNotAnswerTheNextPrompt(t *testing.T) {
 		if rep.Code != 0 || !rep.Restored || !strings.Contains(rep.TTY, "declined") || !strings.Contains(rep.TTY, "got nginx end") {
 			t.Errorf("%s: code %d restored %v tty %q", name, rep.Code, rep.Restored, rep.TTY)
 		}
+	}
+}
+
+// What a script printed is on the screen before the question it leads
+// to, escaped as the rest is, and is not printed twice; a pipe still gets
+// the bytes as they are. The prompt does the same for a line.
+func TestBinaryTermOutputComesBeforeTheQuestion(t *testing.T) {
+	bin := ptyBin(t)
+	const src = "echo \"about to wipe\" [ unbase64(\"G1sySg==\") ]\nterm confirm \"ok?\" && echo yes\n"
+	rep := runPTY(t, ptyRun{
+		Argv:  []string{bin, "-c", src},
+		Steps: []ptyStep{{Expect: "ok? [y + Enter / N] "}, {Sleep: 0.4}, {Send: "y"}, {Sleep: 0.1}, {Send: "\r"}, {Expect: "yes"}},
+	})
+	wipe, ask := strings.Index(rep.TTY, "about to wipe <U+001B>[2J"), strings.Index(rep.TTY, "ok? [y + Enter / N]")
+	if rep.Code != 0 || !rep.Restored || wipe < 0 || ask < 0 || wipe > ask || strings.Count(rep.TTY, "about to wipe") != 1 || strings.Contains(rep.TTY, "\x1b[2J") {
+		t.Errorf("script: code %d tty %q", rep.Code, rep.TTY)
+	}
+	rep = runPTY(t, ptyRun{
+		Argv: []string{bin, "-c", src}, Stdout: "pipe",
+		Steps: []ptyStep{{Expect: "ok? [y + Enter / N] "}, {Sleep: 0.4}, {Send: "y"}, {Sleep: 0.1}, {Send: "\r"}},
+	})
+	if rep.Code != 0 || rep.Stdout != "about to wipe \x1b[2J\nyes\n" {
+		t.Errorf("piped: code %d stdout %q", rep.Code, rep.Stdout)
+	}
+	rep = runPTY(t, ptyRun{
+		Argv: []string{bin},
+		Steps: []ptyStep{
+			{Expect: "sash> "}, {Send: "echo before; let a = (term prompt \"name?\")\r"}, {Expect: "name? "}, {Sleep: 0.4}, {Send: "bob\r"},
+			{Expect: "sash> "}, {Send: "\x04"},
+		},
+	})
+	before, name := strings.Index(rep.TTY, "before\r\n"), strings.Index(rep.TTY, "name? ")
+	if rep.Code != 0 || before < 0 || name < 0 || before > name || strings.Count(rep.TTY, "before\r\n") != 1 {
+		t.Errorf("prompt: code %d tty %q", rep.Code, rep.TTY)
 	}
 }

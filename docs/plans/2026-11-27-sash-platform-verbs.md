@@ -76,6 +76,8 @@ A terminal exists when sash's stdin and stderr are both terminals (`line.IsTerm`
 | SIGHUP | The existing hangup path (`State.HangUp`, `cmd/sash/main.go:134-151`): the read ends, status 129. | same |
 | Deadline (`timeout`, `atomic` is refused below) | The read ends at the deadline: exit 2 `timeout` (existing word). Waiting counts against `timeout`. | same |
 
+Before any question (and before a `set -o confirm` question), `Options.Show` is handed the run's stdout and stderr so far (stderr only up to the first `try` or `retry` still running): `cmd/sash/main.go` writes it through `emit`, the prompt through `termBytes`, and the Outcome no longer holds it.
+
 ### 1.4 What an answer can never do
 
 | Rule | How it is enforced |

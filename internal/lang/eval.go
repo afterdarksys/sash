@@ -109,6 +109,14 @@ type Options struct {
 	// Only a caller whose stdin and stderr are both terminals, and whose
 	// stdin is not the script, sets it; nil is no terminal.
 	Term Term
+	// Show, when set, is handed the run's stdout and stderr so far just
+	// before a person is asked (term, or a confirm question), so what a
+	// script printed is on the screen before the question it leads to.
+	// What Show was handed is not in the Outcome again. stderr is safe
+	// text, as in the Outcome; the caller escapes for its terminal. stderr
+	// written inside a try or retry is held back, since the try may move
+	// it into its catch.
+	Show func(stdout, stderr string)
 }
 
 // Run expands src, then parses and executes it. Toolkit names call p.
@@ -155,6 +163,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m.confirm = opt.Confirm
 	m.interrupts = opt.Interrupts
 	m.term = opt.Term
+	m.show = opt.Show
 	if opt.Tape != nil {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
@@ -173,7 +182,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 			status = m.haltStatus
 		}
 	}
-	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: safeText(m.err.String()), Prefix: m.prefix()}
+	out := Outcome{Status: status, Stdout: m.out.String()[m.shownOut:], Stderr: safeText(m.err.String()[m.shownErr:]), Prefix: m.prefix()}
 	if m.ctl == ctlExit {
 		out.Status = m.exitCode
 		out.Exit = true
@@ -263,6 +272,13 @@ type machine struct {
 	interrupts func() (<-chan struct{}, func())
 	// term is Options.Term: nil when there is no terminal to ask.
 	term Term
+	// show is Options.Show. shownOut and shownErr are how much of out and
+	// err it was handed; errHolds are the stderr marks of the try and
+	// retry blocks running, outermost first: stderr past the first is
+	// not shown, since those blocks rewrite it.
+	show               func(stdout, stderr string)
+	shownOut, shownErr int
+	errHolds           []int
 	// drains is set on a Run's own machine: it drains the State's late
 	// queue before each top-level statement. src is the Run's source as
 	// given (a session recording's header hashes it, as --record does)
@@ -350,6 +366,8 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 		}
 	}
 	mark := m.err.Len()
+	m.errHolds = append(m.errHolds, mark)
+	defer func() { m.errHolds = m.errHolds[:len(m.errHolds)-1] }()
 	var st int
 	var stop bool
 	for attempt := 1; attempt <= n; attempt++ {
@@ -465,6 +483,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 				cells[i] = "'" + cells[i] + "'"
 			}
 		}
+		m.showPending()
 		yes, interrupted := m.confirm("confirm " + needsCell(v.Key) + " " + strings.Join(cells, " ") + "? [y + Enter / N]")
 		if interrupted {
 			m.ctl = ctlHalt
@@ -1329,7 +1348,9 @@ func (m *machine) wordValue(w Word) (value, error) {
 // the caught map and out of the session's stderr. A jump passes through.
 func (m *machine) runTry(t *Try) (int, bool) {
 	mark := m.err.Len()
+	m.errHolds = append(m.errHolds, mark)
 	st, stop := m.runProg(&t.Body)
+	m.errHolds = m.errHolds[:len(m.errHolds)-1]
 	if !stop || m.ctl != ctlNone {
 		return st, stop
 	}

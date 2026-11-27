@@ -116,7 +116,17 @@ func main() {
 		os.Exit(langExit(2))
 	}
 	stopHup := watchHangup(st, hupGrace, os.Exit)
-	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts, Term: scriptTerm(args)})
+	opt := lang.Options{State: st, Interrupts: sigInterrupts, Term: scriptTerm(args)}
+	if opt.Term != nil {
+		// What the script printed is on the screen before the question it
+		// leads to, through the same escaping as the rest; it is not
+		// printed again at the end.
+		opt.Show = func(stdout, stderr string) {
+			emit(os.Stdout, stdout)
+			emit(os.Stderr, stderr)
+		}
+	}
+	got := lang.Run(src, g, p, opt)
 	emit(os.Stdout, got.Stdout)
 	emit(os.Stderr, got.Stderr)
 	// A recording set -o record started is written when the script ends,
