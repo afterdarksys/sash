@@ -5,7 +5,7 @@ The login and emergency shell of the SAH fleet: one Go binary that runs a closed
 ## Command line
 
 ```text
-sash [--session] [--plan] [-c script | file]   run a script; a terminal with no script is the live prompt
+sash [-l] [--session] [--plan] [-c script | file]   run a script; a terminal with no script is the live prompt
 sash --needs [--policy] [-c script | file]      the grant a script asks for; runs nothing
 sash --lint [-c script | file]                  advisory findings; runs nothing
 sash --record out.jsonl --fixture fixture.json [--expires D] [-c script | file]
@@ -26,6 +26,12 @@ Without `--session` the grant is empty: verbs are denied and filters still run. 
 ```
 
 The release binary is built without the `sashwasm` tag.
+
+## As a login shell
+
+sash can be an account's shell. It then behaves exactly as a hand start: an empty grant, where verbs are denied and filters run, and one notice on stderr at the prompt (`sash: no session grant: verbs are denied, filters run`). `-l` and `--login` are accepted as the first argument and ignored, and an `argv[0]` of `-sash` changes nothing. `sshd` running `$SHELL -c "<command>"` is the ordinary `-c` path.
+
+It reads no `/etc/profile`, `~/.profile`, rc file, or `ENV` file, takes no environment variable as a name, and executes nothing: `scp`, `sftp`, `rsync`, and `git` over ssh into such an account are exit 127 `unknown`, by design. No error falls through to another shell. It opens no connection and asks no agent for a grant or a lease, and it is the same as root. A person with root adds the binary's path to `/etc/shells` and runs `chsh`; sash never edits either file.
 
 ## Version and codes
 

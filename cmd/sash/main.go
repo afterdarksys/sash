@@ -1,7 +1,8 @@
 // Command sash runs one script. --session reads the grant and verb pipes.
 // A terminal with no script is the live prompt. Non-tty stdin is
 // still one script. A hand start, without --session, has an empty grant:
-// toolkit verbs are denied and filters still run. --needs reads a script
+// toolkit verbs are denied and filters still run. As a login shell (-sash,
+// -l, --login) it does nothing more: see loginArgs. --needs reads a script
 // and prints what it would ask for; it runs nothing. --lint reads a script
 // and prints advisory findings; it runs nothing either. --record and
 // --replay run a script offline against a fixture or a recording (tape.go).
@@ -33,8 +34,29 @@ func (closedParent) Do(parent.Verb) (parent.Result, error) {
 	return parent.Result{}, fmt.Errorf("no parent")
 }
 
+// msgHandStart is the one notice of a hand start at a terminal.
+const msgHandStart = "sash: no session grant: verbs are denied, filters run"
+
+// loginArgs drops one leading -l or --login.
+//
+// Threats: a login shell that does what other shells do at login. sash
+// as an account's shell adds only this: the flag is accepted and ignored,
+// and argv[0] (-sash) is never read. No profile, rc file, or ENV file is
+// read, no environment variable becomes a name, nothing is executed (so
+// scp, sftp, rsync, and git over ssh into such an account are exit 127),
+// no error falls through to another shell, no connection is opened, and
+// no grant or lease is asked for: without --session the grant is empty.
+// It does not make the account safe to log in to in any other way; a
+// person with root lists the binary in /etc/shells and runs chsh.
+func loginArgs(args []string) []string {
+	if len(args) > 0 && (args[0] == "-l" || args[0] == "--login") {
+		return args[1:]
+	}
+	return args
+}
+
 func main() {
-	args := os.Args[1:]
+	args := loginArgs(os.Args[1:])
 	if skillMode(args) {
 		os.Exit(runSkill(args, os.Stdout))
 	}
@@ -52,7 +74,8 @@ func main() {
 	}
 	g := grant.Grant{}
 	var p parent.Parent = closedParent{}
-	if len(args) > 0 && args[0] == "--session" {
+	inSession := len(args) > 0 && args[0] == "--session"
+	if inSession {
 		args = args[1:]
 		var err error
 		g, p, err = session.Open(os.NewFile(3, "grant"), os.NewFile(4, "fleet"), os.NewFile(5, "emergency"), os.NewFile(6, "verb"), time.Now())
@@ -72,6 +95,10 @@ func main() {
 		if plan {
 			fmt.Fprintln(os.Stderr, "usage: sash --plan needs a script")
 			os.Exit(2)
+		}
+		if !inSession {
+			// A hand start: say once what this prompt can do.
+			fmt.Fprintln(os.Stderr, msgHandStart)
 		}
 		os.Exit(line.Loop(os.Stdin, os.Stdout, os.Stderr, g, p))
 	}
@@ -200,7 +227,7 @@ func scriptTerm(args []string) lang.Term {
 	return line.ScriptTerm(os.Stdin, os.Stderr)
 }
 
-const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list; sash version --json; sash codes --json"
+const usage = "usage: sash [-l] [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list; sash version --json; sash codes --json"
 
 // needsMode is true when --needs is among the leading flags.
 func needsMode(args []string) bool { return flagMode(args, "--needs") }
