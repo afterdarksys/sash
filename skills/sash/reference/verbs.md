@@ -152,8 +152,8 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `checks` | builtin | - | no | The check rows so far (`check`, `result`). |
 | `origin` | builtin | - | no | `origin name`: where a name's value came from, as rows. |
 | `log` | builtin | - | no | `log debug\|info\|warn\|error <msg> [ {fields} ]`: one line on stderr. |
-| `term prompt` | builtin | - | no | `term prompt [-s] "<question>"`: asks the person at the terminal and gives the line they type, without its Enter. No terminal is exit 2 `term needs a terminal`. The answer is untrusted text (`features.md`). `-s` reads without echo and is legal only as `declare -s name = (term prompt -s "<question>")`. |
-| `term confirm` | builtin | - | no | `term confirm "<question>"`: status 0 for `y` or `Y` then Enter, 1 for anything else. It is not the answer to confirm mode or to any approval. |
+| `term prompt` | builtin | - | no | `term prompt [-s] "<question>"`: asks the person at the terminal (`script asks: <question>`) and gives the line they type, without its Enter; an empty line is status 1 `term prompt: empty answer`. No terminal is exit 2 `term needs a terminal`. The answer is untrusted text (`features.md`). `-s` reads without echo and is legal only as `declare -s name = (term prompt -s "<question>")`. |
+| `term confirm` | builtin | - | no | `term confirm "<question>"`: asks `script asks: <question> [y + Enter / N]`; status 0 for `y` or `Y` then Enter, 1 for anything else, Ctrl-D included. It is not the answer to confirm mode or to any approval. |
 
 ## Session words
 
