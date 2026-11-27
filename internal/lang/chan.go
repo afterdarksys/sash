@@ -40,7 +40,8 @@ import (
 const msgRecvOnly = "recv only as for x in recv c"
 
 // chanOpsIn calls fn for every send and recv loop in p, nested bodies
-// included, fn bodies too.
+// included, fn bodies too, but not a nested par's: its ops name its own
+// channels, and chanWalk checks them against it.
 func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
 	if p == nil {
 		return
@@ -53,6 +54,8 @@ func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
 			if s.Recv != "" {
 				fn("recv", s.Recv, s)
 			}
+		case *Par:
+			continue
 		}
 		for _, b := range lintBodies(s) {
 			chanOpsIn(b, fn)
@@ -63,7 +66,10 @@ func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
 // chanPlaces is the static channel rules (section 2): no send or recv in
 // a fn or a retry, recv only as a for source, each op naming a channel of
 // its own par, and each channel with a sender branch and a receiver
-// branch, no branch both.
+// branch, no branch both. A whole par with channels inside a fn or a
+// retry is legal (section 3.3): its ops reach only its own channels, so
+// the rule's reasons, an op the sender and receiver sets do not show and
+// a retried send, do not apply to it.
 func chanPlaces(prog *Program) error {
 	var msg string
 	needsEachStage(prog, func(st Stage) {

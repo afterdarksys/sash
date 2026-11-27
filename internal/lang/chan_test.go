@@ -43,9 +43,14 @@ func TestChanParseErrors(t *testing.T) {
 		"par 2 chan c(1) { send c 1; for k v in recv c { echo $k } }":              "parse: recv only as for x in recv c",
 		"par 2 chan c(1) { retry 2 { send c 1 }; " + ok + " }":                     "parse: send inside retry",
 		"par 2 chan c(1) { send c 1; retry 2 { " + ok + " } }":                     "parse: recv inside retry",
-		"fn send() { echo a }":                                                     "",
-		"fn chan() { echo a }":                                                     "",
-		"fn recv() { echo a }":                                                     "",
+		// A par inside a fn or a retry: an op directly in a fn or a retry
+		// within it is still refused.
+		"fn f() { par 2 chan c(1) { branch { fn g() { send c 1 }; send c 2 }; " + ok + " } }": "parse: send inside fn",
+		"retry 2 { par 2 chan c(1) { retry 2 { send c 1 }; " + ok + " } }":                    "parse: send inside retry",
+		"fn f() { par 2 chan c(1) { send c 1; retry 2 { " + ok + " } } }":                     "parse: recv inside retry",
+		"fn send() { echo a }": "",
+		"fn chan() { echo a }": "",
+		"fn recv() { echo a }": "",
 	} {
 		f := &fake{}
 		out := Run(src, allow(), f, Options{})
@@ -53,10 +58,13 @@ func TestChanParseErrors(t *testing.T) {
 			t.Errorf("%q: status %d err %q", src, out.Status, out.Stderr)
 		}
 	}
-	// Legal: retry inside the loop body, per item; try around an op.
+	// Legal: retry inside the loop body, per item; try around an op; a
+	// whole channel par inside a retry (each attempt a fresh par) or a fn.
 	for _, src := range []string{
 		"par 2 chan c(1) { send c 1; for j in recv c { retry 2 { echo $j } } }",
 		"par 2 chan c(1) { try { send c 1 } catch { echo no }; try { for j in recv c { echo $j } } catch { echo no } }",
+		"retry 2 { par 2 chan c(1) { send c 1; for x in recv c { echo $x } } }",
+		"fn f() { par 2 chan c(1) { send c 1; for x in recv c { echo $x } } }\nf",
 	} {
 		if out := Run(src, allow(), &fake{}, Options{}); out.Status != 0 || out.Stdout != "1\n" {
 			t.Errorf("%q: %+v", src, out)
