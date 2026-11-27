@@ -7,8 +7,11 @@
 // none says to turn a mode off, widen a grant, use another credential or
 // channel, or names an override, and a test holds each to a banned-phrase
 // list and to a reviewed fixture. A second test scans the fixed messages
-// of internal/lang, internal/grant, internal/session and internal/proto
-// and fails when one has no entry here or its exit differs. The catalog
+// of internal/lang, internal/grant, internal/session, internal/proto and
+// internal/connect and fails when one has no entry here or its exit
+// differs. The connect area also holds the codes a control plane or a host
+// may send to sash connect: the client prints this build's meaning for a
+// code and never the sender's own text (Connect). The catalog
 // names what the binary prints; it grants nothing and decides nothing,
 // and it does not protect against a reader who treats any text as an
 // order.
@@ -34,8 +37,8 @@ type Code struct {
 	prints []string
 }
 
-// Areas are the catalog's areas. connect, tls, and fetch have no entry
-// until those features exist.
+// Areas are the catalog's areas. tls and fetch have no entry until those
+// features exist.
 var Areas = []string{"parse", "grant", "verb", "file", "atomic", "secret", "term", "replay", "connect", "tls", "fetch", "session"}
 
 // FixMax is the longest fix sentence, in bytes.
@@ -140,9 +143,100 @@ var table = []Code{
 	{"replay_truncated", 2, "replay", "the recording stopped at its size cap, and the run went past that point", "A person records a shorter run.", []string{"replay_truncated"}},
 }
 
+// The connect area: what sash connect prints itself, then the codes a
+// control plane or a host may send it (refusal, ended). For a sent code the
+// client prints this table's meaning and never the sender's text.
+var connectTable = []Code{
+	{"connect_usage", 2, "connect", "\"usage: sash connect [--root] <host>\": connect takes one host and at most --root, and no other flag, script, or argument", "A person types the command as the usage line shows.", []string{"usage: sash connect"}},
+	{"connect_no_terminal", 2, "connect", "\"connect needs a terminal\": stdin, stdout, and stderr must all be terminals; nothing was sent", "A person runs it at a terminal.", []string{"connect needs a terminal"}},
+	{"connect_invalid_url", 2, "connect", "\"connect: invalid SYSTEMAPI_URL\": the control plane's address is missing, is not https, or holds a user, a query, or a path", "A person sets SYSTEMAPI_URL to the https address of the control plane.", []string{"connect: invalid SYSTEMAPI_URL"}},
+	{"connect_invalid_host", 2, "connect", "\"connect: invalid host name\": a host is 1 to 253 letters, digits, dots, underscores, and hyphens; nothing was sent", "A person types the host's name or id.", []string{"connect: invalid host name"}},
+	{"token_file_rejected", 2, "connect", "\"connect: token_file_rejected\": the file SYSTEMAPI_TOKEN_FILE names is not a regular file of this user with no group or other permission, is over 4096 bytes, or does not hold one token; nothing was sent", "A person logs in again with the systemapi CLI, which writes the file.", []string{"connect: token_file_rejected"}},
+	{"connect_no_login", 2, "connect", "\"connect: no login; a person logs in with the systemapi CLI\": SYSTEMAPI_TOKEN_FILE is not set to an absolute path, or no file is there; sash does not log in", "A person logs in with the systemapi CLI.", []string{"connect: no login; a person logs in with the systemapi CLI"}},
+	{"request_failed", 1, "connect", "\"connect: request_failed\": a call to the control plane failed: the network, TLS, a timeout, a redirect (never followed), or an answer that could not be read", "A person checks the address and the network; the operator checks the control plane.", []string{"connect: request_failed"}},
+	{"connect_refused", 126, "connect", "\"connect refused: <code>\": the control plane or the host refused the session; the code and this build's meaning for it follow, and a code this build does not list prints as itself or as unlisted", "A person reads the code; no session was opened.", []string{"connect refused:"}},
+	{"connect_not_sah3", 1, "connect", "\"connect: the server does not speak sah/3\": the upgrade was not answered 101, or the first frames were not the terminal protocol's", "The operator checks the control plane's version; a person checks the address.", []string{"connect: the server does not speak sah/3"}},
+	{"connect_closed", 1, "connect", "\"connect: closed\": the person typed ~. after Enter and the client closed the session", fixNothing, []string{"connect: closed"}},
+	{"connect_interrupted", 130, "connect", "\"connect: interrupted\": Ctrl-C before the session started; the connection was closed", fixNothing, []string{"connect: interrupted"}},
+	{"session_ended", 1, "connect", "\"session ended: <reason>\": the session ended without an exit status from the host's shell; the reason and this build's meaning for it follow", "A person reads the reason.", []string{"session ended:"}},
+	{"connection_lost", 1, "connect", "\"session ended: connection lost\": the connection closed with no report of how the session ended; the host stops the session's terminal", "A person reads the host's state before repeating a step.", []string{"session ended: connection lost"}},
+	{"protocol", 1, "connect", "\"session ended: protocol\": the server sent a frame over 1 MiB or broke the WebSocket rules, and the client closed the session", "The operator checks the control plane.", []string{"session ended: protocol"}},
+
+	// Sent in a pty_status error (the control plane's PTY_ERRORS).
+	refusal("ticket_invalid", "the ticket was missing, spent, expired, or issued for another host or purpose", "A person runs the command again; a ticket is used once."),
+	refusal("scope_denied", "this login may not open that session; a tenant admin decides who may", "A tenant admin decides who may open a session on this host."),
+	refusal("agent_offline", "the host's agent is not connected to the control plane", "The operator checks the host and its agent."),
+	refusal("lease_required", "the control plane cannot sign the session's lease", "The operator checks the control plane's signer."),
+	refusal("pty_user_unset", "the host has no account configured for terminal sessions", "The operator decides which account the host's sessions use."),
+	refusal("account_unmapped", "this login maps to no account on the host", "A tenant admin decides which account this login uses on the host."),
+	refusal("recording_unavailable", "the host cannot record the session, so it was not opened", "The operator checks the host's recording."),
+	refusal("root_unavailable", "a root session is not available on this host: the host's agent must record it", "The operator checks the host's agent and its recording."),
+	refusal("pty_start_failed", "the host could not start the session's terminal, or this login has too many sessions open", "A person decides whether to ask again; the operator checks the host."),
+	refusal("internal", "the control plane or the host failed in a way it does not name", "The operator checks the control plane's log."),
+	refusal("grant_purpose", "the host's agent refused the session's grant: it was signed for another purpose", "The operator checks the control plane and the agent."),
+	refusal("grant_binding", "the host's agent refused the session's grant: it was signed for another host or session", "The operator checks the control plane and the agent."),
+	refusal("sash_missing", "the host has no sash to run the session, and no other shell is started in its place", "The operator decides when sash is installed on the host."),
+
+	// Sent as an HTTP refusal of the resolve or the ticket call.
+	refusal("invalid_name", "the control plane does not take that host name", "A person types the host's name or id."),
+	refusal("not_found", "no host this login can see has that name or id", "A person checks the name; a tenant admin decides which hosts a login sees."),
+	refusal("ambiguous", "more than one host has that name", "A person names the host by its id."),
+	refusal("bad_purpose", "the control plane does not know the session purpose this client asked for", "The operator checks the control plane's version."),
+	refusal("rate_limited", "too many sessions were asked for on this host in the last minute", "A person waits a minute before asking again."),
+	refusal("tickets_unavailable", "the control plane cannot issue tickets now", "The operator checks the control plane."),
+	refusal("approval_required", "a root session on this host needs an approval; an approver decides", "A person asks for the approval; an approver decides."),
+	refusal("forbidden", "this login may not open that session; a tenant admin decides who may", "A tenant admin decides who may open a session on this host."),
+	refusal("token_expired", "your login expired; a person logs in again with the systemapi CLI", "A person logs in again with the systemapi CLI."),
+	refusal("fresh_token_expired", "a fresh login lasts 5 minutes; a person makes a new fresh login with the systemapi CLI just before opening a root session", "A person makes a new fresh login with the systemapi CLI."),
+	refusal("fresh_expired", "a fresh login lasts 5 minutes; a person makes a new fresh login with the systemapi CLI just before opening a root session", "A person makes a new fresh login with the systemapi CLI."),
+
+	// Sent as the reason of a pty_exit that carries no exit status.
+	ended("exited", "the host's shell ended and reported no exit status", fixNothing),
+	ended("max_duration", "the session reached the longest time a session may last", "A person opens a new session."),
+	ended("agent_disconnected", "the host's agent lost its connection to the control plane", "A person opens a new session once the host is back; the operator checks the agent."),
+	ended("stopped", "an admin, a policy change, or a re-check of this login stopped the session", "A tenant admin decides whether the session may be opened again."),
+}
+
+// sent are the codes a control plane or a host may send to sash connect:
+// the connect entries made by refusal and ended, and the grant refusals a
+// host's agent reports in a pty_status, which the grant area already names.
+var sent = map[string]bool{"grant_missing": true, "grant_bad_shape": true, "grant_star": true, "grant_bad_sig": true, "grant_expired": true}
+
+// refusal is a code sent to refuse a session: printed after "connect
+// refused: ", exit 126.
+func refusal(code, meaning, fix string) Code {
+	sent[code] = true
+	return Code{code, 126, "connect", meaning, fix, []string{"connect refused: " + code}}
+}
+
+// ended is a pty_exit reason: printed after "session ended: ", exit 1.
+func ended(code, meaning, fix string) Code {
+	sent[code] = true
+	return Code{code, 1, "connect", meaning, fix, []string{"session ended: " + code}}
+}
+
 func init() {
+	table = append(table, connectTable...)
 	sort.Slice(table, func(i, j int) bool { return table[i].Code < table[j].Code })
 }
+
+// Connect is the entry for a code a control plane or a host sent to sash
+// connect. Only a sent code is found: a code of another area, or one sash
+// connect prints itself, is not, so a sender cannot borrow its sentence.
+func Connect(code string) (Code, bool) {
+	if !sent[code] {
+		return Code{}, false
+	}
+	for _, c := range table {
+		if c.Code == code {
+			return c, true
+		}
+	}
+	return Code{}, false
+}
+
+// Sent reports whether Connect holds code.
+func Sent(code string) bool { return sent[code] }
 
 // All is the catalog, sorted by code.
 func All() []Code {

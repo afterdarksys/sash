@@ -1,5 +1,40 @@
 [
   {
+    "code": "account_unmapped",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "this login maps to no account on the host",
+    "fix": "A tenant admin decides which account this login uses on the host."
+  },
+  {
+    "code": "agent_disconnected",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "the host's agent lost its connection to the control plane",
+    "fix": "A person opens a new session once the host is back; the operator checks the agent."
+  },
+  {
+    "code": "agent_offline",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host's agent is not connected to the control plane",
+    "fix": "The operator checks the host and its agent."
+  },
+  {
+    "code": "ambiguous",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "more than one host has that name",
+    "fix": "A person names the host by its id."
+  },
+  {
+    "code": "approval_required",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "a root session on this host needs an approval; an approver decides",
+    "fix": "A person asks for the approval; an approver decides."
+  },
+  {
     "code": "atomic_irreversible",
     "exit": 2,
     "area": "atomic",
@@ -19,6 +54,13 @@
     "area": "atomic",
     "meaning": "\"atomic unavailable\": the agent is too old for atomic, or the grant has no file write target; the block did not run",
     "fix": "The operator decides when the agent is updated; a tenant admin decides the grant's write targets."
+  },
+  {
+    "code": "bad_purpose",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the control plane does not know the session purpose this client asked for",
+    "fix": "The operator checks the control plane's version."
   },
   {
     "code": "cancelled",
@@ -56,6 +98,76 @@
     "fix": "A person runs the mutating step at a terminal."
   },
   {
+    "code": "connect_closed",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "\"connect: closed\": the person typed ~. after Enter and the client closed the session",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "connect_interrupted",
+    "exit": 130,
+    "area": "connect",
+    "meaning": "\"connect: interrupted\": Ctrl-C before the session started; the connection was closed",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "connect_invalid_host",
+    "exit": 2,
+    "area": "connect",
+    "meaning": "\"connect: invalid host name\": a host is 1 to 253 letters, digits, dots, underscores, and hyphens; nothing was sent",
+    "fix": "A person types the host's name or id."
+  },
+  {
+    "code": "connect_invalid_url",
+    "exit": 2,
+    "area": "connect",
+    "meaning": "\"connect: invalid SYSTEMAPI_URL\": the control plane's address is missing, is not https, or holds a user, a query, or a path",
+    "fix": "A person sets SYSTEMAPI_URL to the https address of the control plane."
+  },
+  {
+    "code": "connect_no_login",
+    "exit": 2,
+    "area": "connect",
+    "meaning": "\"connect: no login; a person logs in with the systemapi CLI\": SYSTEMAPI_TOKEN_FILE is not set to an absolute path, or no file is there; sash does not log in",
+    "fix": "A person logs in with the systemapi CLI."
+  },
+  {
+    "code": "connect_no_terminal",
+    "exit": 2,
+    "area": "connect",
+    "meaning": "\"connect needs a terminal\": stdin, stdout, and stderr must all be terminals; nothing was sent",
+    "fix": "A person runs it at a terminal."
+  },
+  {
+    "code": "connect_not_sah3",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "\"connect: the server does not speak sah/3\": the upgrade was not answered 101, or the first frames were not the terminal protocol's",
+    "fix": "The operator checks the control plane's version; a person checks the address."
+  },
+  {
+    "code": "connect_refused",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "\"connect refused: <code>\": the control plane or the host refused the session; the code and this build's meaning for it follow, and a code this build does not list prints as itself or as unlisted",
+    "fix": "A person reads the code; no session was opened."
+  },
+  {
+    "code": "connect_usage",
+    "exit": 2,
+    "area": "connect",
+    "meaning": "\"usage: sash connect [--root] <host>\": connect takes one host and at most --root, and no other flag, script, or argument",
+    "fix": "A person types the command as the usage line shows."
+  },
+  {
+    "code": "connection_lost",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "\"session ended: connection lost\": the connection closed with no report of how the session ended; the host stops the session's terminal",
+    "fix": "A person reads the host's state before repeating a step."
+  },
+  {
     "code": "csv",
     "exit": 2,
     "area": "parse",
@@ -84,6 +196,13 @@
     "fix": "A tenant admin decides what this session's grant holds."
   },
   {
+    "code": "exited",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "the host's shell ended and reported no exit status",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
     "code": "fn_depth",
     "exit": 2,
     "area": "parse",
@@ -91,11 +210,32 @@
     "fix": "A person corrects the script; nothing on that line ran."
   },
   {
+    "code": "forbidden",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "this login may not open that session; a tenant admin decides who may",
+    "fix": "A tenant admin decides who may open a session on this host."
+  },
+  {
     "code": "frame",
     "exit": 2,
     "area": "session",
     "meaning": "a frame on the verb pipe is malformed or too large",
     "fix": "The operator checks the agent; the session cannot go on."
+  },
+  {
+    "code": "fresh_expired",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "a fresh login lasts 5 minutes; a person makes a new fresh login with the systemapi CLI just before opening a root session",
+    "fix": "A person makes a new fresh login with the systemapi CLI."
+  },
+  {
+    "code": "fresh_token_expired",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "a fresh login lasts 5 minutes; a person makes a new fresh login with the systemapi CLI just before opening a root session",
+    "fix": "A person makes a new fresh login with the systemapi CLI."
   },
   {
     "code": "fs_not_written",
@@ -119,6 +259,13 @@
     "fix": "The operator checks the control plane and the agent; no verb ran."
   },
   {
+    "code": "grant_binding",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host's agent refused the session's grant: it was signed for another host or session",
+    "fix": "The operator checks the control plane and the agent."
+  },
+  {
     "code": "grant_expired",
     "exit": 2,
     "area": "grant",
@@ -131,6 +278,13 @@
     "area": "grant",
     "meaning": "the session was started without a grant document",
     "fix": "The operator checks how the session was started; no verb ran."
+  },
+  {
+    "code": "grant_purpose",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host's agent refused the session's grant: it was signed for another purpose",
+    "fix": "The operator checks the control plane and the agent."
   },
   {
     "code": "grant_root_slash",
@@ -154,6 +308,20 @@
     "fix": "Nothing to change: this reports what happened."
   },
   {
+    "code": "internal",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the control plane or the host failed in a way it does not name",
+    "fix": "The operator checks the control plane's log."
+  },
+  {
+    "code": "invalid_name",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the control plane does not take that host name",
+    "fix": "A person types the host's name or id."
+  },
+  {
     "code": "json",
     "exit": 2,
     "area": "parse",
@@ -166,6 +334,13 @@
     "area": "verb",
     "meaning": "\"late: ...\": the outcome of a verb that answered after its par had stopped waiting",
     "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "lease_required",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the control plane cannot sign the session's lease",
+    "fix": "The operator checks the control plane's signer."
   },
   {
     "code": "lex",
@@ -182,6 +357,13 @@
     "fix": "A person decides whether the loop is right; the cap's ceiling is the grant's."
   },
   {
+    "code": "max_duration",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "the session reached the longest time a session may last",
+    "fix": "A person opens a new session."
+  },
+  {
     "code": "mode_unsupported",
     "exit": 2,
     "area": "file",
@@ -194,6 +376,13 @@
     "area": "session",
     "meaning": "the agent's answer to the concurrency hello is malformed, it reported mux_over_limit or mux_protocol, or a response named a request that was not outstanding",
     "fix": "The operator checks the agent; a person opens a new session."
+  },
+  {
+    "code": "not_found",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "no host this login can see has that name or id",
+    "fix": "A person checks the name; a tenant admin decides which hosts a login sees."
   },
   {
     "code": "outcome_unknown",
@@ -231,6 +420,34 @@
     "fix": "A person writes the absolute path; a script starts with no prefix."
   },
   {
+    "code": "protocol",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "\"session ended: protocol\": the server sent a frame over 1 MiB or broke the WebSocket rules, and the client closed the session",
+    "fix": "The operator checks the control plane."
+  },
+  {
+    "code": "pty_start_failed",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host could not start the session's terminal, or this login has too many sessions open",
+    "fix": "A person decides whether to ask again; the operator checks the host."
+  },
+  {
+    "code": "pty_user_unset",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host has no account configured for terminal sessions",
+    "fix": "The operator decides which account the host's sessions use."
+  },
+  {
+    "code": "rate_limited",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "too many sessions were asked for on this host in the last minute",
+    "fix": "A person waits a minute before asking again."
+  },
+  {
     "code": "readonly",
     "exit": 2,
     "area": "parse",
@@ -257,6 +474,13 @@
     "area": "replay",
     "meaning": "the recording passed its size or event cap",
     "fix": "A person records a shorter run."
+  },
+  {
+    "code": "recording_unavailable",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host cannot record the session, so it was not opened",
+    "fix": "The operator checks the host's recording."
   },
   {
     "code": "refused",
@@ -336,6 +560,34 @@
     "fix": "A person records a shorter run."
   },
   {
+    "code": "request_failed",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "\"connect: request_failed\": a call to the control plane failed: the network, TLS, a timeout, a redirect (never followed), or an answer that could not be read",
+    "fix": "A person checks the address and the network; the operator checks the control plane."
+  },
+  {
+    "code": "root_unavailable",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "a root session is not available on this host: the host's agent must record it",
+    "fix": "The operator checks the host's agent and its recording."
+  },
+  {
+    "code": "sash_missing",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the host has no sash to run the session, and no other shell is started in its place",
+    "fix": "The operator decides when sash is installed on the host."
+  },
+  {
+    "code": "scope_denied",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "this login may not open that session; a tenant admin decides who may",
+    "fix": "A tenant admin decides who may open a session on this host."
+  },
+  {
     "code": "secret_cannot_decide",
     "exit": 2,
     "area": "secret",
@@ -364,6 +616,13 @@
     "fix": "A person corrects the script; nothing on that line ran."
   },
   {
+    "code": "session_ended",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "\"session ended: <reason>\": the session ended without an exit status from the host's shell; the reason and this build's meaning for it follow",
+    "fix": "A person reads the reason."
+  },
+  {
     "code": "set_ceiling",
     "exit": 2,
     "area": "parse",
@@ -376,6 +635,13 @@
     "area": "file",
     "meaning": "a template_file spec that does not match its schema",
     "fix": "A person corrects the spec or the schema; nothing was written."
+  },
+  {
+    "code": "stopped",
+    "exit": 1,
+    "area": "connect",
+    "meaning": "an admin, a policy change, or a re-check of this login stopped the session",
+    "fix": "A tenant admin decides whether the session may be opened again."
   },
   {
     "code": "template",
@@ -434,11 +700,39 @@
     "fix": "A person binds the secret with declare -s."
   },
   {
+    "code": "ticket_invalid",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the ticket was missing, spent, expired, or issued for another host or purpose",
+    "fix": "A person runs the command again; a ticket is used once."
+  },
+  {
+    "code": "tickets_unavailable",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "the control plane cannot issue tickets now",
+    "fix": "The operator checks the control plane."
+  },
+  {
     "code": "timeout",
     "exit": 2,
     "area": "parse",
     "meaning": "a timeout block's deadline passed, before a statement, a verb, or while a person was asked",
     "fix": "A person decides whether the work or the deadline is wrong; a verb already in flight finished."
+  },
+  {
+    "code": "token_expired",
+    "exit": 126,
+    "area": "connect",
+    "meaning": "your login expired; a person logs in again with the systemapi CLI",
+    "fix": "A person logs in again with the systemapi CLI."
+  },
+  {
+    "code": "token_file_rejected",
+    "exit": 2,
+    "area": "connect",
+    "meaning": "\"connect: token_file_rejected\": the file SYSTEMAPI_TOKEN_FILE names is not a regular file of this user with no group or other permission, is over 4096 bytes, or does not hold one token; nothing was sent",
+    "fix": "A person logs in again with the systemapi CLI, which writes the file."
   },
   {
     "code": "toml",

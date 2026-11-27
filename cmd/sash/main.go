@@ -8,7 +8,8 @@
 // --replay run a script offline against a fixture or a recording (tape.go).
 // --skill prints the embedded Claude skill for the language (skill.go).
 // version --json and codes --json print what the build is and the catalog
-// of what it prints (version.go).
+// of what it prints (version.go). connect <host> is the client of the
+// control plane's terminal, for a person at a workstation (connect.go).
 package main
 
 import (
@@ -56,6 +57,13 @@ func loginArgs(args []string) []string {
 }
 
 func main() {
+	if connectMode(os.Args[1:]) {
+		os.Exit(runConnect(os.Args[2:]))
+	}
+	if connectMisplaced(os.Args[1:]) {
+		fmt.Fprintln(os.Stderr, connectUsage)
+		os.Exit(2)
+	}
 	args := loginArgs(os.Args[1:])
 	if skillMode(args) {
 		os.Exit(runSkill(args, os.Stdout))
@@ -227,7 +235,7 @@ func scriptTerm(args []string) lang.Term {
 	return line.ScriptTerm(os.Stdin, os.Stderr)
 }
 
-const usage = "usage: sash [-l] [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list; sash version --json; sash codes --json"
+const usage = "usage: sash [-l] [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list; sash version --json; sash codes --json; sash connect [--root] <host>"
 
 // needsMode is true when --needs is among the leading flags.
 func needsMode(args []string) bool { return flagMode(args, "--needs") }
