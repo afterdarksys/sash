@@ -22,7 +22,7 @@ Without `--session` the grant is empty: verbs are denied and filters still run. 
 ## Build and test
 
 ```text
-./build.sh            bin/sash (SASH_TAGS=sashwasm for wasm modules)
+./build.sh            bin/sash, built -trimpath (SASH_TAGS=sashwasm for wasm modules)
 ./build.sh test       gofmt, vet, tests and -race, with and without sashwasm
 ```
 

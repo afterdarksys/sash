@@ -25,7 +25,8 @@ fi
 case "${1:-build}" in
     build)
         mkdir -p bin
-        go build -tags "${SASH_TAGS:-}" -o bin/sash ./cmd/sash
+        # -trimpath: a panic trace names module paths, not the builder's.
+        go build -trimpath -tags "${SASH_TAGS:-}" -o bin/sash ./cmd/sash
         ;;
     test)
         unformatted="$(gofmt -l cmd internal skills)"
@@ -46,7 +47,7 @@ case "${1:-build}" in
         fi
         ;;
     install)
-        go install ./cmd/sash
+        go install -trimpath ./cmd/sash
         ;;
     clean)
         rm -f bin/sash
