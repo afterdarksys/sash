@@ -36,6 +36,18 @@ func TestFilterTable(t *testing.T) {
 		{"two modes", "\x1b[?1;25h", "\x1b[?1;25h"},
 		{"reverse index and keypad", "\x1bM\x1b=\x1b>\x1bD\x1bE", "\x1bM\x1b=\x1b>\x1bD\x1bE"},
 		{"charset", "\x1b(0qqq\x1b(B", "\x1b(0qqq\x1b(B"},
+		{"four-digit parameters", "\x1b[9999S\x1b[9999;9999H\x1b[0009C", "\x1b[9999S\x1b[9999;9999H\x1b[0009C"},
+
+		// A numeric parameter of five digits or more: the sequence is
+		// dropped whole, never clamped.
+		{"five-digit scroll", "a\x1b[10000Sb", "ab"},
+		{"huge insert", "a\x1b[" + strings.Repeat("9", 60) + "Lb", "ab"},
+		{"huge cursor move", "a\x1b[99999999999Cb", "ab"},
+		{"huge second parameter", "a\x1b[1;00000Hb", "ab"},
+		{"huge colour", "a\x1b[38;5;123456mb", "ab"},
+		{"huge colon colour", "a\x1b[38:2::1:2:30000mb", "ab"},
+		{"huge scroll region", "a\x1b[1;12345rb", "ab"},
+		{"huge private mode", "a\x1b[?10000hb", "ab"},
 
 		// OSC: dropped whole, whichever way it ends.
 		{"title, BEL", "a\x1b]0;evil title\x07b", "ab"},

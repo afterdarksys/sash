@@ -19,7 +19,8 @@ import (
 // DECID, mouse and focus reporting) so that the answer is typed back as
 // input. The filter passes printable text, LF, CR, TAB, BS, and an
 // allow-list of complete CSI and two-byte escape sequences for cursor
-// movement, colour, and erasing. Everything else is dropped: every OSC,
+// movement, colour, and erasing, whose numeric parameters have at most
+// four digits. Everything else is dropped: every OSC,
 // DCS, APC, PM and SOS string whole, every CSI sequence not on the list,
 // every other escape, every other control byte, C1 controls (as bytes or
 // as U+0080 to U+009F), format characters, and bytes that are not UTF-8.
@@ -201,8 +202,12 @@ func (f *Filter) inCSI(out []byte, b byte) []byte {
 // terminal write, and are not here.
 var privateModes = map[string]bool{"1": true, "7": true, "12": true, "25": true, "47": true, "1047": true, "1048": true, "1049": true, "2004": true}
 
+// paramDigits is the most digits one numeric parameter may have (9999).
+const paramDigits = 4
+
 // csiAllowed is the allow-list: body is what stands between ESC [ and the
-// final byte.
+// final byte. A sequence with a parameter longer than paramDigits is
+// dropped, not clamped.
 func csiAllowed(body []byte, final byte) bool {
 	if len(body) > 0 && body[0] == '?' {
 		if final != 'h' && final != 'l' {
@@ -223,10 +228,16 @@ func csiAllowed(body []byte, final byte) bool {
 		}
 		return true
 	}
-	params := 1
+	params, digits := 1, 0
 	for _, c := range body {
 		switch {
 		case c >= '0' && c <= '9':
+			// A parameter of more than paramDigits digits is dropped
+			// whole: some terminals loop on a huge count.
+			if digits++; digits > paramDigits {
+				return false
+			}
+			continue
 		case c == ';':
 			params++
 		case c == ':' && final == 'm':
@@ -236,6 +247,7 @@ func csiAllowed(body []byte, final byte) bool {
 			// report, or a mode this list does not hold.
 			return false
 		}
+		digits = 0
 	}
 	switch final {
 	case 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'f', 'd', // cursor movement
