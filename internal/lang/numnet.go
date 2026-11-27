@@ -66,7 +66,22 @@ func fnRadix(a []any, c *evalCtx) (any, error) {
 	if base < 2 || base > 36 {
 		return nil, fmt.Errorf("type radix base")
 	}
-	return charged(c, strconv.FormatInt(n, int(base)))
+	if err := charge(c, radixLen(n, base)); err != nil {
+		return nil, err
+	}
+	return strconv.FormatInt(n, int(base)), nil
+}
+
+// radixLen is the length radix(n, base) writes, known before it is built.
+func radixLen(n, base int64) int {
+	u, l := uint64(n), 1
+	if n < 0 {
+		u, l = ^uint64(n)+1, 2
+	}
+	for ; u >= uint64(base); u /= uint64(base) {
+		l++
+	}
+	return l
 }
 
 // fnUnhex is the inverse of hex: an even number of hex digits, either
@@ -143,8 +158,9 @@ func fnPopcount(x []int64) (int64, error) {
 	return int64(bits.OnesCount64(uint64(x[0]))), nil
 }
 
-// parseAddr reads an address for the IP function name. A zone is refused:
-// it names an interface on one machine and means nothing to sash.
+// parseAddr reads an address for the IP function name. A zone is refused,
+// any % at all, before parsing: it names an interface on one machine and
+// means nothing to sash.
 func parseAddr(name string, d any) (netip.Addr, error) {
 	s, ok := d.(string)
 	if !ok {
@@ -153,12 +169,12 @@ func parseAddr(name string, d any) (netip.Addr, error) {
 	if len(s) > parseMax {
 		return netip.Addr{}, fmt.Errorf("type %s(text)", name)
 	}
+	if strings.Contains(s, "%") {
+		return netip.Addr{}, fmt.Errorf("type ip zone")
+	}
 	ip, err := netip.ParseAddr(s)
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("type ip")
-	}
-	if ip.Zone() != "" {
-		return netip.Addr{}, fmt.Errorf("type ip zone")
 	}
 	return ip, nil
 }
@@ -202,7 +218,18 @@ func addrFn(name string, f func(netip.Addr, *evalCtx) (any, error)) func([]any, 
 // fnIP is the canonical text: v6 compressed lowercase, a v4-mapped v6
 // kept mapped.
 func fnIP(ip netip.Addr, c *evalCtx) (any, error) {
-	return charged(c, ip.String())
+	return addrText(c, ip)
+}
+
+// addrTextMax bounds an address's text (a v6 address is at most 39
+// bytes, a mapped one 22), charged before the text is built.
+const addrTextMax = 64
+
+func addrText(c *evalCtx, ip netip.Addr) (any, error) {
+	if err := charge(c, addrTextMax); err != nil {
+		return nil, err
+	}
+	return ip.String(), nil
 }
 
 func fnIPVersion(ip netip.Addr, _ *evalCtx) (any, error) {
@@ -212,8 +239,40 @@ func fnIPVersion(ip netip.Addr, _ *evalCtx) (any, error) {
 	return int64(6), nil
 }
 
+// reservedNets are special-purpose ranges (IANA's registries) that are
+// none of netip's other classes and are not globally routable.
+var reservedNets = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fec0::/10"),
+	netip.MustParsePrefix("3fff::/20"),
+}
+
+func isReserved(ip netip.Addr) bool {
+	for _, p := range reservedNets {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // fnIPClass checks netip's predicates in a fixed order on the unmapped
-// address; anything that is none of them is global.
+// address, then the reserved table; anything that is none of them is
+// global, which says only that it may be publicly routable.
 func fnIPClass(ip netip.Addr, c *evalCtx) (any, error) {
 	ip = ip.Unmap()
 	class := "global"
@@ -228,25 +287,28 @@ func fnIPClass(ip netip.Addr, c *evalCtx) (any, error) {
 		class = "link_local"
 	case ip.IsMulticast():
 		class = "multicast"
+	case isReserved(ip):
+		class = "reserved"
 	}
 	return charged(c, class)
 }
 
 func fnIPNext(ip netip.Addr, c *evalCtx) (any, error) {
-	return stepped(ip.Next(), c)
+	return stepped(ip, ip.Next(), c)
 }
 
 func fnIPPrev(ip netip.Addr, c *evalCtx) (any, error) {
-	return stepped(ip.Prev(), c)
+	return stepped(ip, ip.Prev(), c)
 }
 
 // stepped is ip_next or ip_prev's result: the zero Addr is past the end
-// of the family.
-func stepped(ip netip.Addr, c *evalCtx) (any, error) {
-	if !ip.IsValid() {
+// of the family, and a mapped address stepping out of ::ffff:0:0/96 is
+// past the end of the v4 range it stands for.
+func stepped(from, to netip.Addr, c *evalCtx) (any, error) {
+	if !to.IsValid() || (from.Is4In6() && !to.Is4In6()) {
 		return nil, fmt.Errorf("type ip range")
 	}
-	return charged(c, ip.String())
+	return addrText(c, to)
 }
 
 // unmapPrefix turns a v4-mapped v6 prefix that lies inside ::ffff:0:0/96
@@ -258,8 +320,10 @@ func unmapPrefix(p netip.Prefix) netip.Prefix {
 	return p
 }
 
-// fnIPIn unmaps both sides; a v4 address and a v6 prefix (or the
-// reverse) is false.
+// fnIPIn is true when the address is in the prefix as written, or the
+// unmapped address is in the unmapped prefix. So a mapped address is in
+// every v6 prefix that holds it and in the v4 prefix it maps to; a v4
+// address is in no v6 prefix but a mapped one of /96 or longer.
 func fnIPIn(a []any, _ *evalCtx) (any, error) {
 	ip, err := parseAddr("ip_in", a[0])
 	if err != nil {
@@ -269,7 +333,7 @@ func fnIPIn(a []any, _ *evalCtx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return unmapPrefix(p).Contains(ip.Unmap()), nil
+	return p.Contains(ip) || unmapPrefix(p).Contains(ip.Unmap()), nil
 }
 
 // cidrCost is the fixed charge for cidr's map of six short fields.

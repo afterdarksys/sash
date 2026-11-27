@@ -187,6 +187,9 @@ func TestIPParse(t *testing.T) {
 	})
 	checkRefused(t, map[string]string{
 		`echo [ ip("fe80::1%eth0") ]`:                 "type ip zone",
+		`echo [ ip("1.2.3.4%eth0") ]`:                 "type ip zone",
+		`echo [ ip("fe80::1%") ]`:                     "type ip zone",
+		`echo [ ip_version("1.2.3.4%eth0") ]`:         "type ip zone",
 		`echo [ ip_version("fe80::1%25eth0") ]`:       "type ip zone",
 		`echo [ ip_class("fe80::1%1") ]`:              "type ip zone",
 		`echo [ ip_next("fe80::1%eth0") ]`:            "type ip zone",
@@ -217,8 +220,13 @@ func TestIPIn(t *testing.T) {
 		// Both sides are unmapped first.
 		`echo [ ip_in("::ffff:10.0.0.1", "10.0.0.0/8") ] [ ip_in("10.0.0.1", "::ffff:10.0.0.0/104") ] [ ip_in("::ffff:11.0.0.1", "10.0.0.0/8") ]`: "true true false",
 		// Across families is false, not an error.
-		`echo [ ip_in("10.0.0.1", "::/0") ] [ ip_in("::1", "0.0.0.0/0") ] [ ip_in("::ffff:10.0.0.1", "::/0") ]`:                      "false false false",
-		`echo [ ip_in("2001:db8::5", "2001:db8::/32") ] [ ip_in("2001:db9::5", "2001:db8::/32") ] [ ip_in("0.0.0.0", "0.0.0.0/0") ]`: "true false true",
+		`echo [ ip_in("10.0.0.1", "::/0") ] [ ip_in("::1", "0.0.0.0/0") ] [ ip_in("::ffff:10.0.0.1", "::/0") ]`: "false false true",
+		// Containment is monotone for a mapped address: every v6 prefix
+		// that holds it as written, down to ::/0, holds it.
+		`echo [ ip_in("::ffff:127.0.0.1", "::ffff:0:0/96") ] [ ip_in("::ffff:127.0.0.1", "::ffff:0:0/95") ] [ ip_in("::ffff:127.0.0.1", "::/8") ] [ ip_in("::ffff:127.0.0.1", "::/0") ] [ ip_in("::ffff:127.0.0.1", "127.0.0.0/8") ]`: "true true true true true",
+		// A v4 address is in no v6 prefix but a mapped one of /96 or longer.
+		`echo [ ip_in("127.0.0.1", "::/0") ] [ ip_in("127.0.0.1", "::ffff:0:0/95") ] [ ip_in("127.0.0.1", "::ffff:0:0/96") ] [ ip_in("127.0.0.1", "::ffff:127.0.0.0/104") ]`: "false false true true",
+		`echo [ ip_in("2001:db8::5", "2001:db8::/32") ] [ ip_in("2001:db9::5", "2001:db8::/32") ] [ ip_in("0.0.0.0", "0.0.0.0/0") ]`:                                         "true false true",
 	})
 	checkRefused(t, map[string]string{
 		`echo [ ip_in("010.0.0.1", "10.0.0.0/8") ]`:     "type ip",
@@ -259,8 +267,14 @@ func TestIPClass(t *testing.T) {
 	cases := map[string]string{
 		"0.0.0.0": "unspecified", "127.0.0.1": "loopback", "10.1.2.3": "private", "172.16.0.1": "private",
 		"192.168.1.1": "private", "169.254.1.1": "link_local", "224.0.0.1": "multicast", "239.1.1.1": "multicast",
-		"8.8.8.8": "global",
-		"::":      "unspecified", "::1": "loopback", "fd00::1": "private", "fc00::1": "private", "fe80::1": "link_local",
+		"8.8.8.8": "global", "1.1.1.1": "global", "2606:4700::1111": "global",
+		// The reserved table, one address per entry.
+		"0.1.2.3": "reserved", "100.100.1.1": "reserved", "192.0.0.8": "reserved", "192.0.2.1": "reserved",
+		"198.18.0.1": "reserved", "198.51.100.1": "reserved", "203.0.113.1": "reserved", "240.0.0.1": "reserved",
+		"255.255.255.255": "reserved", "::1.2.3.4": "reserved", "64:ff9b::1.2.3.4": "reserved", "64:ff9b:1::1": "reserved",
+		"100::1": "reserved", "2001::1": "reserved", "2001:db8::1": "reserved", "2002::1": "reserved",
+		"fec0::1": "reserved", "3fff::1": "reserved", "::ffff:198.51.100.1": "reserved", "::ffff:100.64.0.1": "reserved",
+		"::": "unspecified", "::1": "loopback", "fd00::1": "private", "fc00::1": "private", "fe80::1": "link_local",
 		"ff02::1": "multicast", "ff0e::1": "multicast", "2001:4860:4860::8888": "global",
 		"::ffff:127.0.0.1": "loopback", "::ffff:10.0.0.1": "private", "::ffff:0.0.0.0": "unspecified",
 	}
@@ -285,10 +299,13 @@ func TestIPNextPrev(t *testing.T) {
 		`echo [ ip_prev("0.0.0.0") ]`:                                 "type ip range",
 		`echo [ ip_next("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff") ]`: "type ip range",
 		`echo [ ip_prev("::") ]`:                                      "type ip range",
-		`echo [ ip_next(1) ]`:                                         "type ip_next(number)",
-		`echo [ ip_prev("x") ]`:                                       "type ip",
-		`echo [ ip_next() ]`:                                          "type expr usage ip_next",
-		`echo [ ip_prev("a", "b") ]`:                                  "type expr usage ip_prev",
+		// A mapped address does not step out of the v4 range it stands for.
+		`echo [ ip_next("::ffff:255.255.255.255") ]`: "type ip range",
+		`echo [ ip_prev("::ffff:0.0.0.0") ]`:         "type ip range",
+		`echo [ ip_next(1) ]`:                        "type ip_next(number)",
+		`echo [ ip_prev("x") ]`:                      "type ip",
+		`echo [ ip_next() ]`:                         "type expr usage ip_next",
+		`echo [ ip_prev("a", "b") ]`:                 "type expr usage ip_prev",
 	})
 }
 
@@ -302,6 +319,13 @@ func TestNumNetCharges(t *testing.T) {
 	}{
 		{"radix", []any{int64(-1 << 63), int64(2)}, 65},
 		{"radix", []any{int64(255), int64(16)}, 2},
+		{"radix", []any{int64(-255), int64(16)}, 3},
+		{"radix", []any{int64(0), int64(36)}, 1},
+		{"radix", []any{int64(36), int64(36)}, 2},
+		{"radix", []any{int64(1<<63 - 1), int64(2)}, 63},
+		{"ip", []any{"10.0.0.1"}, addrTextMax},
+		{"ip_next", []any{"10.0.0.1"}, addrTextMax},
+		{"ip_prev", []any{"10.0.0.1"}, addrTextMax},
 		{"unhex", []any{"41424344"}, 4 + 64},
 		{"cidr", []any{"10.0.0.0/8"}, cidrCost},
 	} {
@@ -357,5 +381,37 @@ func TestNumNetAnswerSelectsNoSubcommand(t *testing.T) {
 	out := Run("let x = (term prompt \"q\")\nlet y = [ ip($x) ]\nunit restart $y\n", termGrant(), p, Options{Term: &fakeTerm{answers: []string{"10.0.0.1"}}})
 	if out.Status != 0 || len(p.calls) != 1 || p.calls[0].Key != "unit.restart" {
 		t.Errorf("as an argument: %+v calls %v", out, p.calls)
+	}
+}
+
+// The 1 KiB cap: an input of exactly 1024 bytes reaches the parser, one
+// byte more is refused before it.
+func TestParseCapBoundary(t *testing.T) {
+	checkOut(t, map[string]string{
+		// + on two decimal strings adds them, so the padding is built
+		// with replace: "000...01", 1024 bytes.
+		`echo [ int(replace(pad("1", -1024), " ", "0"), 10) ] [ int("0x" + repeat("0", 1021) + "f", 16) ] [ int("0b" + repeat("0", 1021) + "1", 2) ]`: "1 15 1",
+	})
+	for src, want := range map[string]string{
+		`echo [ int(replace(pad("1", -1025), " ", "0"), 10) ]`:           "type int(text)\n",
+		`echo [ int("0x" + repeat("0", 1022) + "f", 16) ]`:               "type int(text)\n",
+		`echo [ ip(repeat("1", 1024)) ]`:                                 "type ip\n",
+		`echo [ ip(repeat("1", 1025)) ]`:                                 "type ip(text)\n",
+		`echo [ ip_in("10.0.0.1", repeat("1", 1024)) ]`:                  "type cidr\n",
+		`echo [ ip_in("10.0.0.1", repeat("1", 1025)) ]`:                  "type ip_in(text)\n",
+		`echo [ cidr(repeat("1", 1024)) ]`:                               "type cidr\n",
+		`echo [ cidr(repeat("1", 1025)) ]`:                               "type cidr(text)\n",
+		`echo [ is_ip(repeat("1", 1024)) ] [ is_ip(repeat("1", 1025)) ]`: "",
+	} {
+		out := runExpr(t, src)
+		if want == "" {
+			if out.Status != 0 || out.Stdout != "false false\n" {
+				t.Errorf("%s: %+v", src, out)
+			}
+			continue
+		}
+		if out.Status != exitType || out.Stderr != want {
+			t.Errorf("%s: status %d err %q want %q", src, out.Status, out.Stderr, want)
+		}
 	}
 }
