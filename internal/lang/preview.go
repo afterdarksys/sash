@@ -250,6 +250,8 @@ func collectUses(prog *Program, out *[]*Use) {
 			collectUses(&s.Body, out)
 		case *Timeout:
 			collectUses(&s.Body, out)
+		case *Branch:
+			collectUses(&s.Body, out)
 		case *Par:
 			collectUses(&s.Body, out)
 		case *Atomic:

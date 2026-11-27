@@ -524,3 +524,30 @@ func TestParAbandonedSecretKnownAtOnce(t *testing.T) {
 		t.Fatalf("write: %+v %+v", w, writes)
 	}
 }
+
+// branch { } groups statements into one branch of a par N { } body; it
+// is a parse error anywhere else, and its body keeps the par rules.
+func TestParBranchGroupsStatements(t *testing.T) {
+	out := Run("par 2 as r { branch { echo a1; echo a2 }; echo b }\necho [ len($r) ]", allow(), &fake{}, Options{})
+	if out.Status != 0 || out.Stdout != "a1\na2\nb\n2\n" {
+		t.Fatalf("status %d out %q err %q", out.Status, out.Stdout, out.Stderr)
+	}
+	for src, want := range map[string]string{
+		"branch { echo a }":                              "parse: branch outside par",
+		"if [ true ] { branch { echo a } }":              "parse: branch outside par",
+		"par 2 { if [ true ] { branch { echo a } } }":    "parse: branch outside par",
+		"par 2 { branch { branch { echo a } } }":         "parse: branch outside par",
+		"par 2 for x in [ [1] ] { branch { echo a } }":   "parse: branch outside par",
+		"par 2 { fn f() { branch { echo a } }; echo b }": "parse: branch outside par",
+		"par 2 { branch { par 2 { echo a } } }":          "parse: par inside par",
+		"par 2 { branch { atomic { echo a } } }":         "parse: atomic inside par",
+		"par 2 { branch { break } }":                     "parse: break would leave a par branch",
+		"fn branch() { echo a }":                         "",
+	} {
+		f := &fake{}
+		out := Run(src, allow(), f, Options{})
+		if out.Status != exitType || (want != "" && !strings.Contains(out.Stderr, want)) || len(f.calls) != 0 {
+			t.Errorf("%q: status %d err %q", src, out.Status, out.Stderr)
+		}
+	}
+}

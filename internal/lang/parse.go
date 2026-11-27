@@ -2,6 +2,7 @@ package lang
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -51,7 +52,9 @@ type For struct {
 	Src    Pipeline
 	SrcX   Expr
 	SrcRef string
-	Body   Program
+	// Recv is the channel of for x in recv c { }: the only receive.
+	Recv string
+	Body Program
 }
 
 func (*For) stmt() {}
@@ -133,9 +136,33 @@ type Par struct {
 	As   string
 	Body Program
 	Each bool
+	// Chans are the channels this par declares (chan c(B), ...), in order.
+	Chans []ChanDecl
 }
 
+// ChanDecl is one channel of a par: its name and buffer, 1 to chanBufMax.
+type ChanDecl struct {
+	Name string
+	Buf  int
+}
+
+// Send puts one value on a channel of the enclosing par: send c <word>.
+type Send struct {
+	Chan string
+	Word Word
+}
+
+func (*Send) stmt() {}
+
 func (*Par) stmt() {}
+
+// Branch groups several statements into one branch of a par N { } body.
+// It is legal only as a top-level statement of that body.
+type Branch struct {
+	Body Program
+}
+
+func (*Branch) stmt() {}
 
 // Atomic runs Body as one transaction of file writes (v6 section 3): the
 // agent journals each write and restores them all unless the block
@@ -187,6 +214,9 @@ type parser struct {
 	tok   []token
 	i     int
 	depth int
+	// branchDepth is the block depth of the par N { } body being read,
+	// where branch { } may stand; 0 outside one.
+	branchDepth int
 }
 
 // blockDepthMax bounds { } nesting, as exprDepthMax bounds [ ]: the v1
@@ -217,6 +247,9 @@ func parseTokens(toks []token) (*Program, error) {
 		return nil, fmt.Errorf("parse: trailing input")
 	}
 	if err := secretPromptPlaces(prog); err != nil {
+		return nil, err
+	}
+	if err := chanPlaces(prog); err != nil {
 		return nil, err
 	}
 	return prog, nil
@@ -344,6 +377,31 @@ func (p *parser) stmt() (Stmt, error) {
 			return r, nil
 		case "par":
 			return p.par()
+		case "send":
+			p.i++
+			name, err := p.plainName("send")
+			if err != nil {
+				return nil, err
+			}
+			if p.peek().kind != kWord {
+				return nil, fmt.Errorf("parse: send needs a value")
+			}
+			w := p.peek().word
+			p.i++
+			return &Send{Chan: name, Word: w}, nil
+		case "branch":
+			if p.branchDepth == 0 || p.depth != p.branchDepth {
+				return nil, fmt.Errorf("parse: branch outside par")
+			}
+			p.i++
+			saved := p.branchDepth
+			p.branchDepth = 0
+			body, err := p.block()
+			p.branchDepth = saved
+			if err != nil {
+				return nil, err
+			}
+			return &Branch{Body: *body}, nil
 		case "atomic":
 			return p.atomic()
 		case "timeout":
@@ -392,7 +450,33 @@ func (p *parser) par() (Stmt, error) {
 		}
 		s.As = name
 	}
+	if p.peek().kind == kWord && plain(p.peek().word) == "chan" {
+		if s.As != "" {
+			return nil, fmt.Errorf("parse: chan needs par N { }")
+		}
+		if err := p.chans(s); err != nil {
+			return nil, err
+		}
+		if p.peek().kind == kWord && plain(p.peek().word) == "as" {
+			p.i++
+			name, err := p.plainName("par as")
+			if err != nil {
+				return nil, err
+			}
+			s.As = name
+		}
+		if p.peek().kind != kLBrace {
+			return nil, fmt.Errorf("parse: chan needs par N { }")
+		}
+	}
 	if p.peek().kind == kWord && plain(p.peek().word) == "for" {
+		// chan after the for of par N for x in src { } is refused, not
+		// read as part of the source.
+		for j := p.i; j+2 < len(p.tok) && p.tok[j].kind != kLBrace; j++ {
+			if p.tok[j].kind == kWord && plain(p.tok[j].word) == "chan" && p.tok[j+1].kind == kWord && p.tok[j+2].kind == kLParen {
+				return nil, fmt.Errorf("parse: chan needs par N { }")
+			}
+		}
 		at := p.peek().pos
 		f, err := p.forr()
 		if err != nil {
@@ -401,7 +485,10 @@ func (p *parser) par() (Stmt, error) {
 		s.Body = Program{Stmts: []Stmt{f}, Pos: []int{at}}
 		s.Each = true
 	} else {
+		saved := p.branchDepth
+		p.branchDepth = p.depth + 1
 		body, err := p.block()
+		p.branchDepth = saved
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +499,11 @@ func (p *parser) par() (Stmt, error) {
 		branches = s.Body.Stmts[0].(*For).Body.Stmts
 	}
 	for _, b := range branches {
-		if msg := parBranchCheck(b, false); msg != "" {
+		msg := parBranchCheck(b, false)
+		if br, ok := b.(*Branch); ok {
+			msg = parBodyCheck(&br.Body, false)
+		}
+		if msg != "" {
 			return nil, fmt.Errorf("parse: %s", msg)
 		}
 	}
@@ -429,6 +520,62 @@ func (p *parser) par() (Stmt, error) {
 		return nil, fmt.Errorf("parse: term inside par")
 	}
 	return s, nil
+}
+
+// chanBufMax and chanMax bound a par's channels (Ryan, 2026-11-27, Q8).
+const (
+	chanBufMax = 64
+	chanMax    = 4
+)
+
+// chans reads chan c1(B1)[, c2(B2) ...] after par N. The lexer drops the
+// commas.
+func (p *parser) chans(s *Par) error {
+	p.i++
+	for {
+		name, err := p.plainName("chan")
+		if err != nil {
+			return err
+		}
+		if !chanName(name) {
+			return fmt.Errorf("parse: chan needs a name")
+		}
+		if p.peek().kind != kLParen {
+			return fmt.Errorf("parse: chan buffer is 1 to %d", chanBufMax)
+		}
+		p.i++
+		b, err := strconv.Atoi(plain(p.peek().word))
+		if p.peek().kind != kWord || err != nil || b < 1 || b > chanBufMax || strconv.Itoa(b) != plain(p.peek().word) {
+			return fmt.Errorf("parse: chan buffer is 1 to %d", chanBufMax)
+		}
+		p.i++
+		if p.peek().kind != kRParen {
+			return fmt.Errorf("parse: chan buffer is 1 to %d", chanBufMax)
+		}
+		p.i++
+		for _, c := range s.Chans {
+			if c.Name == name {
+				return fmt.Errorf("parse: chan %s declared twice", name)
+			}
+		}
+		if len(s.Chans) == chanMax {
+			return fmt.Errorf("parse: par has at most %d chans", chanMax)
+		}
+		s.Chans = append(s.Chans, ChanDecl{Name: name, Buf: b})
+		if p.peek().kind != kWord || p.i+1 >= len(p.tok) || p.tok[p.i+1].kind != kLParen {
+			return nil
+		}
+	}
+}
+
+// chanName is a plain name: [a-z_][a-z0-9_]*.
+func chanName(n string) bool {
+	for i, c := range n {
+		if !(c == '_' || c >= 'a' && c <= 'z' || i > 0 && c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return n != ""
 }
 
 // atomic reads atomic [deadline D] { body }. A break, continue, return,
@@ -486,6 +633,8 @@ func jumpLeaves(s Stmt, inLoop bool, what string) string {
 	case *Retry:
 		return jumpsIn(&s.Body, inLoop, what)
 	case *Timeout:
+		return jumpsIn(&s.Body, inLoop, what)
+	case *Branch:
 		return jumpsIn(&s.Body, inLoop, what)
 	case *Atomic:
 		return jumpsIn(&s.Body, false, what)
@@ -676,6 +825,19 @@ func (p *parser) forr() (Stmt, error) {
 	next := kEOF
 	if p.i+1 < len(p.tok) {
 		next = p.tok[p.i+1].kind
+	}
+	if t.kind == kWord && plain(t.word) == "recv" {
+		if f.Name2 != "" || next != kWord || p.i+2 >= len(p.tok) || p.tok[p.i+2].kind != kLBrace || plain(p.tok[p.i+1].word) == "" {
+			return nil, fmt.Errorf("parse: %s", msgRecvOnly)
+		}
+		f.Recv = plain(p.tok[p.i+1].word)
+		p.i += 2
+		body, err := p.block()
+		if err != nil {
+			return nil, err
+		}
+		f.Body = *body
+		return f, nil
 	}
 	switch {
 	case t.kind == kWord && exprOf(t.word) != nil && next == kLBrace:

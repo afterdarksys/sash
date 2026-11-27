@@ -434,3 +434,74 @@ func TestLintCatchTaint(t *testing.T) {
 		t.Errorf("catch body taints its own name: %s", Lint(src).Stdout)
 	}
 }
+
+// The channel rules: each fires once on its case, and the read-only
+// section 1 example gets none of them. The send to recv edge carries
+// secrets and answers, so the existing rules see through a channel.
+func TestLintChannels(t *testing.T) {
+	readOnly := `par 4 chan jobs(16), done(16) {
+  branch {
+    for p in ps |> where cmd == nginx { send jobs $p }
+    for p in ps |> where cmd == redis { send jobs $p }
+  }
+  for j in recv jobs { unit status $j.cmd; send done [ {"cmd": $j.cmd} ] }
+  for j in recv jobs { unit status $j.cmd; send done [ {"cmd": $j.cmd} ] }
+  for r in recv done { echo $r.cmd }
+}`
+	for _, r := range lintRows(t, Lint(readOnly)) {
+		if strings.HasPrefix(r.rule, "chan-") || r.rule == "unused-binding" {
+			t.Errorf("read-only example: %+v", r)
+		}
+	}
+	cases := []struct {
+		src  string
+		want lintRow
+	}{
+		{"par 2 chan c(1) { for p in ps { send c $p.cmd }; for j in recv c { unit restart $j } }",
+			lintRow{"1", "chan-to-mutation", "warning", "received value ($j) reaches unit.restart"}},
+		{"par 2 chan c(1) { for p in ps { send c $p.cmd }; for j in recv c { let u = [ $j ]; echo x > /var/tmp/ops/$u } }",
+			lintRow{"1", "chan-to-mutation", "warning", "received value ($u) reaches a > redirect"}},
+		{"par 3 chan c(1) { for p in ps { send c $p.cmd }; for j in recv c { echo $j }; for j in recv c { echo $j } }\npar 3 chan c(1) { for p in ps { send c $p.cmd }\nfor j in recv c { unit status nginx; unit restart nginx }\nfor j in recv c { unit restart nginx } }",
+			lintRow{"2", "chan-order", "warning", "chan c: 2 receiving branches mutate; which acts on which item, and when, varies by run"}},
+		{"declare -s tok = hunter2-long\npar 2 chan c(1) { send c $tok; for j in recv c { echo ok } }",
+			lintRow{"2", "chan-secret", "warning", "secret tok is sent on c: it stays secret, in more branches"}},
+		{"par 2 chan c(1) { send c 1; for j in recv c { if [ $j == 1 ] { break }; for k in [ [1] ] { break } } }",
+			lintRow{"1", "chan-unread-risk", "info", "a receiver of c can break: values left at the join fail the par"}},
+		{"par 2 chan c(1) { send c 1; try { for j in recv c { echo $j } } catch { echo no } }",
+			lintRow{"1", "chan-unread-risk", "info", "a try around a receiver of c can stop it early: values left at the join fail the par"}},
+		// Through the edge: a secret reaches a sink, an answer a mutation
+		// and a subcommand, two channels deep.
+		{"declare -s tok = hunter2-long\npar 3 chan a(1), b(1) { send a $tok; for x in recv a { send b $x }; for y in recv b { echo $y } }",
+			lintRow{"2", "secret-to-sink", "error", "secret y reaches echo"}},
+		{"let a = (term prompt \"op?\")\npar 2 chan c(1) { send c $a; for j in recv c { unit $j nginx } }",
+			lintRow{"2", "prompt-subcommand", "error", "what a person typed at term prompt ($j) selects what unit does: exit 2 command_from_value"}},
+		{"let a = (term prompt \"op?\")\npar 2 chan c(1) { send c $a; for j in recv c { unit restart $j } }",
+			lintRow{"2", "prompt-to-mutation", "warning", "what a person typed at term prompt ($j) reaches unit.restart"}},
+	}
+	for _, c := range cases {
+		rows := lintRows(t, Lint(c.src))
+		n := 0
+		for _, r := range rows {
+			if r.rule == c.want.rule {
+				n++
+				if r != c.want {
+					t.Errorf("%q: %+v, want %+v", c.src, r, c.want)
+				}
+			}
+		}
+		if n != 1 {
+			t.Errorf("%q: %d %s rows: %+v", c.src, n, c.want.rule, rows)
+		}
+	}
+	// A send reads its word: a name read only there is used.
+	for _, r := range lintRows(t, Lint("let v = 1\npar 2 chan c(1) { send c $v; for j in recv c { echo $j } }")) {
+		if r.rule == "unused-binding" && strings.Contains(r.what, " v") {
+			t.Errorf("send read: %+v", r)
+		}
+	}
+	// #lint:allow works for the warning.
+	src := "par 2 chan c(1) { for p in ps { send c $p.cmd }; for j in recv c { unit restart $j } } #lint:allow chan-to-mutation the list is ours"
+	if hasRule(lintRows(t, Lint(src)), "chan-to-mutation", "") {
+		t.Errorf("allow")
+	}
+}

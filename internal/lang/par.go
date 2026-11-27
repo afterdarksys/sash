@@ -57,6 +57,8 @@ type parBranch struct {
 	abandoned bool
 	// sink is the par's shared secret sink (below).
 	sink *secretSink
+	// ch is the par's channel table, when it declares channels.
+	ch *chanTable
 }
 
 // secretSink is where a par's branches put every secret text and hash
@@ -329,6 +331,10 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		}
 	} else {
 		for i, st := range s.Body.Stmts {
+			if br, ok := st.(*Branch); ok {
+				branches = append(branches, branch{body: &br.Body})
+				continue
+			}
 			branches = append(branches, branch{body: &Program{Stmts: []Stmt{st}, Pos: []int{s.Body.Pos[i]}}})
 		}
 	}
@@ -356,6 +362,17 @@ func (m *machine) runPar(s *Par) (int, bool) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var ct *chanTable
+	if len(s.Chans) > 0 {
+		bodies := make([]*Program, len(branches))
+		for i, b := range branches {
+			bodies[i] = b.body
+		}
+		ct = newChanTable(ctx, cancel, s, bodies, eff)
+		// The first cancel wakes every branch waiting on a channel.
+		stopWake := context.AfterFunc(ctx, ct.cancelled)
+		defer stopWake()
+	}
 	tapePar := 0
 	if m.tape != nil {
 		tapePar = m.tape.newPar()
@@ -366,6 +383,7 @@ func (m *machine) runPar(s *Par) (int, bool) {
 	for i, b := range branches {
 		bm := m.branchMachine(ctx, i)
 		bm.pb.sink = sink
+		bm.pb.ch = ct
 		if m.tape != nil {
 			bm.tape = m.tape.branchView(tapePar, i)
 		}
@@ -374,9 +392,29 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		}
 		machines[i] = bm
 	}
+	if ct != nil && m.tape != nil {
+		for _, bm := range machines {
+			ct.tapes = append(ct.tapes, bm.tape)
+		}
+		if m.tape.replay {
+			// Replay follows the recorded order of channel ops.
+			script, bad := m.tape.chanScript(tapePar)
+			if bad != 0 {
+				m.tape.diverge(bad)
+				m.ctl = ctlHalt
+				return exitType, true
+			}
+			ct.replay, ct.script, ct.used = true, script, make([]bool, len(script))
+		}
+	}
 	results := make(chan parResult, len(branches))
 	go func() {
 		sem := make(chan struct{}, eff)
+		if ct != nil {
+			// Every branch starts: a branch past the limit not started
+			// would be a false deadlock. Door calls take the slots.
+			sem = make(chan struct{}, len(branches))
+		}
 		for i := range branches {
 			select {
 			case sem <- struct{}{}:
@@ -388,7 +426,14 @@ func (m *machine) runPar(s *Par) (int, bool) {
 			}
 			go func(i int) {
 				bm := machines[i]
+				if ct != nil {
+					ct.start(i)
+				}
 				st, stop := bm.runProg(branches[i].body)
+				cancelled := ctx.Err() != nil
+				if ct != nil {
+					ct.end(bm, i, (stop || st != 0 || bm.ctl != ctlNone) && !cancelled)
+				}
 				bm.pb.mu.Lock()
 				bm.pb.done = true
 				abandoned := bm.pb.abandoned
@@ -398,7 +443,7 @@ func (m *machine) runPar(s *Par) (int, bool) {
 					m.st.late.push(bm.st, late)
 				}
 				<-sem
-				results <- parResult{i: i, st: st, stop: stop, ctl: bm.ctl, halt: bm.haltStatus, cancelled: ctx.Err() != nil}
+				results <- parResult{i: i, st: st, stop: stop, ctl: bm.ctl, halt: bm.haltStatus, cancelled: cancelled}
 			}(i)
 		}
 	}()
@@ -497,6 +542,33 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		}
 	}
 	m.bindParRows(s.As, rows)
+	if ct == nil {
+		return m.parEnd(out, first, halt, interrupted)
+	}
+	var unread []string
+	unread = ct.unread()
+	if ct.dead != "" {
+		m.err.WriteString("par: deadlock: " + ct.dead + "\n")
+		for _, l := range unread {
+			m.err.WriteString(l + "\n")
+		}
+		m.ctl = ctlHalt
+		m.haltStatus = exitType
+		return exitType, true
+	}
+	st, stop := m.parEnd(out, first, halt, interrupted)
+	for _, l := range unread {
+		m.err.WriteString(l + "\n")
+	}
+	if len(unread) > 0 && st == 0 {
+		return 1, true
+	}
+	return st, stop
+}
+
+// parEnd is a par's outcome after the join: a halt, an interrupt, the
+// first failure, or 0.
+func (m *machine) parEnd(out []parResult, first int, halt *parResult, interrupted bool) (int, bool) {
 	if halt != nil {
 		// A cap or a secret fault in a branch ends the line, as it would
 		// outside par.

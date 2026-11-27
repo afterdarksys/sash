@@ -276,6 +276,9 @@ type machine struct {
 	// Options.Interrupts.
 	pb         *parBranch
 	interrupts func() (<-chan struct{}, func())
+	// chanOrigins is, on a par branch, the id each origin record received
+	// over a channel got in this branch's table (chan.go).
+	chanOrigins map[origin]uint32
 	// term is Options.Term: nil when there is no terminal to ask.
 	term Term
 	// show is Options.Show. shownOut and shownErr are how much of out and
@@ -505,6 +508,14 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	}
 	var res parent.Result
 	var err error
+	// In a par with channels every branch starts; the in-flight limit
+	// gates door calls instead (a branch waiting here is runnable).
+	release, ok := m.doorSlot()
+	if !ok {
+		m.pb.stopped = true
+		m.ctl = ctlHalt
+		return parent.Result{}, errParCancelled
+	}
 	if m.pb != nil {
 		m.pb.begin(v)
 	}
@@ -513,6 +524,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	} else {
 		res, err = m.p.Do(v)
 	}
+	release()
 	if m.pb != nil {
 		m.pb.end(v, res, err)
 	}
@@ -704,6 +716,13 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runRetry(s)
 	case *Timeout:
 		return m.runTimeout(s)
+	case *Send:
+		return m.runSend(s)
+	case *Branch:
+		// The parser allows branch only at the top of a par body, which
+		// runPar unwraps.
+		m.err.WriteString("type branch: branch outside par\n")
+		return exitType, true
 	case *Par:
 		if m.atomic != nil {
 			m.err.WriteString("atomic_irreversible: par\n")
@@ -1151,6 +1170,9 @@ func (m *machine) bindForItem(s *For, it forItem, isMap bool) {
 }
 
 func (m *machine) runFor(s *For) (int, bool) {
+	if s.Recv != "" {
+		return m.runRecv(s)
+	}
 	items, isMap, st, stop := m.forItems(s)
 	if stop {
 		return st, true
@@ -1345,7 +1367,7 @@ func (m *machine) wordValue(w Word) (value, error) {
 	if len(w.Parts) == 1 && w.Parts[0].Exp {
 		d, err := m.ref(w.Parts[0].Lit)
 		if err != nil {
-			return value{}, fmt.Errorf("type value")
+			return value{}, err
 		}
 		return fromDatum(d), nil
 	}
@@ -2519,7 +2541,7 @@ func (m *machine) expand(w Word) (string, error) {
 		}
 		d, err := m.ref(part.Lit)
 		if err != nil {
-			return "", fmt.Errorf("type value")
+			return "", err
 		}
 		if isSecret(d) {
 			m.sawSecret = true
@@ -2539,18 +2561,20 @@ func (m *machine) ref(lit string) (any, error) {
 	m.readProv(name)
 	v, ok := m.vars[name]
 	if !ok {
-		return nil, fmt.Errorf("type value")
+		// An unbound name is named, as the expression path names it.
+		return nil, fmt.Errorf("unset %s", needsCell(name))
 	}
 	d := toDatum(v)
 	for _, s := range steps {
 		if o, ok := d.(*omap); ok && m.st.nounset {
 			if _, has := o.get(fmt.Sprint(s)); !has {
-				return nil, fmt.Errorf("unset %s", lit)
+				return nil, fmt.Errorf("unset key %s", needsCell(fmt.Sprint(s)))
 			}
 		}
 		var err error
 		if d, err = indexData(d, s); err != nil {
-			return nil, err
+			// A word that indexes the wrong shape keeps its old message.
+			return nil, fmt.Errorf("type value")
 		}
 	}
 	return d, nil
@@ -2878,7 +2902,8 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs",
+		"branch", "chan", "send", "recv"} {
 		reservedNames[n] = true
 	}
 }

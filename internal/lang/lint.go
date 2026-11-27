@@ -48,6 +48,12 @@ var lintRules = map[string]string{
 	"prompt-in-retry":       lintWarning,
 	"prompt-needs-terminal": lintInfo,
 	"prompt-subcommand":     lintError,
+	// A value received in a par is host data or an answer, still
+	// (docs/plans/2026-11-27-sash-par-channels.md section 7).
+	"chan-to-mutation": lintWarning,
+	"chan-order":       lintWarning,
+	"chan-secret":      lintWarning,
+	"chan-unread-risk": lintInfo,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -91,6 +97,12 @@ type linter struct {
 	hasUse   bool
 	tries    int
 	out      []lintFinding
+	// chanPars numbers each par with channels as collect meets it; its
+	// channel nodes (send flows into them, they flow into recv's names)
+	// are scoped by that number. received are the names a recv binds.
+	chanPars  int
+	chanScope string
+	received  map[string]bool
 }
 
 // Lint reports the rules in the table for src. Exit 0 is none or info
@@ -105,6 +117,7 @@ func Lint(src string) Outcome {
 	l := &linter{
 		n: n, prog: prog, fns: n.fns, reads: map[string]bool{}, secrets: map[string]bool{},
 		tainted: map[string]bool{}, deps: map[string][]string{}, mutated: map[string]string{},
+		received: map[string]bool{},
 	}
 	l.collect(prog, true, "")
 	l.taint()
@@ -117,6 +130,7 @@ func Lint(src string) Outcome {
 	l.recordFiles()
 	l.atomicBodies()
 	l.prompts()
+	l.chans()
 	l.needs()
 	return l.report(comments)
 }
@@ -162,6 +176,8 @@ func lintBodies(s Stmt) []*Program {
 	case *Retry:
 		return []*Program{&s.Body}
 	case *Timeout:
+		return []*Program{&s.Body}
+	case *Branch:
 		return []*Program{&s.Body}
 	case *Par:
 		return []*Program{&s.Body}
@@ -300,6 +316,8 @@ func ownRefs(s Stmt, out map[string]bool) {
 		}
 	case *Use:
 		wordRefs(s.Path, out)
+	case *Send:
+		wordRefs(s.Word, out)
 	}
 }
 
@@ -381,6 +399,8 @@ func ownWords(s Stmt, w func(Word), x func(Expr)) {
 		}
 	case *Use:
 		w(s.Path)
+	case *Send:
+		w(s.Word)
 	}
 }
 
@@ -549,9 +569,20 @@ func (l *linter) collect(p *Program, top bool, tryNode string) {
 				b.secret = strings.Contains(s.Flags, "s")
 			}
 		case *For:
+			if s.Recv != "" {
+				// What a branch sends on c flows into every name a recv
+				// of c binds.
+				bind(s.Name, "for", map[string]bool{l.chanNode(s.Recv): true})
+				l.received[s.Name] = true
+				break
+			}
 			bind(s.Name, "for", own)
 			if s.Name2 != "" {
 				bind(s.Name2, "for", own)
+			}
+		case *Send:
+			for r := range own {
+				l.dep(r, l.chanNode(s.Chan))
 			}
 		case *Try:
 			inner := tryNode
@@ -581,6 +612,13 @@ func (l *linter) collect(p *Program, top bool, tryNode string) {
 		case *Par:
 			if s.As != "" {
 				bind(s.As, "par as", nil)
+			}
+			if len(s.Chans) > 0 {
+				l.chanPars++
+				l.chanScope = fmt.Sprintf("\x00chan%d ", l.chanPars)
+				l.collect(&s.Body, false, tryNode)
+				l.chanScope = ""
+				continue
 			}
 		}
 		for _, body := range lintBodies(s) {
@@ -701,6 +739,10 @@ func parStmtTargets(stmts []Stmt) []string {
 	})
 	return out
 }
+
+// chanNode is the taint node of channel c of the par being collected. It
+// has a NUL, so it is never a script name.
+func (l *linter) chanNode(c string) string { return l.chanScope + c }
 
 // dep records that a taint on from taints to.
 func (l *linter) dep(from, to string) {
@@ -979,6 +1021,9 @@ func (l *linter) sinks(p *Program) {
 			}
 		case *Use:
 			own("reaches a use path", func(o map[string]bool) { wordRefs(s.Path, o) })
+		case *Send:
+			// As let: a secret spelled into a word is refused at send.
+			word(&Let{Word: &s.Word})
 		case *With:
 			if s.Prefix != nil {
 				own("reaches a with prefix", func(o map[string]bool) { wordRefs(*s.Prefix, o) })
@@ -1266,6 +1311,164 @@ func (l *linter) prompts() {
 			l.add(at, "prompt-in-retry", "a retry body asks the person again on every attempt")
 		}
 	})
+}
+
+// chans is the four channel rules (send's word flows into the names recv
+// binds, an edge collect records, so secret-to-sink, prompt-to-mutation
+// and prompt-subcommand already see through a channel).
+//
+// chan-to-mutation: a name a recv binds, or anything bound from one,
+// reaches an argument, a path, or the body of a mutating stage. Host data
+// choosing what to change is the case to review.
+//
+// chan-secret: a secret, or a value computed from one, reaches send. It
+// stays a secret on the receiving side, but lives in more branches.
+//
+// chan-order: two or more branches of one par receive from a channel and
+// their loop bodies mutate: which one acts on which item, and in what
+// order, varies by run.
+//
+// chan-unread-risk: a receiver loop can stop before its channel closes (a
+// break of its own, or a try around it): values left at the join fail the
+// par.
+func (l *linter) chans() {
+	from := map[string]bool{}
+	var work []string
+	for n := range l.received {
+		from[n] = true
+		work = append(work, n)
+	}
+	for len(work) > 0 {
+		n := work[len(work)-1]
+		work = work[:len(work)-1]
+		for _, d := range l.deps[n] {
+			if !from[d] {
+				from[d] = true
+				work = append(work, d)
+			}
+		}
+	}
+	reaches := func(refs map[string]bool) string {
+		names := make([]string, 0, len(refs))
+		for n := range refs {
+			if from[n] {
+				names = append(names, n)
+			}
+		}
+		if len(names) == 0 {
+			return ""
+		}
+		sort.Strings(names)
+		return names[0]
+	}
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
+		switch s := s.(type) {
+		case *Send:
+			if name := l.anyTainted(refsOf(func(o map[string]bool) { wordRefs(s.Word, o) })); name != "" {
+				l.add(at, "chan-secret", "secret "+name+" is sent on "+needsCell(s.Chan)+": it stays secret, in more branches")
+			}
+		case *Par:
+			if len(s.Chans) > 0 {
+				l.parChans(s, at)
+			}
+		}
+		lintEachPipe(s, func(pl Pipeline, _ string) {
+			flowing := ""
+			for _, st := range pl.Stages {
+				if flowing == "" {
+					flowing = reaches(refsOf(func(o map[string]bool) { stageRefs(st, o) }))
+				}
+				if flowing == "" {
+					continue
+				}
+				what := ""
+				if key := lintKey(st); mutating[key] {
+					what = key
+				}
+				for _, r := range st.Redirs {
+					if r.Kind == ">" {
+						what = "a > redirect"
+					}
+				}
+				if what != "" {
+					l.add(st.Argv[0].Pos, "chan-to-mutation", "received value ($"+flowing+") reaches "+what)
+				}
+			}
+		})
+	})
+}
+
+// parChans is chan-order and chan-unread-risk for one par with channels.
+func (l *linter) parChans(p *Par, at int) {
+	mutators := map[string]int{}
+	for _, b := range parBranches(p) {
+		mut := map[string]bool{}
+		var walk func(prog *Program, inTry bool)
+		walk = func(prog *Program, inTry bool) {
+			if prog == nil {
+				return
+			}
+			for i, s := range prog.Stmts {
+				sAt := 0
+				if i < len(prog.Pos) {
+					sAt = prog.Pos[i]
+				}
+				if f, ok := s.(*For); ok && f.Recv != "" {
+					if l.mutates(&f.Body, 0) != "" {
+						mut[f.Recv] = true
+					}
+					c := needsCell(f.Recv)
+					switch {
+					case loopBreaks(&f.Body):
+						l.add(sAt, "chan-unread-risk", "a receiver of "+c+" can break: values left at the join fail the par")
+					case inTry:
+						l.add(sAt, "chan-unread-risk", "a try around a receiver of "+c+" can stop it early: values left at the join fail the par")
+					}
+				}
+				if t, ok := s.(*Try); ok {
+					walk(&t.Body, true)
+					walk(t.Catch, inTry)
+					continue
+				}
+				for _, body := range lintBodies(s) {
+					walk(body, inTry)
+				}
+			}
+		}
+		walk(b, false)
+		for c := range mut {
+			mutators[c]++
+		}
+	}
+	for _, c := range p.Chans {
+		if n := mutators[c.Name]; n >= 2 {
+			l.add(at, "chan-order", fmt.Sprintf("chan %s: %d receiving branches mutate; which acts on which item, and when, varies by run", needsCell(c.Name), n))
+		}
+	}
+}
+
+// loopBreaks reports a break that ends the loop whose body is p: one not
+// inside a nested loop.
+func loopBreaks(p *Program) bool {
+	if p == nil {
+		return false
+	}
+	for _, s := range p.Stmts {
+		switch s := s.(type) {
+		case *Jump:
+			if s.Kind == "break" {
+				return true
+			}
+		case *For, *While, *Fn:
+			continue
+		}
+		for _, body := range lintBodies(s) {
+			if loopBreaks(body) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // asks reports a term question p may reach, through fns called by

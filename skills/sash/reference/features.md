@@ -65,7 +65,7 @@ The manifest is advisory: it grants nothing, and the agent still checks every ve
 sash --lint (-c script | file | stdin)
 ```
 
-Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `prompt-to-mutation` (a name bound from `term prompt`, or from a `fn` that asks it, reaches an argument, a path, or the body of a mutating stage), `prompt-subcommand` (error: a name bound from `term prompt` is the word that selects what `unit`, `package`, or `sysctl` does), `prompt-in-retry` (a `retry` body asks again on every attempt), `prompt-needs-terminal` (info, once per script). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
+Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `prompt-to-mutation` (a name bound from `term prompt`, or from a `fn` that asks it, reaches an argument, a path, or the body of a mutating stage), `prompt-subcommand` (error: a name bound from `term prompt` is the word that selects what `unit`, `package`, or `sysctl` does), `prompt-in-retry` (a `retry` body asks again on every attempt), `prompt-needs-terminal` (info, once per script), `chan-to-mutation` (a name bound by `for x in recv c`, or from one, reaches an argument, a path, or the body of a mutating stage), `chan-order` (two or more branches receive from one channel and mutate), `chan-secret` (a secret reaches `send`), `chan-unread-risk` (info: a receiver loop can `break`, or a `try` is around it). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
 
 `--lint` and `--needs` refuse every other flag (`--session`, `--plan`, each other) and anything after the source: exit 2, nothing runs.
 
@@ -203,6 +203,64 @@ Each top-level statement (or each iteration) is a branch; N is 1 to 16 (`usage p
 # nostdout: after
 par 2 { egrep zz <<< a; echo b }
 echo after
+```
+
+`branch { a; b }` makes several statements one branch of a `par N { }` body; anywhere else it is `parse: branch outside par`. `branch` is a reserved word, as `par` is.
+
+```sash
+# expect: host 0
+# stdout: a1
+par 2 { branch { echo a1; echo a2 }; echo b }
+```
+
+```sash
+# expect: parse branch outside par
+if [ true ] { branch { echo a } }
+```
+
+**Channels.** `par N chan jobs(16) { ... }` declares channels for that `par` only (1 to 4, buffer 1 to 64). `send jobs <value>` queues one value and waits while the buffer is full; `for x in recv jobs { }` takes them in order and ends when every branch that sends on `jobs` has ended. A channel is a name in the `par` text, never a value: it cannot be bound, returned, passed to a `fn`, or used in a nested `par`, and `send`/`recv` cannot be in a `fn` or a `retry` (`parse: send inside fn`, `parse: recv inside retry`). Every channel needs a sending branch and a receiving branch, and no branch both sends on and receives from one. `chan`, `send`, and `recv` are reserved words. All branches start; the agent's in-flight limit gates door calls, not branch starts, and with one slot (confirm, replay, an agent without the multiplexed pipe) one branch runs at a time, the lowest-numbered runnable one, switching only when it waits on a channel or ends. Values left unread fail the `par` (`par: chan jobs: N unread`, exit 1); a send with no receiver left is status 1 (`send jobs: no receiver left`); all branches waiting is `par: deadlock: ...`, exit 2, which `try` does not catch. Bytes do not cross: lift them with `lines` or `rows`. A value is copied at `send`, at most 8 MiB, and 32 MiB across a `par`'s buffers. A secret stays a secret and a `term prompt` answer still selects no subcommand after it crosses; `origin` on a received value shows where the sender got it. Use one receiving branch to write a shared file, not several. `--needs` adds nothing for a channel, and a verb on a received value is `dynamic`. Lint carries a sent value into the names `recv` binds, so `secret-to-sink` and the prompt rules see through a channel, and adds `chan-to-mutation`, `chan-order`, `chan-secret`, and `chan-unread-risk`. A recording holds each `send`, `recv`, and close in order, with the value's hash, never the value, and replay follows that order or is `replay_diverged`.
+
+```sash
+# expect: host 0
+# stdout: nginx done
+par 4 chan jobs(16), done(16) {
+  for p in ps |> where cmd == nginx { send jobs $p }
+  for j in recv jobs { unit status $j.cmd; send done [ {"cmd": $j.cmd} ] }
+  for j in recv jobs { unit status $j.cmd; send done [ {"cmd": $j.cmd} ] }
+  for r in recv done { echo "$r.cmd done" }
+}
+```
+
+```sash
+# expect: host 1 par: chan jobs: 2 unread
+par 2 chan jobs(4) {
+  for i in [ [1, 2, 3] ] { send jobs $i }
+  for j in recv jobs { echo $j; break }
+}
+```
+
+```sash
+# expect: host 2 par: deadlock: branch 1 recv a; branch 2 recv b
+# nostdout: caught
+try {
+  par 2 chan a(1), b(1) {
+    for x in recv a { send b $x }
+    for y in recv b { send a $y }
+  }
+} catch { echo caught }
+```
+
+```sash
+# expect: host 2 a secret cannot leave sash
+# stdout: ***
+# nocall: unit.restart
+declare -s tok = (cat /srv/app/token)
+par 2 chan c(1) { send c $tok; for t in recv c { echo $t; unit restart $t } }
+```
+
+```sash
+# expect: parse send inside fn
+fn push(x) { send jobs $x }
 ```
 
 ## `retry` and `timeout`
@@ -373,7 +431,7 @@ sash --replay rec.jsonl --fixture fixture.json (-c script | file)
 
 `--record` runs the script against a fixture, a strict JSON file naming a grant (`entitlements` without `*`, clean absolute `file_read` and `file_write` roots, never `/`) and canned `results` (`key`, optional `argv`, `kind` `rows` with `cols` and `rows`, or `bytes`, `exit`, `error`). No host is reached; the only file written is the new recording (mode 0600, refused if it exists). `--expires` is 1m to 365 days, default 7 days.
 
-`--replay` takes the fixture's grant only and answers every call from the recording. Any difference is exit 2: `replay_diverged <seq>`, `replay_other_script`, `replay_expired`, `replay_bad_chain <seq>`, `replay_bad_segment <n>`, `replay_truncated <seq>`. A recording never authorizes anything.
+`--replay` takes the fixture's grant only and answers every call from the recording. A `par` with channels replays its channel ops in the recorded order, each value checked against its recorded hash (a secret's is redacted and not checked). Any difference is exit 2: `replay_diverged <seq>`, `replay_other_script`, `replay_expired`, `replay_bad_chain <seq>`, `replay_bad_segment <n>`, `replay_truncated <seq>`. A recording never authorizes anything.
 
 ## `why`
 
