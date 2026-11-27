@@ -174,6 +174,61 @@ func TestChanRowsKeepKind(t *testing.T) {
 	}
 }
 
+// Every node of a value counts, as jsonValue charges it: a list of empty
+// strings sent again and again fills the par's 32 MiB, never counted as
+// nothing, and so do empty lists and rows of empty cells.
+func TestChanSizeCountsNodes(t *testing.T) {
+	empty := make([]any, 1000)
+	for i := range empty {
+		empty[i] = ""
+	}
+	_, n, why := chanCopy(value{kind: valData, d: empty})
+	if why != "" || n < 1000*chanNodeBytes {
+		t.Fatalf("empty strings: %d %q", n, why)
+	}
+	_, n, _ = chanCopy(value{kind: valData, d: []any{[]any{}, &omap{m: map[string]any{}}}})
+	if n < 3*chanNodeBytes {
+		t.Fatalf("empty list and map: %d", n)
+	}
+	rows := make([]parent.Row, 1000)
+	for i := range rows {
+		rows[i] = parent.Row{"a": ""}
+	}
+	if _, n, _ = chanCopy(value{kind: valRows, rows: rows}); n < 2000*chanNodeBytes {
+		t.Fatalf("rows: %d", n)
+	}
+	// 300000 empty strings are about 7 MiB: four fit the par, a fifth
+	// does not.
+	body := "[" + strings.Repeat(`"",`, 299999) + `""]`
+	p := &tplParent{files: map[string]string{"/srv/ops/g": body}}
+	src := "let s = (cat /srv/ops/g | from json)\npar 2 chan c(64) { for i in [ range(1, 16) ] { send c $s }; for x in recv c { break } }"
+	out := Run(src, parGrant(), p, Options{})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "send c: buffers over 32 MiB") {
+		t.Fatalf("%d %q", out.Status, firstLine(out.Stderr))
+	}
+}
+
+// A value nested past 128, or of a datum type that cannot cross, says so,
+// not that it is over 8 MiB.
+func TestChanCopyRefusals(t *testing.T) {
+	var deep any = "x"
+	for i := 0; i < 200; i++ {
+		deep = []any{deep}
+	}
+	if _, _, why := chanCopy(value{kind: valData, d: deep}); why != "value nested over 128 deep" {
+		t.Errorf("deep: %q", why)
+	}
+	if _, _, why := chanCopy(value{kind: valData, d: []any{struct{}{}}}); why != "value of a kind that cannot cross" {
+		t.Errorf("kind: %q", why)
+	}
+	if _, _, why := chanCopy(value{kind: valBytes, b: []byte("x")}); why != "value of a kind that cannot cross" {
+		t.Errorf("bytes: %q", why)
+	}
+	if _, _, why := chanCopy(value{kind: valStr, s: strings.Repeat("a", dataMaxBytes)}); why != "value over 8 MiB" {
+		t.Errorf("big: %q", why)
+	}
+}
+
 // Receivers break early: a producer with room-less buffer gets no
 // receiver left (exit 1); values left queued fail the par as unread.
 func TestChanNoReceiverAndUnread(t *testing.T) {
@@ -505,8 +560,8 @@ func TestChanSecretCrosses(t *testing.T) {
 	}
 	// The wrapper is part of the datum at any depth.
 	v := value{kind: valData, d: []any{&omap{keys: []string{"k"}, m: map[string]any{"k": secretVal{"hunter2-long"}}}}}
-	cp, _, ok := chanCopy(v)
-	if !ok || !isSecret(cp.d.([]any)[0].(*omap).m["k"]) {
+	cp, _, why := chanCopy(v)
+	if why != "" || !isSecret(cp.d.([]any)[0].(*omap).m["k"]) {
 		t.Fatalf("nested secret lost: %+v", cp)
 	}
 }
@@ -591,9 +646,9 @@ func TestChanLoopMax(t *testing.T) {
 // shared (rows keep their kind).
 func TestChanDeepCopy(t *testing.T) {
 	v := value{kind: valData, d: &omap{keys: []string{"a"}, m: map[string]any{"a": []any{"x"}}}}
-	cp, _, ok := chanCopy(v)
-	if !ok {
-		t.Fatal("copy")
+	cp, _, why := chanCopy(v)
+	if why != "" {
+		t.Fatal(why)
 	}
 	cp.d.(*omap).m["a"].([]any)[0] = "y"
 	if v.d.(*omap).m["a"].([]any)[0] != "x" {

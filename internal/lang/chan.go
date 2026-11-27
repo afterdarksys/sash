@@ -696,9 +696,9 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("a secret in a word: build it inside [ ]\n")
 		return exitType, true
 	}
-	cp, size, ok := chanCopy(v)
-	if !ok || size > dataMaxBytes {
-		m.err.WriteString("send " + s.Chan + ": value over 8 MiB\n")
+	cp, size, why := chanCopy(v)
+	if why != "" {
+		m.err.WriteString("send " + s.Chan + ": " + why + "\n")
 		return exitType, true
 	}
 	it := chanItem{v: cp, size: size}
@@ -728,7 +728,7 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		return m.chanFail(err)
 	}
 	if ch.receivers == 0 {
-		m.err.WriteString("send " + s.Chan + ": no receiver left\n")
+		m.err.WriteString("send " + s.Chan + ": " + msgNoReceiver + "\n")
 		return 1, true
 	}
 	if t.bytes+size > chanParMaxBytes {
@@ -745,44 +745,72 @@ func (m *machine) runSend(s *Send) (int, bool) {
 	return 0, false
 }
 
+// chanNodeBytes is what one node of a value costs beside its text, as
+// jsonValue charges it: an empty string, list, map, row, or cell is not
+// free.
+const chanNodeBytes = 24
+
+// chanDepthMax is the deepest a value may nest to cross.
+const chanDepthMax = 128
+
 // chanCopy deep-copies v, so the receiver shares no map or slice with the
-// sender, and sizes it: the bytes of its texts and keys, 8 per scalar.
-// ok is false past dataMaxBytes or for a kind that cannot cross.
-func chanCopy(v value) (value, int, bool) {
-	size := 0
+// sender, and sizes it: chanNodeBytes per node, row, and cell, plus the
+// bytes of its texts and keys. why is "" or what stops it crossing: past
+// dataMaxBytes, nested past chanDepthMax, or a kind that cannot cross.
+func chanCopy(v value) (out value, size int, why string) {
 	// Provenance ids do not cross: they index the sender's origins table
 	// (runSend carries the records beside the copy).
-	out := value{kind: v.kind, s: v.s, gcol: v.gcol}
+	out = value{kind: v.kind, s: v.s, gcol: v.gcol}
+	size = chanNodeBytes
 	switch v.kind {
 	case valStr:
-		size = len(v.s)
+		size += len(v.s)
 	case valRow:
-		out.row, size = copyRow(v.row)
+		var n int
+		out.row, n = copyRow(v.row)
+		size += n
 	case valRows:
 		out.cols = append([]string(nil), v.cols...)
+		for _, c := range v.cols {
+			size += len(c)
+		}
 		out.rows = make([]parent.Row, len(v.rows))
 		for i, r := range v.rows {
 			var n int
 			out.rows[i], n = copyRow(r)
 			if size += n; size > dataMaxBytes {
-				return value{}, size, false
+				return value{}, size, whyTooBig
 			}
 		}
 	case valData:
-		d, n, ok := copyDatum(v.d, 0, 0)
-		if !ok {
-			return value{}, n, false
+		d, n, why := copyDatum(v.d, size, 0)
+		if why != "" {
+			return value{}, n, why
 		}
 		out.d, size = d, n
 	default:
-		return value{}, 0, false
+		return value{}, 0, whyKind
 	}
-	return out, size, size <= dataMaxBytes
+	if size > dataMaxBytes {
+		return value{}, size, whyTooBig
+	}
+	return out, size, ""
 }
+
+// msgNoReceiver follows "send c: " when every receiver has ended: status
+// 1, not exit 2, so it has its own catalog entry.
+const msgNoReceiver = "no receiver left"
+
+// What stops a value crossing, after "send c: ".
+const (
+	whyTooBig = "value over 8 MiB"
+	whyDeep   = "value nested over 128 deep"
+	whyKind   = "value of a kind that cannot cross"
+)
 
 // holdsSecret reports a secret anywhere in d.
 func holdsSecret(d any, depth int) bool {
-	if depth > 128 {
+	if depth > chanDepthMax {
 		return true
 	}
 	switch d := d.(type) {
@@ -806,50 +834,55 @@ func holdsSecret(d any, depth int) bool {
 
 func copyRow(r parent.Row) (parent.Row, int) {
 	out := make(parent.Row, len(r))
-	n := 0
+	n := chanNodeBytes
 	for k, v := range r {
 		out[k] = v
-		n += len(k) + len(v)
+		n += chanNodeBytes + len(k) + len(v)
 	}
 	return out, n
 }
 
-func copyDatum(d any, size, depth int) (any, int, bool) {
-	if size > dataMaxBytes || depth > 128 {
-		return nil, size, false
+// copyDatum copies d, adding its size to size; why as for chanCopy.
+func copyDatum(d any, size, depth int) (any, int, string) {
+	switch {
+	case size > dataMaxBytes:
+		return nil, size, whyTooBig
+	case depth > chanDepthMax:
+		return nil, size, whyDeep
 	}
+	size += chanNodeBytes
 	switch d := d.(type) {
 	case nil, bool, int64, float64:
-		return d, size + 8, true
+		return d, size, ""
 	case string:
-		return d, size + len(d), true
+		return d, size + len(d), ""
 	case []any:
 		out := make([]any, len(d))
 		for i, e := range d {
-			var ok bool
-			if out[i], size, ok = copyDatum(e, size, depth+1); !ok {
-				return nil, size, false
+			var why string
+			if out[i], size, why = copyDatum(e, size, depth+1); why != "" {
+				return nil, size, why
 			}
 		}
-		return out, size, true
+		return out, size, ""
 	case secretVal:
 		// The wrapper is part of the datum: a secret stays a secret.
-		in, n, ok := copyDatum(d.d, size, depth+1)
-		if !ok {
-			return nil, n, false
+		in, n, why := copyDatum(d.d, size, depth+1)
+		if why != "" {
+			return nil, n, why
 		}
-		return secretVal{in}, n, true
+		return secretVal{in}, n, ""
 	case *omap:
 		out := &omap{keys: append([]string(nil), d.keys...), m: make(map[string]any, len(d.m))}
 		for _, k := range d.keys {
-			var ok bool
-			if out.m[k], size, ok = copyDatum(d.m[k], size+len(k), depth+1); !ok {
-				return nil, size, false
+			var why string
+			if out.m[k], size, why = copyDatum(d.m[k], size+len(k), depth+1); why != "" {
+				return nil, size, why
 			}
 		}
-		return out, size, true
+		return out, size, ""
 	}
-	return nil, size, false
+	return nil, size, whyKind
 }
 
 // runRecv is for x in recv c { }: each value in send order on c, until c
