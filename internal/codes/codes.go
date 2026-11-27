@@ -122,6 +122,7 @@ var table = []Code{
 	// term: asking the person.
 	{"term_no_terminal", 2, "term", "\"term needs a terminal\": the script asks a person and there is no terminal to ask; it stopped there", "A person runs the script at a terminal.", []string{"term needs a terminal"}},
 	{"term_eof", 1, "term", "\"term prompt: end of input\": Ctrl-D on an empty line, or the input ended; the value is empty", fixNothing, []string{"term prompt: end of input", "end of input"}},
+	{"term_empty", 1, "term", "\"term prompt: empty answer\": the person pressed Enter on an empty line; the value is empty, as at the end of input", fixNothing, []string{"term prompt: empty answer"}},
 	{"term_interrupted", 130, "term", "\"term: interrupted\": Ctrl-C at a question; the script stopped", fixNothing, []string{"term: interrupted", "interrupted"}},
 	{"term_answer_long", 2, "term", "\"term prompt: answer over 4096 bytes\": the rest of the line was discarded and there is no value", "A person gives a shorter answer.", []string{"term prompt: answer over 4096 bytes", "answer over 4096 bytes"}},
 	{"term_answer_not_text", 2, "term", "\"term prompt: answer is not text\": the answer is not UTF-8 and there is no value", "A person types the answer as text.", []string{"term prompt: answer is not text", "answer is not text"}},

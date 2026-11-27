@@ -351,6 +351,7 @@ Each is one line on stderr.
 | `fs write-atomic: not written` | an earlier stage failed, so the sink sent nothing; the status is that stage's |
 | `term needs a terminal` | `term` with no terminal to ask; the script stops (2) |
 | `term prompt: end of input` | Ctrl-D on an empty line, or the input ended (1) |
+| `term prompt: empty answer` | Enter on an empty line: no answer, as at the end of input (1) |
 | `term prompt: answer over 4096 bytes`, `term prompt: answer is not text` | an answer that is too long or not UTF-8; there is no value (2) |
 | `term: interrupted` | Ctrl-C at a question; the script stops, `try` cannot catch it (130) |
 | `term inside par`, `atomic_irreversible: term` | a question inside `par` or `atomic { }` (2) |

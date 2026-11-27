@@ -94,7 +94,9 @@ func watch(r keySource, a lang.TermAsk) *watched {
 
 // askPrompt is term prompt's read: the question, then one line. Typeahead
 // never answers: the input queue is flushed and what was read ahead is
-// dropped first, and a failed flush is no terminal. Enter (CR or LF) ends
+// dropped first, and a failed flush is no terminal. After the question,
+// input is dropped until it has been quiet for confirmQuiet (waitQuiet),
+// and input that is never quiet for confirmQuietMax is no terminal. Enter (CR or LF) ends
 // the line. Backspace deletes one rune and Ctrl-U the line. ESC and its
 // sequence (a CSI through its final byte, else ESC and one byte), every
 // other control byte, and C1 controls are dropped, never stored. Each
@@ -166,6 +168,18 @@ func askPrompt(r keySource, out io.Writer, flush func() error, lead string, a la
 		if errors.Is(e, lang.ErrTermTimeout) || errors.Is(e, lang.ErrTermHangup) {
 			return "", e
 		}
+		return "", lang.ErrTermNone
+	}
+	// The question arms as a confirm does: keys are dropped until input
+	// has been quiet for confirmQuiet, so the rest of an earlier answer,
+	// or a key typed before the question could be read, does not answer
+	// it. Input that never goes quiet is no answer.
+	switch end, qerr := waitQuiet(w); {
+	case qerr != nil:
+		return fail(qerr)
+	case end == quietCtrlC:
+		return "", lang.ErrTermInterrupted
+	case end == quietBusy:
 		return "", lang.ErrTermNone
 	}
 	for {

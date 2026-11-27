@@ -665,6 +665,13 @@
     "fix": "A person types the answer as text."
   },
   {
+    "code": "term_empty",
+    "exit": 1,
+    "area": "term",
+    "meaning": "\"term prompt: empty answer\": the person pressed Enter on an empty line; the value is empty, as at the end of input",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
     "code": "term_eof",
     "exit": 1,
     "area": "term",

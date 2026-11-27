@@ -140,7 +140,7 @@ func termGrant() grant.Grant {
 func TestTermPromptAndConfirm(t *testing.T) {
 	term := &fakeTerm{answers: []string{"nginx", ""}}
 	out := Run("let a = (term prompt \"unit?\")\necho got $a\nlet b = (term prompt \"again?\")\necho [ len($b) ]\n", grant.Grant{}, skillParent{t}, Options{Term: term})
-	if out.Status != 0 || out.Stdout != "got nginx\n0\n" || out.Stderr != "" {
+	if out.Status != 0 || out.Stdout != "got nginx\n0\n" || out.Stderr != "term prompt: empty answer\n" {
 		t.Errorf("prompt: %+v", out)
 	}
 	if len(term.asked) != 2 || term.asked[0].Question != "unit?" || term.asked[0].Secret || term.asked[0].Hung == nil || term.asked[0].Wait != 0 {
@@ -307,6 +307,32 @@ func TestTermEndings(t *testing.T) {
 	out, term := run("retry 5 { term prompt \"q\" }\n", ErrTermEOF)
 	if out.Status != 1 || len(term.asked) != 1 {
 		t.Errorf("eof under retry: asked %d times, %+v", len(term.asked), out)
+	}
+	// An empty line is no answer, the same as the end of input: status 1
+	// with an empty value, set -e stops, try catches it, retry does not
+	// ask again, and an empty value never reaches the next statement with
+	// status 0.
+	empty := func(src string) (Outcome, *fakeTerm) {
+		term := &fakeTerm{answers: []string{""}}
+		return Run(src, grant.Grant{}, skillParent{t}, Options{Term: term}), term
+	}
+	for _, src := range []string{
+		"let a = (term prompt \"q\")\necho [ len($a) ] after\n",
+		"term prompt \"q\"\n",
+		"set -e\nlet a = (term prompt \"q\")\necho RAN $a\n",
+		"set -e\ntry { let a = (term prompt \"q\") } catch e { echo caught [ $e.status ] }\n",
+		"retry 5 { term prompt \"q\" }\n",
+		"declare -s tok = (term prompt -s \"q\")\necho after\n",
+	} {
+		got, gterm := empty(src)
+		want, wterm := run(src, ErrTermEOF)
+		if got.Status != want.Status || got.Stdout != want.Stdout || len(gterm.asked) != len(wterm.asked) ||
+			strings.Replace(got.Stderr, "term prompt: empty answer", "term prompt: end of input", 1) != want.Stderr {
+			t.Errorf("%q: empty %+v asked %d, eof %+v asked %d", src, got, len(gterm.asked), want, len(wterm.asked))
+		}
+		if strings.Contains(got.Stdout, "RAN") || (!strings.Contains(src, "try") && !strings.Contains(got.Stderr, "term prompt: empty answer")) {
+			t.Errorf("%q: %+v", src, got)
+		}
 	}
 	// Ctrl-C is 130 and stops the script: try does not catch it and retry
 	// does not repeat it.

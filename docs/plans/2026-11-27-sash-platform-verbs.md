@@ -63,8 +63,8 @@ A terminal exists when sash's stdin and stderr are both terminals (`line.IsTerm`
 
 | Event | `term prompt` | `term confirm` |
 | --- | --- | --- |
-| Before the question | Input queue flushed (`flushInput`, `term_darwin.go:55`, linux twin) and read-ahead discarded, so typeahead never answers. A failed flush is the "no terminal" error. | The whole `askConfirm` discipline (`editor.go:1446-1527`): flush, bracketed paste on, armed only after 200 ms of silence, `y`/`Y`, second flush, Enter. Reuse the function; do not copy it. |
-| Enter (CR or LF) | Ends the line. | As `askConfirm`. |
+| Before the question | Input queue flushed (`flushInput`, `term_darwin.go:55`, linux twin) and read-ahead discarded, so typeahead never answers. A failed flush is the "no terminal" error. After the question, armed only after 200 ms of silence (`waitQuiet`, shared with `askConfirm`); input that is never quiet for 5 s is the "no terminal" error. | The whole `askConfirm` discipline (`editor.go:1446-1527`): flush, bracketed paste on, armed only after 200 ms of silence, `y`/`Y`, second flush, Enter. Reuse the function; do not copy it. |
+| Enter (CR or LF) | Ends the line. On an empty line: status 1, `term prompt: empty answer`, empty value, as Ctrl-D. | As `askConfirm`; after a no key the rest of the line is read through its Enter (at most 1 s), so it cannot answer the next question. |
 | Backspace (0x7f, 0x08), Ctrl-U | Delete one rune, clear the line. | - |
 | ESC | It and its sequence are dropped (CSI: through the final byte 0x40-0x7E; else ESC and one byte). | no |
 | Any other byte below 0x20, 0x7f, C1 | Dropped, not stored. | no |

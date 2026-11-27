@@ -84,6 +84,9 @@ func (m *machine) isTTY() (bool, error) {
 // msgTermNoTerminal refuses term without a terminal to ask.
 const msgTermNoTerminal = "term needs a terminal"
 
+// msgTermEmpty is an empty line typed at term prompt.
+const msgTermEmpty = "term prompt: empty answer"
+
 // termQuestionMax caps a question after expansion, in bytes.
 const termQuestionMax = 1024
 
@@ -229,6 +232,15 @@ func (m *machine) runTerm(st expStage) (value, int) {
 			return value{kind: valBytes}, 0
 		}
 		return value{kind: valBytes}, 1
+	}
+	if answer == "" {
+		// An empty line is no answer, as the end of input is: a stray
+		// Enter does not hand an empty value to the next statement with
+		// status 0, so set -e stops and try catches it, and retry does
+		// not ask again.
+		m.termEnded = true
+		m.err.WriteString(msgTermEmpty + "\n")
+		return value{kind: valStr}, 1
 	}
 	// The answer is untrusted text a person typed: origin names it.
 	id := m.st.addOrigin(origin{src: m.provSrcName(), line: m.provLine(), key: "term prompt", nohash: true})

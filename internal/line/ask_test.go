@@ -278,3 +278,66 @@ func TestScriptTermNeedsTwoTerminals(t *testing.T) {
 		t.Errorf("no files are a terminal: %#v", term)
 	}
 }
+
+// A question arms only after input has been quiet: keys that arrive just
+// after it is drawn (the rest of an earlier answer) are dropped, input
+// that never goes quiet is no answer, and Ctrl-C while waiting stops it.
+func TestAskPromptArmsAfterQuiet(t *testing.T) {
+	clock := withClock(t)
+	ask := func(e []ev) (string, error, *fakeKeys) {
+		keys := &fakeKeys{evs: e, clock: clock}
+		var out bytes.Buffer
+		got, err := askPrompt(keys, &out, keys.flush, "", lang.TermAsk{Question: "name?"})
+		return got, err, keys
+	}
+	// The Enter of an earlier "n", 100 ms after this question appeared.
+	e := []ev{{50 * time.Millisecond, 'o'}, {100 * time.Millisecond, '\r'}}
+	e = append(e, evs(time.Second, "nginx\r")...)
+	if got, err, _ := ask(e); err != nil || got != "nginx" {
+		t.Errorf("stray Enter: got %q err %v", got, err)
+	}
+	// With nothing after it, the stray Enter answers nothing.
+	if got, err, _ := ask([]ev{{100 * time.Millisecond, '\r'}}); !errors.Is(err, lang.ErrTermEOF) || got != "" {
+		t.Errorf("stray Enter alone: got %q err %v", got, err)
+	}
+	// Input that never goes quiet for confirmQuietMax is no answer.
+	if got, err, _ := ask(evs(100*time.Millisecond, strings.Repeat("a", 100)+"\r")); !errors.Is(err, lang.ErrTermNone) || got != "" {
+		t.Errorf("busy: got %q err %v", got, err)
+	}
+	if got, err, _ := ask([]ev{{50 * time.Millisecond, 'a'}, {50 * time.Millisecond, 0x03}}); !errors.Is(err, lang.ErrTermInterrupted) || got != "" {
+		t.Errorf("Ctrl-C while arming: got %q err %v", got, err)
+	}
+}
+
+// A no answer takes the rest of its line with it: "no" and Enter, or "n"
+// then Enter 100 ms later, leave nothing for the next question; an Enter
+// long after the no is not taken.
+func TestAskYesDrainsANo(t *testing.T) {
+	clock := withClock(t)
+	ask := func(e []ev) (bool, error, *fakeKeys, string) {
+		keys := &fakeKeys{evs: e, clock: clock}
+		var out bytes.Buffer
+		yes, err := askYes(keys, &out, keys.flush, lang.TermAsk{Question: "go on?"})
+		return yes, err, keys, out.String()
+	}
+	for name, e := range map[string][]ev{
+		"no Enter":              {{time.Second, 'n'}, {50 * time.Millisecond, 'o'}, {50 * time.Millisecond, '\r'}},
+		"n, Enter 100 ms on":    {{time.Second, 'n'}, {100 * time.Millisecond, '\r'}},
+		"yes Enter":             {{time.Second, 'y'}, {50 * time.Millisecond, 'e'}, {50 * time.Millisecond, 's'}, {50 * time.Millisecond, '\r'}},
+		"n, o 300 ms on, Enter": {{time.Second, 'n'}, {300 * time.Millisecond, 'o'}, {300 * time.Millisecond, '\r'}},
+	} {
+		yes, err, keys, out := ask(e)
+		if yes || err != nil || len(keys.evs) != 0 {
+			t.Errorf("%s: yes %v err %v left %d", name, yes, err, len(keys.evs))
+		}
+		if !strings.HasPrefix(name, "yes") && !strings.Contains(out, "go on? [y + Enter / N] n") {
+			t.Errorf("%s: out %q", name, out)
+		}
+	}
+	if yes, err, keys, _ := ask([]ev{{time.Second, 'n'}, {2 * time.Second, '\r'}}); yes || err != nil || len(keys.evs) != 1 {
+		t.Errorf("late Enter: yes %v err %v left %d", yes, err, len(keys.evs))
+	}
+	if yes, err, _, _ := ask([]ev{{time.Second, 'n'}, {100 * time.Millisecond, 0x03}}); yes || !errors.Is(err, lang.ErrTermInterrupted) {
+		t.Errorf("n Ctrl-C: yes %v err %v", yes, err)
+	}
+}

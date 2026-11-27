@@ -1446,6 +1446,9 @@ func (e *Editor) termWidth() int {
 const (
 	confirmQuiet    = 200 * time.Millisecond
 	confirmQuietMax = 5 * time.Second
+	// confirmDrain bounds how long a no answer's rest is read through its
+	// Enter.
+	confirmDrain = time.Second
 )
 
 // askConfirm is set -o confirm's question. Threats: a paste, typeahead,
@@ -1458,7 +1461,9 @@ const (
 // echoed (escaped), so a y is visible before Enter. Yes is exactly y or
 // Y, then a second flush, then Enter (CR or LF). Enter alone, any other
 // first key (ESC: a paste or an arrow), y then anything but Enter, EOF,
-// or a failed flush is no; Ctrl-C is no that also stops the line. There is
+// or a failed flush is no; Ctrl-C is no that also stops the line. After a
+// no key the rest of that line is read and dropped through its Enter, for
+// at most confirmDrain, so it cannot answer the next question. There is
 // no yes to all.
 func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (yes, interrupted bool) {
 	drop := func() bool {
@@ -1479,23 +1484,11 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 			yes = false
 		}
 	}()
-	start := nowFn()
-	for {
-		b, ok, err := r.ReadByteTimeout(confirmQuiet)
-		if err != nil {
-			return false, false
-		}
-		if !ok {
-			break
-		}
-		// Ctrl-C is never discarded: it is a no that stops the line, as
-		// it is once the prompt is armed.
-		if b == 0x03 {
-			return false, true
-		}
-		if nowFn().Sub(start) >= confirmQuietMax {
-			return false, false
-		}
+	switch end, err := waitQuiet(r); {
+	case err != nil || end == quietBusy:
+		return false, false
+	case end == quietCtrlC:
+		return false, true
 	}
 	key := func() (byte, bool) {
 		b, err := r.ReadByte()
@@ -1509,14 +1502,38 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 		}
 		return b, true
 	}
+	// drain reads, echoed, the rest of a no answer through its Enter, for
+	// at most confirmDrain, so the "o" of a "no" and its Enter are not left
+	// to answer the next question. Ctrl-C still stops the line.
+	drain := func() (interrupted bool) {
+		until := nowFn().Add(confirmDrain)
+		for {
+			left := until.Sub(nowFn())
+			if left <= 0 {
+				return false
+			}
+			b, ok, err := r.ReadByteTimeout(left)
+			if err != nil || !ok || b == '\r' || b == '\n' {
+				return false
+			}
+			if b == 0x03 {
+				return true
+			}
+			if werr := writeAll(out, []byte(lang.Cell(string([]byte{b})))); werr != nil {
+				return false
+			}
+		}
+	}
 	b, ok := key()
 	switch {
 	case !ok:
 		return false, false
 	case b == 0x03:
 		return false, true
-	case b != 'y' && b != 'Y':
+	case b == '\r' || b == '\n':
 		return false, false
+	case b != 'y' && b != 'Y':
+		return false, drain()
 	}
 	if !drop() {
 		return false, false
@@ -1527,8 +1544,42 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 		return false, false
 	case b == 0x03:
 		return false, true
+	case b == '\r' || b == '\n':
+		return true, false
 	}
-	return b == '\r' || b == '\n', false
+	return false, drain()
+}
+
+// quietEnd is how waitQuiet ended.
+type quietEnd int
+
+const (
+	quietArmed quietEnd = iota // confirmQuiet passed with no byte
+	quietCtrlC                 // Ctrl-C arrived while waiting
+	quietBusy                  // input kept coming for confirmQuietMax
+)
+
+// waitQuiet discards input until confirmQuiet passes with no byte
+// arriving, for at most confirmQuietMax. Ctrl-C is never discarded: it
+// ends the wait as it would end the question once armed. A read error
+// (the end of input, a deadline, a hangup) is returned as it came.
+func waitQuiet(r keySource) (quietEnd, error) {
+	start := nowFn()
+	for {
+		b, ok, err := r.ReadByteTimeout(confirmQuiet)
+		if err != nil {
+			return quietArmed, err
+		}
+		if !ok {
+			return quietArmed, nil
+		}
+		if b == 0x03 {
+			return quietCtrlC, nil
+		}
+		if nowFn().Sub(start) >= confirmQuietMax {
+			return quietBusy, nil
+		}
+	}
 }
 
 func isEnter(b byte) bool { return b == '\r' || b == '\n' }
