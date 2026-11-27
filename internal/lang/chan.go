@@ -1,0 +1,741 @@
+package lang
+
+// Channels scoped to one par N { } block
+// (docs/plans/2026-11-27-sash-par-channels.md sections 1 to 4).
+//
+// Threats: a channel outliving its par (a channel is a name in the par
+// text, never a value; its table is a local of runPar, and every branch
+// that can block on it is joined, or woken by the first cancel, before
+// runPar returns); a producer outrunning workers or huge values (buffer 1
+// to 64, 8 MiB per value, 32 MiB per par, sends past loopmax halt); a
+// deadlock hanging the line (exact detection under one lock, on every
+// block and branch end, never a timer); a dropped item being a dropped
+// action (values left at the join fail the par); a received value sharing
+// a map with its sender (every value is deep-copied at send); and an
+// origin id meaning another origin in the receiving branch (until
+// provenance crosses by record, a value holding a secret or a term prompt
+// answer is refused at send, and a par with channels is refused under
+// recording and replay).
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/afterdarksys/sash/internal/parent"
+)
+
+// msgRecvOnly is the one place recv may stand.
+const msgRecvOnly = "recv only as for x in recv c"
+
+// chanOpsIn calls fn for every send and recv loop in p, nested bodies
+// included, fn bodies too.
+func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
+	if p == nil {
+		return
+	}
+	for _, s := range p.Stmts {
+		switch s := s.(type) {
+		case *Send:
+			fn("send", s.Chan, s)
+		case *For:
+			if s.Recv != "" {
+				fn("recv", s.Recv, s)
+			}
+		}
+		for _, b := range lintBodies(s) {
+			chanOpsIn(b, fn)
+		}
+	}
+}
+
+// chanPlaces is the static channel rules (section 2): no send or recv in
+// a fn or a retry, recv only as a for source, each op naming a channel of
+// its own par, and each channel with a sender branch and a receiver
+// branch, no branch both.
+func chanPlaces(prog *Program) error {
+	var msg string
+	needsEachStage(prog, func(st Stage) {
+		if msg == "" && len(st.Argv) > 0 && plain(st.Argv[0]) == "recv" {
+			msg = msgRecvOnly
+		}
+	})
+	if msg == "" {
+		msg = chanWalk(prog, nil)
+	}
+	if msg != "" {
+		return fmt.Errorf("parse: %s", msg)
+	}
+	return nil
+}
+
+// chanWalk checks p, where chans is the enclosing par's channels (nil
+// outside a par with channels).
+func chanWalk(p *Program, chans map[string]bool) string {
+	if p == nil {
+		return ""
+	}
+	for _, s := range p.Stmts {
+		var msg string
+		switch s := s.(type) {
+		case *Fn:
+			chanOpsIn(&s.Body, func(op, _ string, _ Stmt) {
+				if msg == "" {
+					msg = op + " inside fn"
+				}
+			})
+		case *Retry:
+			chanOpsIn(&s.Body, func(op, _ string, _ Stmt) {
+				if msg == "" {
+					msg = op + " inside retry"
+				}
+			})
+		case *Send:
+			if !chans[s.Chan] {
+				msg = "send outside its par"
+			}
+		case *For:
+			if s.Recv != "" && !chans[s.Recv] {
+				msg = "recv outside its par"
+			}
+		case *Par:
+			if msg = chanWalk(&s.Body, parChans(s)); msg == "" {
+				msg = chanSides(s)
+			}
+			if msg != "" {
+				return msg
+			}
+			continue
+		}
+		if msg != "" {
+			return msg
+		}
+		for _, b := range lintBodies(s) {
+			if msg := chanWalk(b, chans); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
+func parChans(s *Par) map[string]bool {
+	if len(s.Chans) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, c := range s.Chans {
+		out[c.Name] = true
+	}
+	return out
+}
+
+// parBranches is a par N { } body's branches: each top-level statement,
+// or a branch { } block.
+func parBranches(s *Par) []*Program {
+	out := make([]*Program, len(s.Body.Stmts))
+	for i, st := range s.Body.Stmts {
+		if br, ok := st.(*Branch); ok {
+			out[i] = &br.Body
+			continue
+		}
+		out[i] = &Program{Stmts: []Stmt{st}, Pos: []int{s.Body.Pos[i]}}
+	}
+	return out
+}
+
+// branchSides is, per channel, whether a branch sends on it and whether
+// it receives from it. Its text is the whole truth: no fn and no retry
+// holds a channel op.
+func branchSides(b *Program) (sends, recvs map[string]bool) {
+	sends, recvs = map[string]bool{}, map[string]bool{}
+	chanOpsIn(b, func(op, name string, _ Stmt) {
+		if op == "send" {
+			sends[name] = true
+		} else {
+			recvs[name] = true
+		}
+	})
+	return sends, recvs
+}
+
+// chanSides refuses a channel no branch sends on, none receives from, or
+// one branch both sends on and receives from.
+func chanSides(s *Par) string {
+	if len(s.Chans) == 0 {
+		return ""
+	}
+	sent, recvd := map[string]bool{}, map[string]bool{}
+	for _, b := range parBranches(s) {
+		sends, recvs := branchSides(b)
+		for c := range sends {
+			if recvs[c] {
+				return "chan " + c + ": one branch sends and receives"
+			}
+			sent[c] = true
+		}
+		for c := range recvs {
+			recvd[c] = true
+		}
+	}
+	for _, c := range s.Chans {
+		if !sent[c.Name] {
+			return "chan " + c.Name + ": no sender"
+		}
+		if !recvd[c.Name] {
+			return "chan " + c.Name + ": no receiver"
+		}
+	}
+	return ""
+}
+
+// chanParMaxBytes bounds every buffered value of one par together.
+const chanParMaxBytes = 32 << 20
+
+// msgChanUnsafe refuses what cannot cross yet: origin ids would name
+// other origins in the receiving branch, so a secret or an answer could
+// lose what it is (section 5 lifts this).
+const msgChanUnsafe = "type send: a secret or a term prompt answer cannot cross a channel yet"
+
+// msgChanRecord refuses a recorded or replayed par with channels until
+// the recording holds the channel order (section 6 lifts this).
+const msgChanRecord = "type par: a par with channels cannot be recorded or replayed yet"
+
+var (
+	errChanDeadlock  = errors.New("deadlock")
+	errChanCancelled = errors.New("cancelled")
+	errChanTimeout   = errors.New("timeout")
+)
+
+type chanItem struct {
+	v    value
+	size int
+}
+
+// pchan is one channel: its queue, and how many of its sender and
+// receiver branches have not ended.
+type pchan struct {
+	name      string
+	buf       int
+	q         []chanItem
+	senders   int
+	receivers int
+	sends     int
+}
+
+// chanWaiter is a branch blocked on a channel op. A state change that
+// makes its op ready marks it woken and counts it running again, under
+// the table's lock, before any other branch can block: so a branch woken
+// but not yet scheduled is never mistaken for a blocked one.
+type chanWaiter struct {
+	i     int
+	what  string
+	ready func() bool
+	woken bool
+}
+
+// chanTable is everything a par with channels shares between its
+// branches, under one lock. It is a local of runPar.
+type chanTable struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	ctx     context.Context
+	cancel  context.CancelFunc
+	chans   map[string]*pchan
+	order   []string
+	sides   []map[string]string // per branch: chan -> "send" or "recv"
+	bytes   int
+	running int // started, not ended, not blocked on a channel
+	waiters []*chanWaiter
+	dead    string
+	// baton: one branch runs at a time (eff 1). holder is -1 when free;
+	// want holds the runnable branches, and the lowest takes it.
+	baton  bool
+	holder int
+	want   map[int]bool
+	// slots gates door calls when eff >= 2.
+	slots chan struct{}
+}
+
+func newChanTable(ctx context.Context, cancel context.CancelFunc, s *Par, bodies []*Program, eff int) *chanTable {
+	t := &chanTable{ctx: ctx, cancel: cancel, chans: map[string]*pchan{}, running: len(bodies), holder: -1}
+	t.cond = sync.NewCond(&t.mu)
+	for _, c := range s.Chans {
+		t.chans[c.Name] = &pchan{name: c.Name, buf: c.Buf}
+		t.order = append(t.order, c.Name)
+	}
+	for _, b := range bodies {
+		side := map[string]string{}
+		sends, recvs := branchSides(b)
+		for c := range sends {
+			side[c] = "send"
+			if ch := t.chans[c]; ch != nil {
+				ch.senders++
+			}
+		}
+		for c := range recvs {
+			side[c] = "recv"
+			if ch := t.chans[c]; ch != nil {
+				ch.receivers++
+			}
+		}
+		t.sides = append(t.sides, side)
+	}
+	if eff <= 1 {
+		t.baton = true
+		t.want = map[int]bool{}
+		for i := range bodies {
+			t.want[i] = true
+		}
+	} else {
+		t.slots = make(chan struct{}, eff)
+	}
+	return t
+}
+
+// changed wakes every waiter whose op is now ready, or all of them when
+// the par is cancelled or deadlocked, then declares a deadlock when no
+// branch runs and some branch waits. Under t.mu.
+func (t *chanTable) changed() {
+	all := t.ctx.Err() != nil || t.dead != ""
+	keep := t.waiters[:0]
+	for _, w := range t.waiters {
+		if all || w.ready() {
+			t.wake(w)
+			continue
+		}
+		keep = append(keep, w)
+	}
+	t.waiters = keep
+	if t.running == 0 && len(t.waiters) > 0 && t.dead == "" {
+		var ops []string
+		ws := append([]*chanWaiter(nil), t.waiters...)
+		for a := range ws {
+			for b := a + 1; b < len(ws); b++ {
+				if ws[b].i < ws[a].i {
+					ws[a], ws[b] = ws[b], ws[a]
+				}
+			}
+		}
+		for _, w := range ws {
+			ops = append(ops, fmt.Sprintf("branch %d %s", w.i+1, w.what))
+		}
+		t.dead = strings.Join(ops, "; ")
+		for _, w := range t.waiters {
+			t.wake(w)
+		}
+		t.waiters = nil
+	}
+	t.cond.Broadcast()
+}
+
+func (t *chanTable) wake(w *chanWaiter) {
+	w.woken = true
+	t.running++
+	if t.baton {
+		t.want[w.i] = true
+	}
+}
+
+// acquire waits for the baton: free, and this the lowest runnable
+// branch. Under t.mu.
+func (t *chanTable) acquire(i int) {
+	if !t.baton {
+		return
+	}
+	t.want[i] = true
+	for {
+		if t.holder == -1 {
+			low := -1
+			for j := range t.want {
+				if low < 0 || j < low {
+					low = j
+				}
+			}
+			if low == i {
+				break
+			}
+		}
+		t.cond.Wait()
+	}
+	t.holder = i
+	delete(t.want, i)
+}
+
+func (t *chanTable) release(i int) {
+	if t.baton && t.holder == i {
+		t.holder = -1
+		t.cond.Broadcast()
+	}
+}
+
+// start runs before branch i's body.
+func (t *chanTable) start(i int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.acquire(i)
+}
+
+// end runs when branch i ends, for any reason: each channel it sent on
+// closes when it was the last sender, and each it received from loses a
+// receiver. A failed branch cancels the par first, so a sender it leaves
+// without a receiver wakes as cancelled, as the first failure decides.
+func (t *chanTable) end(i int, failed bool) {
+	if failed {
+		t.cancel()
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c, side := range t.sides[i] {
+		ch := t.chans[c]
+		if ch == nil {
+			continue
+		}
+		if side == "send" {
+			ch.senders--
+		} else {
+			ch.receivers--
+		}
+	}
+	t.running--
+	t.release(i)
+	t.changed()
+}
+
+// cancelled wakes every waiter when the par's context ends.
+func (t *chanTable) cancelled() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.changed()
+}
+
+// wait blocks branch i until ready holds, the par is cancelled or
+// deadlocked, or the deadline passes. Under t.mu.
+func (t *chanTable) wait(m *machine, what string, ready func() bool) error {
+	i := m.pb.idx
+	for {
+		switch {
+		case t.dead != "":
+			return errChanDeadlock
+		case t.ctx.Err() != nil:
+			return errChanCancelled
+		case m.pastDeadline():
+			return errChanTimeout
+		case ready():
+			return nil
+		}
+		w := &chanWaiter{i: i, what: what, ready: ready}
+		t.waiters = append(t.waiters, w)
+		t.running--
+		var timer *time.Timer
+		if !m.deadline.IsZero() {
+			timer = time.AfterFunc(time.Until(m.deadline)+time.Millisecond, func() {
+				t.mu.Lock()
+				defer t.mu.Unlock()
+				if !w.woken {
+					for k, o := range t.waiters {
+						if o == w {
+							t.waiters = append(t.waiters[:k], t.waiters[k+1:]...)
+							break
+						}
+					}
+					t.wake(w)
+					t.cond.Broadcast()
+				}
+			})
+		}
+		if t.baton && t.holder == i {
+			t.holder = -1
+		}
+		t.changed()
+		for !w.woken {
+			t.cond.Wait()
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		t.acquire(i)
+	}
+}
+
+// chanOf is the channel a branch's op names, with its side checked again
+// at run time.
+func (m *machine) chanOf(op, name string) (*chanTable, *pchan, bool) {
+	if m.pb == nil || m.pb.ch == nil {
+		return nil, nil, false
+	}
+	t := m.pb.ch
+	ch := t.chans[name]
+	if ch == nil || t.sides[m.pb.idx][name] != op {
+		return nil, nil, false
+	}
+	return t, ch, true
+}
+
+// chanFail ends a channel op that did not complete.
+func (m *machine) chanFail(err error) (int, bool) {
+	switch err {
+	case errChanDeadlock:
+		// A halt: try does not catch it, so retry cannot spin on it.
+		m.err.WriteString("deadlock\n")
+		m.ctl = ctlHalt
+		m.haltStatus = exitType
+	case errChanCancelled:
+		m.pb.stopped = true
+		m.ctl = ctlHalt
+	default:
+		m.err.WriteString("timeout\n")
+	}
+	return exitType, true
+}
+
+func (m *machine) runSend(s *Send) (int, bool) {
+	t, ch, ok := m.chanOf("send", s.Chan)
+	if !ok {
+		m.err.WriteString("type send: send outside its par\n")
+		return exitType, true
+	}
+	// A lone $name keeps its kind, so bytes are seen as bytes.
+	var v value
+	if w := s.Word; len(w.Parts) == 1 && w.Parts[0].Exp {
+		v = m.vars[w.Parts[0].Lit]
+	}
+	if v.kind != valBytes {
+		m.sawSecret = false
+		var err error
+		if v, err = m.wordValue(s.Word); err != nil {
+			m.err.WriteString(err.Error() + "\n")
+			return exitType, true
+		}
+	}
+	if v.kind == valBytes {
+		m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
+		return exitType, true
+	}
+	prov := unionProv(v.prov, m.prov)
+	if m.sawSecret || m.chanUnsafe(prov) || holdsSecretDatum(toDatum(v), 0) {
+		m.err.WriteString(msgChanUnsafe + "\n")
+		return exitType, true
+	}
+	cp, size, ok := chanCopy(v)
+	if !ok || size > dataMaxBytes {
+		m.err.WriteString("send " + s.Chan + ": value over 8 MiB\n")
+		return exitType, true
+	}
+	for _, id := range prov {
+		if id == provOverflow {
+			// Overflow is a marker, not an id: it crosses, so the
+			// receiver still fails closed where an answer may hide.
+			cp.prov = []uint32{provOverflow}
+		}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ch.sends++; ch.sends > m.st.loopMax {
+		m.err.WriteString("loop max\n")
+		m.ctl = ctlHalt
+		return exitType, true
+	}
+	if err := t.wait(m, "send "+s.Chan, func() bool { return len(ch.q) < ch.buf || ch.receivers == 0 }); err != nil {
+		return m.chanFail(err)
+	}
+	if ch.receivers == 0 {
+		m.err.WriteString("send " + s.Chan + ": no receiver left\n")
+		return 1, true
+	}
+	if t.bytes+size > chanParMaxBytes {
+		m.err.WriteString("send " + s.Chan + ": buffers over 32 MiB\n")
+		return exitType, true
+	}
+	ch.q = append(ch.q, chanItem{v: cp, size: size})
+	t.bytes += size
+	t.changed()
+	return 0, false
+}
+
+// chanUnsafe reports a provenance holding a term prompt answer or a
+// secret origin. An overflow crosses as overflow instead (runSend).
+func (m *machine) chanUnsafe(prov []uint32) bool {
+	for _, id := range prov {
+		if id == provOverflow {
+			continue
+		}
+		if int(id) >= len(m.st.origins) || m.st.origins[id].key == "term prompt" || m.st.hideHash(id) {
+			return true
+		}
+	}
+	return false
+}
+
+func holdsSecretDatum(d any, depth int) bool {
+	if depth > 128 {
+		return true
+	}
+	switch d := d.(type) {
+	case secretVal:
+		return true
+	case []any:
+		for _, e := range d {
+			if holdsSecretDatum(e, depth+1) {
+				return true
+			}
+		}
+	case *omap:
+		for _, k := range d.keys {
+			if holdsSecretDatum(d.m[k], depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// chanCopy deep-copies v, so the receiver shares no map or slice with the
+// sender, and sizes it: the bytes of its texts and keys, 8 per scalar.
+// ok is false past dataMaxBytes or for a kind that cannot cross.
+func chanCopy(v value) (value, int, bool) {
+	size := 0
+	// Provenance ids do not cross: they index the sender's origins table.
+	// Until origins cross by record (section 5), a value with a secret or
+	// an answer in it is refused before this, and the copy carries none.
+	out := value{kind: v.kind, s: v.s, gcol: v.gcol}
+	switch v.kind {
+	case valStr:
+		size = len(v.s)
+	case valRow:
+		out.row, size = copyRow(v.row)
+	case valRows:
+		out.cols = append([]string(nil), v.cols...)
+		out.rows = make([]parent.Row, len(v.rows))
+		for i, r := range v.rows {
+			var n int
+			out.rows[i], n = copyRow(r)
+			if size += n; size > dataMaxBytes {
+				return value{}, size, false
+			}
+		}
+	case valData:
+		d, n, ok := copyDatum(v.d, 0, 0)
+		if !ok {
+			return value{}, n, false
+		}
+		out.d, size = d, n
+	default:
+		return value{}, 0, false
+	}
+	return out, size, size <= dataMaxBytes
+}
+
+func copyRow(r parent.Row) (parent.Row, int) {
+	out := make(parent.Row, len(r))
+	n := 0
+	for k, v := range r {
+		out[k] = v
+		n += len(k) + len(v)
+	}
+	return out, n
+}
+
+func copyDatum(d any, size, depth int) (any, int, bool) {
+	if size > dataMaxBytes || depth > 128 {
+		return nil, size, false
+	}
+	switch d := d.(type) {
+	case nil, bool, int64, float64:
+		return d, size + 8, true
+	case string:
+		return d, size + len(d), true
+	case []any:
+		out := make([]any, len(d))
+		for i, e := range d {
+			var ok bool
+			if out[i], size, ok = copyDatum(e, size, depth+1); !ok {
+				return nil, size, false
+			}
+		}
+		return out, size, true
+	case *omap:
+		out := &omap{keys: append([]string(nil), d.keys...), m: make(map[string]any, len(d.m))}
+		for _, k := range d.keys {
+			var ok bool
+			if out.m[k], size, ok = copyDatum(d.m[k], size+len(k), depth+1); !ok {
+				return nil, size, false
+			}
+		}
+		return out, size, true
+	}
+	return nil, size, false
+}
+
+// runRecv is for x in recv c { }: each value in send order on c, until c
+// is closed (every sender branch ended) and empty.
+func (m *machine) runRecv(s *For) (int, bool) {
+	t, ch, ok := m.chanOf("recv", s.Recv)
+	if !ok {
+		m.err.WriteString("type recv: recv outside its par\n")
+		return exitType, true
+	}
+	if !m.bindable(s.Name) {
+		return exitType, true
+	}
+	saved := m.saveVars([]string{s.Name})
+	defer m.restoreVars(saved)
+	status, iter := 0, 0
+	for {
+		t.mu.Lock()
+		err := t.wait(m, "recv "+s.Recv, func() bool { return len(ch.q) > 0 || ch.senders == 0 })
+		var it chanItem
+		got := false
+		if err == nil && len(ch.q) > 0 {
+			it, ch.q, got = ch.q[0], ch.q[1:], true
+			t.bytes -= it.size
+			t.changed()
+		}
+		t.mu.Unlock()
+		if err != nil {
+			return m.chanFail(err)
+		}
+		if !got {
+			return status, false
+		}
+		m.vars[s.Name] = m.withProv(it.v)
+		st, stop, brk := m.loopBody(&s.Body, &iter)
+		status = st
+		if stop {
+			return status, true
+		}
+		if brk {
+			return status, false
+		}
+	}
+}
+
+// unread is a line per channel with values left at the join.
+func (t *chanTable) unread() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for _, c := range t.order {
+		if n := len(t.chans[c].q); n > 0 {
+			out = append(out, fmt.Sprintf("par: chan %s: %d unread", c, n))
+		}
+	}
+	return out
+}
+
+// doorSlot takes one of the par's door-call slots (eff >= 2), or reports
+// a cancel; the caller releases it after the parent call.
+func (m *machine) doorSlot() (func(), bool) {
+	if m.pb == nil || m.pb.ch == nil || m.pb.ch.slots == nil {
+		return func() {}, true
+	}
+	select {
+	case m.pb.ch.slots <- struct{}{}:
+		return func() { <-m.pb.ch.slots }, true
+	case <-m.pb.ctx.Done():
+		return nil, false
+	}
+}

@@ -505,6 +505,14 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	}
 	var res parent.Result
 	var err error
+	// In a par with channels every branch starts; the in-flight limit
+	// gates door calls instead (a branch waiting here is runnable).
+	release, ok := m.doorSlot()
+	if !ok {
+		m.pb.stopped = true
+		m.ctl = ctlHalt
+		return parent.Result{}, errParCancelled
+	}
 	if m.pb != nil {
 		m.pb.begin(v)
 	}
@@ -513,6 +521,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	} else {
 		res, err = m.p.Do(v)
 	}
+	release()
 	if m.pb != nil {
 		m.pb.end(v, res, err)
 	}
@@ -704,6 +713,8 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runRetry(s)
 	case *Timeout:
 		return m.runTimeout(s)
+	case *Send:
+		return m.runSend(s)
 	case *Branch:
 		// The parser allows branch only at the top of a par body, which
 		// runPar unwraps.
@@ -1156,6 +1167,9 @@ func (m *machine) bindForItem(s *For, it forItem, isMap bool) {
 }
 
 func (m *machine) runFor(s *For) (int, bool) {
+	if s.Recv != "" {
+		return m.runRecv(s)
+	}
 	items, isMap, st, stop := m.forItems(s)
 	if stop {
 		return st, true
@@ -2886,7 +2900,7 @@ func init() {
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
 		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs",
-		"branch"} {
+		"branch", "chan", "send", "recv"} {
 		reservedNames[n] = true
 	}
 }
