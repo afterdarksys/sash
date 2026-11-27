@@ -144,7 +144,7 @@ Today rows are escaped cell by cell (`display`, `eval.go:2374-2388`), but byte o
 | Input | Output |
 | --- | --- |
 | LF, TAB | unchanged (§12 Q3 for TAB) |
-| Any other Cc (CR included), C1, `\p{Cf}`, U+2028, U+2029, anything `unicode.IsPrint` rejects | `<U+XXXX>`, upper-case hex, at least four digits |
+| Any other Cc (CR included), C1, `\p{Cf}`, U+2028, U+2029, Other_Default_Ignorable_Code_Point, Variation_Selector, U+2800, a fifth or later `\p{Mn}`/`\p{Me}` on one base (`\p{Mc}` neither counts nor resets), anything `unicode.IsPrint` rejects | `<U+XXXX>`, upper-case hex, at least four digits |
 | A byte that is not UTF-8 | `<0xHH>` |
 | The literal text `<U+` or `<0x` | `<U+003C>U+`, `<U+003C>0x`, so output decodes one way |
 
