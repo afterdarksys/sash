@@ -266,6 +266,20 @@ To `skills/sash/SKILL.md`, Rules (one bullet, agent-facing):
 | Q8 | Limits: 4 channels, buffer 64, 32 MiB? | Keep; raise on evidence. |
 | Q9 | Should `chan-to-mutation` be an error when the receiving verb's subcommand is literal but the target is received? | Warning. It is the intended use (act on items); the error case (subcommand from value) is already a runtime refusal. |
 
+Decisions (Ryan, 2026-11-27): every recommendation above is accepted.
+
+| # | Decision |
+| --- | --- |
+| Q1 | Build channels, only the §1 set. |
+| Q2 | Close is implicit: a channel closes when its last sending branch ends. No `close` statement. |
+| Q3 | No single-value `recv c` now; receiving is only `for x in recv c { }`. |
+| Q4 | Deadlock is a halt that `try` cannot catch, so `retry` cannot spin on it. |
+| Q5 | Unread values at the join fail the `par`, exit 1. |
+| Q6 | `branch { }` is allowed in plain `par N { }` too. |
+| Q7 | `send`, `recv`, `chan`, `branch` are reserved words, though this breaks a `fn send`; the docs say so. |
+| Q8 | Limits: 4 channels, buffer 1 to 64, 32 MiB of buffers per `par`, 8 MiB per value. |
+| Q9 | `chan-to-mutation` is a lint warning, not an error. |
+
 ## 12. `set -u` and unbound names
 
 What is true today (verified by running the binary on 2026-11-27):
