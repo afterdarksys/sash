@@ -19,10 +19,13 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
@@ -55,6 +58,7 @@ var (
 	ErrHandshake = errors.New("wsclient: handshake failed")
 	ErrTooLarge  = errors.New("wsclient: message over the read limit")
 	ErrClosed    = errors.New("wsclient: connection closed")
+	ErrProtocol  = errors.New("wsclient: the server broke the WebSocket rules")
 )
 
 // Conn is one client connection.
@@ -111,8 +115,12 @@ func Dial(ctx context.Context, rawURL string, o Options) (*Conn, error) {
 
 // Read is the next text or binary message. Pings are answered inside it.
 // A message over the read limit ends the connection with ErrTooLarge; a
-// close or a broken connection is ErrClosed; a context that ends returns
-// its error.
+// frame the module refuses (reserved bits, a reserved opcode, a bad
+// control frame, a continuation with no message) and a text message that
+// is not UTF-8 are ErrProtocol; a close frame or a broken connection is
+// ErrClosed; a context that ends returns its error. The module accepts a
+// masked frame from the server and hands on its payload as it came: that
+// violation is not seen here.
 func (c *Conn) Read(ctx context.Context) (Kind, []byte, error) {
 	typ, data, err := c.c.Read(ctx)
 	if err != nil {
@@ -122,12 +130,37 @@ func (c *Conn) Read(ctx context.Context) (Kind, []byte, error) {
 		if errors.Is(err, websocket.ErrMessageTooBig) {
 			return 0, nil, ErrTooLarge
 		}
-		return 0, nil, ErrClosed
+		if transportEnded(err) {
+			return 0, nil, ErrClosed
+		}
+		return 0, nil, ErrProtocol
 	}
 	if typ == websocket.MessageBinary {
 		return Binary, data, nil
 	}
+	if !utf8.Valid(data) {
+		return 0, nil, ErrProtocol
+	}
 	return Text, data, nil
+}
+
+// transportEnded is a read error that is the connection ending: a close
+// frame, the end of the stream, a network or TLS error, or a connection
+// already closed here. The module reports a frame it refuses with an
+// error of none of these kinds, which Read calls ErrProtocol.
+func transportEnded(err error) bool {
+	if websocket.CloseStatus(err) != -1 {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno)
 }
 
 // WriteText sends one text message.

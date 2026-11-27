@@ -300,3 +300,107 @@ func TestModuleIsConfined(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A server that breaks the WebSocket rules is ErrProtocol, not a closed
+// connection: reserved bits, a reserved opcode, a fragmented or oversized
+// control frame, a continuation with no message, and text that is not
+// UTF-8. A close frame and a dropped connection stay ErrClosed. A masked
+// server frame is the one violation the module accepts: it hands on the
+// payload as it came, still masked.
+func TestProtocolViolations(t *testing.T) {
+	for name, c := range map[string]struct {
+		frames [][]byte
+		want   error
+	}{
+		"RSV1 without compression": {[][]byte{wstest.RawFrame(0x80|0x40|0x2, []byte("x"))}, ErrProtocol},
+		"RSV2":                     {[][]byte{wstest.RawFrame(0x80|0x20|0x2, []byte("x"))}, ErrProtocol},
+		"RSV3":                     {[][]byte{wstest.RawFrame(0x80|0x10|0x1, []byte("x"))}, ErrProtocol},
+		"reserved data opcode":     {[][]byte{wstest.RawFrame(0x80|0x3, nil)}, ErrProtocol},
+		"reserved control opcode":  {[][]byte{wstest.RawFrame(0x80|0xb, nil)}, ErrProtocol},
+		"fragmented ping":          {[][]byte{wstest.RawFrame(0x9, nil)}, ErrProtocol},
+		"ping over 125 bytes":      {[][]byte{append([]byte{0x89, 126, 0, 126}, make([]byte, 126)...)}, ErrProtocol},
+		"continuation first":       {[][]byte{wstest.RawFrame(0x80|0x0, []byte("x"))}, ErrProtocol},
+		"text not UTF-8":           {[][]byte{wstest.RawFrame(0x80|0x1, []byte{'o', 0xff, 0xfe})}, ErrProtocol},
+		"text split in a rune":     {[][]byte{wstest.RawFrame(0x1, []byte{0xe2, 0x82}), wstest.RawFrame(0x80|0x0, []byte{0xac})}, nil},
+		"close 1000":               {[][]byte{wstest.RawFrame(0x80|0x8, []byte{0x03, 0xe8})}, ErrClosed},
+		"close 1002":               {[][]byte{wstest.RawFrame(0x80|0x8, []byte{0x03, 0xea})}, ErrClosed},
+		"dropped":                  {nil, ErrClosed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := wstest.RawAccept(w, r)
+				if err != nil {
+					return
+				}
+				defer func() {
+					if err := conn.Close(); err != nil {
+						return
+					}
+				}()
+				for _, f := range c.frames {
+					if _, err := conn.Write(f); err != nil {
+						return
+					}
+				}
+				if c.want == nil {
+					time.Sleep(500 * time.Millisecond)
+				}
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := Dial(ctx, wss(srv, "/"), opts(srv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The module may have closed the connection already; Close
+			// is only to release it.
+			defer func() {
+				if err := conn.Close(); err != nil {
+					return
+				}
+			}()
+			kind, data, err := conn.Read(ctx)
+			if c.want == nil {
+				if err != nil || kind != Text || string(data) != "€" {
+					t.Fatalf("%v %v %q", kind, err, data)
+				}
+				return
+			}
+			if !errors.Is(err, c.want) {
+				t.Fatalf("got %v, want %v", err, c.want)
+			}
+		})
+	}
+	t.Run("a masked server frame is accepted", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := wstest.RawAccept(w, r)
+			if err != nil {
+				return
+			}
+			key := []byte{1, 2, 3, 4}
+			if _, err := conn.Write([]byte{0x82, 0x81, 1, 2, 3, 4, 'x' ^ key[0]}); err != nil {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+			if err := conn.Close(); err != nil {
+				return
+			}
+		}))
+		defer srv.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conn, err := Dial(ctx, wss(srv, "/"), opts(srv))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := conn.Close(); err != nil {
+				return
+			}
+		}()
+		if kind, data, err := conn.Read(ctx); err != nil || kind != Binary || string(data) != string(rune('x'^1)) {
+			t.Fatalf("%v %v %q", kind, err, data)
+		}
+	})
+}

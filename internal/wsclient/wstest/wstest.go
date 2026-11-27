@@ -5,6 +5,10 @@ package wstest
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"errors"
+	"net"
 	"net/http"
 
 	"github.com/coder/websocket"
@@ -48,3 +52,32 @@ func (c *Conn) Close(code int) error {
 
 // Drop ends the connection with no close frame.
 func (c *Conn) Drop() error { return c.c.CloseNow() }
+
+// RawAccept answers the upgrade by hand and hands back the connection
+// itself, so a test can write frames the module would never send: a
+// server that breaks the WebSocket rules.
+func RawAccept(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
+	h, ok := w.(http.Hijacker)
+	if !ok {
+		return nil, errors.New("wstest: cannot hijack")
+	}
+	sum := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	conn, rw, err := h.Hijack()
+	if err != nil {
+		return nil, err
+	}
+	resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
+	if _, err := rw.WriteString(resp); err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+	if err := rw.Flush(); err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+	return conn, nil
+}
+
+// RawFrame is one unmasked frame with a payload under 126 bytes: first is
+// the first byte (FIN, RSV bits and opcode).
+func RawFrame(first byte, payload []byte) []byte {
+	return append([]byte{first, byte(len(payload))}, payload...)
+}

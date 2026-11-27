@@ -451,7 +451,7 @@
     "code": "protocol",
     "exit": 1,
     "area": "connect",
-    "meaning": "\"session ended: protocol\": the server sent a frame over 1 MiB or broke the WebSocket rules, and the client closed the session",
+    "meaning": "\"session ended: protocol\": the server sent a message over 1 MiB, a frame the WebSocket rules forbid (reserved bits, a reserved opcode, a bad control frame), or text that is not UTF-8, and the client closed the session",
     "fix": "The operator checks the control plane."
   },
   {

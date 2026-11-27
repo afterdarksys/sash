@@ -168,7 +168,7 @@ var connectTable = []Code{
 	{"connect_interrupted", 130, "connect", "\"connect: interrupted\": Ctrl-C before the session started; the connection was closed", fixNothing, []string{"connect: interrupted"}},
 	{"session_ended", 1, "connect", "\"session ended: <reason>\": the session ended without an exit status from the host's shell; the reason and this build's meaning for it follow", "A person reads the reason.", []string{"session ended:"}},
 	{"connection_lost", 1, "connect", "\"session ended: connection lost\": the connection closed with no report of how the session ended; the host stops the session's terminal", "A person reads the host's state before repeating a step.", []string{"session ended: connection lost"}},
-	{"protocol", 1, "connect", "\"session ended: protocol\": the server sent a frame over 1 MiB or broke the WebSocket rules, and the client closed the session", "The operator checks the control plane.", []string{"session ended: protocol"}},
+	{"protocol", 1, "connect", "\"session ended: protocol\": the server sent a message over 1 MiB, a frame the WebSocket rules forbid (reserved bits, a reserved opcode, a bad control frame), or text that is not UTF-8, and the client closed the session", "The operator checks the control plane.", []string{"session ended: protocol"}},
 
 	// Sent in a pty_status error (the control plane's PTY_ERRORS).
 	refusal("ticket_invalid", "the ticket was missing, spent, expired, or issued for another host or purpose", "A person runs the command again; a ticket is used once."),

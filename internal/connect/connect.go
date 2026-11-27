@@ -33,17 +33,17 @@ import (
 // never printed; the host's name is printed only when it matches the
 // control plane's hostname rule, and the id is escaped and cut; the token
 // and the ticket are replaced in every server string before it is
-// judged); a
-// downgrade from a root session to a weaker one (--root asks for
-// terminal:root and nothing else, and a refusal ends the run: there is no
-// second request with another purpose); a server that stalls before or
-// after the upgrade (every wait before the session starts is bounded);
-// frames of any size (a message over 1 MiB ends the session); and a
-// terminal left in raw mode or in a mode the host set (it is restored once
-// on every way out, on SIGTERM and SIGHUP too, after resetTail). The client holds no grant and no key, records
-// nothing, and never speaks to an agent. It does not protect what the
-// screen shows, which is the host's, nor a workstation whose user or root
-// is hostile.
+// judged); a downgrade from a root session to a weaker one (--root asks
+// for terminal:root and nothing else, and a refusal ends the run: there
+// is no second request with another purpose); a server that stalls
+// before or after the upgrade (every wait before the session starts is
+// bounded); frames of any size (a message over 1 MiB ends the session),
+// or frames that break the WebSocket rules (the session ends with
+// protocol); and a terminal left in raw mode or in a mode the host set
+// (it is restored once on every way out, on SIGTERM and SIGHUP too, after
+// resetTail). The client holds no grant and no key, records nothing, and
+// never speaks to an agent. It does not protect what the screen shows,
+// which is the host's, nor a workstation whose user or root is hostile.
 
 // Fixed lines. Each is in the connect area of package codes.
 const (
@@ -542,7 +542,7 @@ func (r *run) session(ctx context.Context, conn *wsclient.Conn, sigs <-chan os.S
 		case f := <-frames:
 			if f.err != nil {
 				switch {
-				case errors.Is(f.err, wsclient.ErrTooLarge):
+				case errors.Is(f.err, wsclient.ErrTooLarge), errors.Is(f.err, wsclient.ErrProtocol):
 					return end(Result{Code: 1}, msgProtocol)
 				case !gotStatus:
 					return end(Result{Code: 1}, msgNotSah3)

@@ -1107,3 +1107,46 @@ func TestStartDeadlineIsNotExtended(t *testing.T) {
 		checkClean(t, cp, con)
 	})
 }
+
+// A server that breaks the WebSocket rules ends the session with
+// "session ended: protocol", as the catalog says, not "connection lost".
+func TestProtocolViolationsEndWithProtocol(t *testing.T) {
+	text := func(s string) []byte { return wstest.RawFrame(0x80|0x1, []byte(s)) }
+	starting := text(`{"type":"pty_status","payload":{"status":"starting"}}`)
+	started := text(`{"type":"pty_status","payload":{"status":"started"}}`)
+	for name, bad := range map[string][]byte{
+		"reserved bits":          wstest.RawFrame(0x80|0x40|0x2, []byte("x")),
+		"a reserved opcode":      wstest.RawFrame(0x80|0x3, nil),
+		"text that is not UTF-8": wstest.RawFrame(0x80|0x1, []byte{'{', 0xff}),
+		"a fragmented ping":      wstest.RawFrame(0x9, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp := newFakeCP(t)
+			cp.upgrade = func(w http.ResponseWriter, r *http.Request) bool {
+				conn, err := wstest.RawAccept(w, r)
+				if err != nil {
+					return true
+				}
+				defer func() {
+					if err := conn.Close(); err != nil {
+						return
+					}
+				}()
+				for _, f := range [][]byte{starting, started, text("not yet"), bad} {
+					if _, err := conn.Write(f); err != nil {
+						return true
+					}
+				}
+				time.Sleep(300 * time.Millisecond)
+				return true
+			}
+			con := newFakeCon()
+			res := begin(con, goodEnv(t, cp), "web1").wait(t)
+			want := "connect: session on web1 (" + testHostID + ")\nsession ended: protocol\n"
+			if res.Code != 1 || con.err.String() != want {
+				t.Errorf("code %d stderr %q, want %q", res.Code, con.err.String(), want)
+			}
+			checkClean(t, cp, con)
+		})
+	}
+}
