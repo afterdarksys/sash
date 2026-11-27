@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,8 +27,9 @@ import (
 // the https origin the person configured: no redirect is followed (a 3xx
 // is request_failed, and the redirect target receives nothing), no proxy
 // is read from the environment, no cookie is kept. TLS is 1.3 at least
-// with the system's roots and the URL's server name; there is no flag,
-// environment variable or build tag that loosens it. A call is bounded by
+// with the platform's roots and the URL's server name; there is no flag,
+// environment variable or build tag that loosens it, and SSL_CERT_FILE
+// and SSL_CERT_DIR do not change the roots (roots_*.go). A call is bounded by
 // httpTimeout and its answer by bodyMax. Nothing a call returns is an
 // error text: only a kind (failed), or a refusal code that the caller
 // prints through this build's own list. It does not protect a person who
@@ -82,8 +84,17 @@ func origin(raw string) (*url.URL, bool) {
 	return &url.URL{Scheme: "https", Host: u.Host}, true
 }
 
+// platformRoots is the roots every connection trusts, loaded once, the
+// platform's own and nothing the environment names (roots_*.go). nil is
+// the platform verifier on darwin.
+var platformRoots = sync.OnceValue(loadPlatformRoots)
+
 func tlsConfig(serverName string) *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, ServerName: serverName, RootCAs: testRoots}
+	roots := testRoots
+	if roots == nil {
+		roots = platformRoots()
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS13, ServerName: serverName, RootCAs: roots}
 }
 
 // api is one run's client for the two calls.

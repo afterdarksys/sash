@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -609,8 +610,8 @@ func TestTLSIsNotNegotiable(t *testing.T) {
 		}
 		saved := testRoots
 		testRoots = nil
-		if tlsConfig("x").RootCAs != nil {
-			t.Errorf("outside a test the roots are not the system's")
+		if got := tlsConfig("x").RootCAs; got != platformRoots() || (runtime.GOOS == "darwin") != (got == nil) {
+			t.Errorf("outside a test the roots are not the platform's")
 		}
 		testRoots = saved
 	})

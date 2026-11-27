@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,13 @@ func ptyTerminal(sizes chan<- string) func(ctx context.Context, c *wstest.Conn, 
 
 func runConnectPTY(t *testing.T, cp *fakeCP, steps []ptyStep) ptyReport {
 	t.Helper()
+	return runConnectPTYEnv(t, cp, steps, nil)
+}
+
+// runConnectPTYEnv is runConnectPTY with names added to the child's
+// environment, or removed from it when the value is empty.
+func runConnectPTYEnv(t *testing.T, cp *fakeCP, steps []ptyStep, extra map[string]string) ptyReport {
+	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("the pty test needs python3")
@@ -84,13 +92,21 @@ func runConnectPTY(t *testing.T, cp *fakeCP, steps []ptyStep) ptyReport {
 	if err != nil {
 		t.Fatal(err)
 	}
+	env := map[string]string{
+		"SYSTEMAPI_URL":           cp.srv.URL,
+		"SYSTEMAPI_TOKEN_FILE":    tokenFile(t),
+		"SASH_CONNECT_TEST_ROOTS": cp.pem(t),
+	}
+	for k, v := range extra {
+		if v == "" {
+			delete(env, k)
+			continue
+		}
+		env[k] = v
+	}
 	sc, err := json.Marshal(map[string]any{
-		"argv": []string{exe, "web1"},
-		"env": map[string]string{
-			"SYSTEMAPI_URL":           cp.srv.URL,
-			"SYSTEMAPI_TOKEN_FILE":    tokenFile(t),
-			"SASH_CONNECT_TEST_ROOTS": cp.pem(t),
-		},
+		"argv":  []string{exe, "web1"},
+		"env":   env,
 		"steps": steps,
 		"wait":  8,
 	})
@@ -182,4 +198,34 @@ func TestRawModeIsRestoredOnAPTY(t *testing.T) {
 			t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
 		}
 	})
+}
+
+// SSL_CERT_FILE and SSL_CERT_DIR naming a CA do not make a server that CA
+// signed trusted, even with the GODEBUG setting that makes darwin honour
+// them: the roots are the platform's own. The fake control plane's
+// certificate is its own CA, so with either name set to it, a client that
+// read the environment would reach the control plane.
+func TestEnvironmentCannotChangeTheRoots(t *testing.T) {
+	for _, name := range []string{"SSL_CERT_FILE", "SSL_CERT_DIR"} {
+		t.Run(name, func(t *testing.T) {
+			cp := newFakeCP(t)
+			cp.terminal = ptyTerminal(make(chan string, 1))
+			value := cp.pem(t)
+			if name == "SSL_CERT_DIR" {
+				value = filepath.Dir(value)
+			}
+			rep := runConnectPTYEnv(t, cp, []ptyStep{{Expect: "connect: "}, {Sleep: 0.3}}, map[string]string{
+				"SASH_CONNECT_TEST_ROOTS":        "",
+				"SASH_CONNECT_TEST_SYSTEM_ROOTS": "1",
+				name:                             value,
+				// go.mod's go line keeps darwin's old default, which
+				// ignores both names; the environment can turn the
+				// Go 1.27 behaviour on.
+				"GODEBUG": "x509sslcertoverrideplatform=1",
+			})
+			if rep.Code != 1 || !strings.Contains(rep.TTY, "connect: request_failed") || len(cp.requests()) != 0 {
+				t.Errorf("code %d requests %d tty %q", rep.Code, len(cp.requests()), rep.TTY)
+			}
+		})
+	}
 }

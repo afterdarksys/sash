@@ -33,15 +33,21 @@ const (
 
 // TestMain runs the tests, or, as the child of a pty test, sash connect
 // itself with the fake control plane's certificate as its only root.
+//
+// With SASH_CONNECT_TEST_SYSTEM_ROOTS=1 instead, the child trusts the
+// platform's roots, as sash connect itself does.
 func TestMain(m *testing.M) {
-	if path := os.Getenv("SASH_CONNECT_TEST_ROOTS"); path != "" {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			os.Exit(97)
-		}
-		testRoots = x509.NewCertPool()
-		if !testRoots.AppendCertsFromPEM(b) {
-			os.Exit(97)
+	path := os.Getenv("SASH_CONNECT_TEST_ROOTS")
+	if path != "" || os.Getenv("SASH_CONNECT_TEST_SYSTEM_ROOTS") == "1" {
+		if path != "" {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				os.Exit(97)
+			}
+			testRoots = x509.NewCertPool()
+			if !testRoots.AppendCertsFromPEM(b) {
+				os.Exit(97)
+			}
 		}
 		res := Run(os.Args[1:], os.Getenv, OSConsole(os.Stdin, os.Stdout, os.Stderr), "test")
 		if res.Signal != nil {
