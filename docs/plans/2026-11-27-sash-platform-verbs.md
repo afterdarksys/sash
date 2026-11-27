@@ -585,3 +585,13 @@ Found by the review of `ed9e6dd..4e7bd35` and left as they are, by decision:
 
 - **The last event of a recording is not covered by its hash chain.** Each event's hash covers the one before it, so the final event can be edited undetected (a `term` answer changed from `bob` to `mallory` replays as `mallory`); editing any earlier event is `replay_bad_chain`, and a changed confirm whose yes-branch calls a verb is `replay_diverged`. This is the recording format's design from before this contract and affects offline replay output only. A fix closes the chain with a final record over the last event.
 - **ESC handling in `term prompt` can store the tail of a sequence.** Only a CSI is dropped through its final byte; any other ESC drops ESC and one byte, so `ESC ] 0;t BEL` stores `0;t` and `ESC O P` stores `P`. Cosmetic: the answer is escaped wherever it is written to a terminal.
+
+Left open by the final check of `6e0a0ac..21b96c4` (no finding above low):
+
+| Item | Where | Suggested change |
+| --- | --- | --- |
+| Keys typed in the first 200 ms after a question are dropped with no sign; a person who types the whole line, Enter included, inside that window waits on a prompt that has their answer gone | `internal/line/ask.go` (`waitQuiet`) | Show a visible marker once the prompt is listening |
+| Input that never goes quiet for 5 s reports `term needs a terminal` though there is one | `internal/line/ask.go` | Its own message |
+| A panic in the WebSocket reader goroutine of `sash connect` is not recovered, so the terminal stays raw without the reset tail | `internal/connect/connect.go` | Recover in that goroutine too, or end the session from it |
+| `TestParAbandonedSecretKnownAtOnce` failed once under `-race` (status 130, no "outcome unknown" line); passed three times on re-run | `internal/lang/par_test.go` | Find the timing dependency |
+| A recording made before the empty-answer rule replays an empty `term prompt` answer as status 1 instead of 0 | `internal/lang/record.go` | Note in the recording format's history; no code change |
