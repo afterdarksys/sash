@@ -561,6 +561,9 @@ func TestTermLintRules(t *testing.T) {
 		{"let x = (term prompt \"q\")\nlet y = \"$x\"\npackage $y curl\n", []string{"3 prompt-subcommand error"}, nil},
 		{"let x = (term prompt \"q\")\nsysctl $x vm.swappiness 1\n", []string{"prompt-subcommand"}, nil},
 		{"let x = (term prompt \"q\")\nunit status $x\n", nil, []string{"prompt-subcommand"}},
+		{"fn ask() { let a = (term prompt \"q\"); return $a }\nlet u = (ask)\nunit restart $u\n", []string{"3 prompt-to-mutation", "($u) reaches unit.restart"}, nil},
+		{"fn inner() { let a = (term prompt \"q\"); return $a }\nfn ask() { let b = (inner); return $b }\nlet u = (ask)\nunit restart $u\n", []string{"4 prompt-to-mutation"}, nil},
+		{"fn ask() { term confirm \"q\"; return \"nginx\" }\nlet u = (ask)\nunit restart $u\n", nil, []string{"prompt-to-mutation"}},
 	} {
 		got := Lint(c.src)
 		// Column widths vary with the rules reported.

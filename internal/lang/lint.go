@@ -1144,8 +1144,9 @@ func asksPrompt(st Stage) bool {
 
 // prompts is the three term rules.
 //
-// prompt-to-mutation: a name bound from term prompt, or anything bound
-// from it, reaches an argument, a path, or the body of a mutating stage.
+// prompt-to-mutation: a name bound from term prompt, or from a fn that
+// asks term prompt (it may return the answer), or anything bound from
+// either, reaches an argument, a path, or the body of a mutating stage.
 // It rides on the edges collect recorded for secret-to-sink, as a second
 // flow-insensitive fixpoint. An answer is untrusted text: a person can be
 // told what to type, and a plain prompt echoes and records it.
@@ -1167,7 +1168,15 @@ func (l *linter) prompts() {
 			return
 		}
 		for _, st := range lt.Pipe.Stages {
-			if asksPrompt(st) {
+			// A fn called by literal name that asks term prompt, itself or
+			// through another fn, may return the answer.
+			viaFn := false
+			if len(st.Argv) > 0 {
+				if fn := l.fns[plain(st.Argv[0])]; fn != nil {
+					viaFn = l.asksBy(&fn.Body, map[*Fn]bool{fn: true}, asksPrompt)
+				}
+			}
+			if asksPrompt(st) || viaFn {
 				prompted[name] = true
 				work = append(work, name)
 				return
@@ -1262,18 +1271,23 @@ func (l *linter) prompts() {
 // asks reports a term question p may reach, through fns called by
 // literal name, each followed once.
 func (l *linter) asks(p *Program, seen map[*Fn]bool) bool {
+	return l.asksBy(p, seen, asksTerm)
+}
+
+// asksBy is asks for the questions ask matches.
+func (l *linter) asksBy(p *Program, seen map[*Fn]bool, ask func(Stage) bool) bool {
 	found := false
 	needsEachStage(p, func(st Stage) {
 		if found || len(st.Argv) == 0 {
 			return
 		}
-		if asksTerm(st) {
+		if ask(st) {
 			found = true
 			return
 		}
 		if fn := l.fns[plain(st.Argv[0])]; fn != nil && !seen[fn] {
 			seen[fn] = true
-			found = l.asks(&fn.Body, seen)
+			found = l.asksBy(&fn.Body, seen, ask)
 		}
 	})
 	return found
