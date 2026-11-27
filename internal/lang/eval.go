@@ -1345,7 +1345,7 @@ func (m *machine) wordValue(w Word) (value, error) {
 	if len(w.Parts) == 1 && w.Parts[0].Exp {
 		d, err := m.ref(w.Parts[0].Lit)
 		if err != nil {
-			return value{}, fmt.Errorf("type value")
+			return value{}, err
 		}
 		return fromDatum(d), nil
 	}
@@ -2519,7 +2519,7 @@ func (m *machine) expand(w Word) (string, error) {
 		}
 		d, err := m.ref(part.Lit)
 		if err != nil {
-			return "", fmt.Errorf("type value")
+			return "", err
 		}
 		if isSecret(d) {
 			m.sawSecret = true
@@ -2539,18 +2539,20 @@ func (m *machine) ref(lit string) (any, error) {
 	m.readProv(name)
 	v, ok := m.vars[name]
 	if !ok {
-		return nil, fmt.Errorf("type value")
+		// An unbound name is named, as the expression path names it.
+		return nil, fmt.Errorf("unset %s", needsCell(name))
 	}
 	d := toDatum(v)
 	for _, s := range steps {
 		if o, ok := d.(*omap); ok && m.st.nounset {
 			if _, has := o.get(fmt.Sprint(s)); !has {
-				return nil, fmt.Errorf("unset %s", lit)
+				return nil, fmt.Errorf("unset key %s", needsCell(fmt.Sprint(s)))
 			}
 		}
 		var err error
 		if d, err = indexData(d, s); err != nil {
-			return nil, err
+			// A word that indexes the wrong shape keeps its old message.
+			return nil, fmt.Errorf("type value")
 		}
 	}
 	return d, nil

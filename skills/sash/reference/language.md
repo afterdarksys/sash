@@ -18,7 +18,7 @@ A value is a string, bytes, rows, one row, or data. Data comes from `[ ]` expres
 
 Outside `[ ]` a bare `42` is a string. Rows are a list of maps that keeps its column order.
 
-Access: `$cfg.server.port`, `$list[0]`, `$m["a key"]`, `$row.field`. A missing map key is `null`. An unset name, or a field on a value that has no fields, is exit 2 `type value`.
+Access: `$cfg.server.port`, `$list[0]`, `$m["a key"]`, `$row.field`. A missing map key is `null`. An unbound name is exit 2 `unset <name>`; a field on a value that has no fields is exit 2 `type value`.
 
 A value is never parsed again as source. `let c = "unit restart nginx"` then `echo $c` prints text; it cannot run. A command name must be a literal word on the line (see `command_from_value` below).
 
@@ -261,7 +261,7 @@ sysctl get fail.three
 | option | set it | default | meaning |
 | --- | --- | --- | --- |
 | errexit | `set -e`, `set -o errexit` | off | a failed stage ends the script |
-| nounset | `set -u`, `set -o nounset` | off | a missing map key is an error, not `null` |
+| nounset | `set -u`, `set -o nounset` | off | a missing map key is an error (`unset key <k>`), not `null`; an unbound name is always exit 2 `unset <name>`, with or without it |
 | xtrace | `set -x`, `set -o xtrace` | off | print `trace <stage>` on stderr before each stage |
 | noglob | `set -f`, `set -o noglob` | off | `*` stays a literal word on later lines |
 | plan | `set -o plan` | off | mutating verbs print `plan: would ...` and do not run |
@@ -337,7 +337,8 @@ Each is one line on stderr.
 | `declined <key>` | answered no at a confirm prompt (126) |
 | `command_from_value` | a command word that comes from a value, `$x status nginx` (2); `command_from_value: a term prompt answer selects no subcommand`, a `term prompt` answer as the word that selects what `unit`, `package`, or `sysctl` does (2) |
 | `type \|>` | bytes piped into `\|>` (2) |
-| `type value` | an unset name, or a field on a value with none (2) |
+| `unset <name>` | a name that was never bound (2) |
+| `type value` | a field on a value with none, or a whole row as a word (2) |
 | `type fn` | a function used as a pipe stage or with a redirect (2) |
 | `fn depth` | a call deeper than eight (2) |
 | `loop max`, `verb max` | a cap; the line ends, `try` cannot catch it (2) |

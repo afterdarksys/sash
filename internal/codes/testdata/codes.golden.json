@@ -801,7 +801,7 @@
     "code": "type",
     "exit": 2,
     "area": "parse",
-    "meaning": "a value or a pipe has the wrong shape: bytes into |>, an unset name, a failed [ ] expression",
+    "meaning": "a value or a pipe has the wrong shape: bytes into |>, a whole row as a word, a failed [ ] expression",
     "fix": "A person corrects the script; nothing on that line ran."
   },
   {

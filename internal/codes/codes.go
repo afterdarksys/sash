@@ -54,7 +54,7 @@ var table = []Code{
 	{"lex", 2, "parse", "the text could not be split into words: an unclosed quote, a bare !, a bad $ reference, or & (there are no background jobs)", fixScript, []string{"lex:"}},
 	{"parse", 2, "parse", "the script does not parse; the message names what was expected", fixScript, []string{"parse:"}},
 	{"usage", 2, "parse", "a form was given the wrong arguments; the message names the form", fixScript, []string{"usage"}},
-	{"type", 2, "parse", "a value or a pipe has the wrong shape: bytes into |>, an unset name, a failed [ ] expression", fixScript, []string{"type"}},
+	{"type", 2, "parse", "a value or a pipe has the wrong shape: bytes into |>, a whole row as a word, a failed [ ] expression", fixScript, []string{"type"}},
 	{"command_from_value", 2, "parse", "a command word, or a word that selects what a form does, came from a value", "A person writes the command word as a literal; a value never names a command.", []string{"command_from_value"}},
 	{"unknown", 127, "parse", "the name is not in the closed table and is not a fn; no host binary is run", "A person uses a name from the closed table (sash --skill verbs lists it).", []string{"unknown"}},
 	{"unset", 2, "parse", "a name, a map key, or a wasm module that was never bound", fixScript, []string{"unset"}},
