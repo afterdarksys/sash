@@ -365,3 +365,20 @@ func TestTermQuestionIsNotSashsOwn(t *testing.T) {
 		}
 	}
 }
+
+// Ctrl-D, alone or after y, and the end of input are no at term confirm.
+func TestAskYesCtrlDIsNo(t *testing.T) {
+	clock := withClock(t)
+	for name, e := range map[string][]ev{
+		"Ctrl-D":          evs(time.Second, "\x04"),
+		"y Ctrl-D":        evs(time.Second, "y\x04"),
+		"y Ctrl-D Enter":  {{time.Second, 'y'}, {50 * time.Millisecond, 0x04}, {50 * time.Millisecond, '\r'}},
+		"y, end of input": evs(time.Second, "y"),
+	} {
+		keys := &fakeKeys{evs: e, clock: clock}
+		var out bytes.Buffer
+		if yes, err := askYes(keys, &out, keys.flush, lang.TermAsk{Question: "go on?"}); yes || err != nil {
+			t.Errorf("%s: yes %v err %v", name, yes, err)
+		}
+	}
+}

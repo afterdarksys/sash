@@ -2189,22 +2189,34 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			cur = value{kind: valData, d: secretVal{body}}
 		}
 		if last := exp[len(exp)-1]; last.sink {
-			if isSecret(toDatum(cur)) {
-				m.err.WriteString("a secret cannot leave sash\n")
-				return exitType, value{}
+			if st, out := m.sinkSend(last, cur, v); st != 0 {
+				return st, out
 			}
-			// The mode asked for rides in the frame as it is: an agent
-			// too old for it refuses, and the write is not sent again
-			// without it.
-			v.Mode = last.mode
-			m.sinkWrite = true
-			defer func() { m.sinkWrite = false }()
+			return status, cur
 		}
 		if _, err := m.do(v); err != nil {
 			return m.doFailed("file.write", err), cur
 		}
 	}
 	return status, cur
+}
+
+// sinkSend sends fs write-atomic's write v of cur. A secret body is
+// refused here too, at the write, behind prepare's check of every stage.
+// The mode asked for rides in the frame as it is: an agent too old for it
+// refuses, and the write is not sent again without it.
+func (m *machine) sinkSend(last expStage, cur value, v parent.Verb) (int, value) {
+	if isSecret(toDatum(cur)) {
+		m.err.WriteString("a secret cannot leave sash\n")
+		return exitType, value{}
+	}
+	v.Mode = last.mode
+	m.sinkWrite = true
+	defer func() { m.sinkWrite = false }()
+	if _, err := m.do(v); err != nil {
+		return m.doFailed("file.write", err), cur
+	}
+	return 0, cur
 }
 
 func (m *machine) callFn(st expStage) (int, bool) {

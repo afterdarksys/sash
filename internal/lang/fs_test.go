@@ -325,3 +325,19 @@ func TestFsWriteAtomicRecordsAndReplays(t *testing.T) {
 		t.Errorf("replay finish: %v", err)
 	}
 }
+
+// The sink's own check at the write: a secret body that got past prepare
+// is refused there, with nothing sent; a plain body goes out.
+func TestFsWriteAtomicRefusesASecretAtTheWrite(t *testing.T) {
+	h := &skillHost{}
+	m := newMachine(skillGrant(nil), h, nil)
+	v := parent.Verb{Key: "file.write", Argv: []string{">", "/srv/app/o"}, Path: "/srv/app/o", Body: []byte("hunter2\n")}
+	st, _ := m.sinkSend(expStage{sink: true}, value{kind: valData, d: secretVal{"hunter2"}}, v)
+	if st != exitType || m.err.String() != "a secret cannot leave sash\n" || len(h.calls) != 0 {
+		t.Errorf("secret: status %d stderr %q calls %v", st, m.err.String(), h.calls)
+	}
+	st, _ = m.sinkSend(expStage{sink: true, mode: "0640"}, value{kind: valBytes, b: []byte("plain\n")}, v)
+	if st != 0 || len(writes(h)) != 1 || !strings.Contains(writes(h)[0], "mode=0640") {
+		t.Errorf("plain: status %d calls %v", st, h.calls)
+	}
+}

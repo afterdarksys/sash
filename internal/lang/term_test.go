@@ -940,3 +940,22 @@ func TestTermAnswerSelectsNoSubcommand(t *testing.T) {
 		}
 	}
 }
+
+// Ctrl-D or the end of input at term confirm is a no, never a yes, even
+// from a terminal that also reported yes with it.
+func TestTermConfirmEndOfInputIsNo(t *testing.T) {
+	for _, src := range []string{
+		"term confirm \"go?\" && echo YES\necho after\n",
+		"if term confirm \"go?\" { echo YES } else { echo no }\n",
+		"set -e\nterm confirm \"go?\"\necho YES\n",
+	} {
+		term := &fakeTerm{errs: []error{ErrTermEOF}, yes: []bool{true}}
+		out := Run(src, grant.Grant{}, skillParent{t}, Options{Term: term})
+		if strings.Contains(out.Stdout, "YES") || len(term.confirms) != 1 {
+			t.Errorf("%q: %+v", src, out)
+		}
+	}
+	if out := Run("term confirm \"go?\"\n", grant.Grant{}, skillParent{t}, Options{Term: &fakeTerm{errs: []error{ErrTermEOF}, yes: []bool{true}}}); out.Status != 1 {
+		t.Errorf("status: %+v", out)
+	}
+}

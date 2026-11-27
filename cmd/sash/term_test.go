@@ -336,3 +336,15 @@ func TestBinaryTermSignalsRestoreTheTerminal(t *testing.T) {
 		t.Errorf("record HUP: no recording: %v", err)
 	}
 }
+
+// Ctrl-D at a real term confirm is a no.
+func TestBinaryTermConfirmCtrlDIsNo(t *testing.T) {
+	bin := ptyBin(t)
+	rep := runPTY(t, ptyRun{
+		Argv:  []string{bin, "-c", "term confirm \"q?\" && echo YES\necho end\n"},
+		Steps: []ptyStep{{Expect: "q? [y + Enter / N] "}, {Sleep: 0.4}, {Send: "\x04"}, {Expect: "end"}},
+	})
+	if rep.Code != 0 || !rep.Restored || strings.Contains(rep.TTY, "YES") {
+		t.Errorf("code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
+	}
+}
