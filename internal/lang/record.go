@@ -198,8 +198,10 @@ type tapeCore struct {
 	truncated bool
 	warn      bool
 	truncAt   int
-	// both: chanKept is the bytes of leaves held (chanKeep)
+	// both: chanKept is the bytes of leaves held (chanKeep); chanPend
+	// (replay) is the redacted chan events Finish checks
 	chanKept int
+	chanPend []chanPend
 	pars     int
 	nl       []int
 	err      error // first write error or divergence
@@ -307,7 +309,7 @@ func LoadReplaySegments(rs []io.Reader, script string, now time.Time) (*Tape, er
 				return nil, &TapeError{"replay_bad_segment", 1}
 			}
 			first = h
-			t = &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}}}
+			t = &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}, secrets: map[string]bool{}}}
 		} else {
 			same := h
 			same.Segment, same.PrevSegment = first.Segment, first.PrevSegment
@@ -404,6 +406,29 @@ func (t *Tape) chanKeep(n int) bool {
 	return true
 }
 
+// chanKeepEnd spends the rest of the keep budget (replay, at a value
+// whose recorded size is unknown).
+func (t *Tape) chanKeepEnd() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.chanKept = chanKeepMax
+}
+
+// chanPending notes, on replay, a redacted chan event whose value was not
+// secret when it completed: Finish diverges at it unless a leaf holds a
+// secret bound by then.
+func (t *Tape) chanPending(seq int, leaves []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.chanPend = append(t.chanPend, chanPend{seq: seq, leaves: leaves})
+}
+
+// chanPend is one event chanPending noted.
+type chanPend struct {
+	seq    int
+	leaves []string
+}
+
 // chanEvent records a completed channel op of this branch (record mode):
 // the value's hash, and its leaves unless it is already secret.
 func (t *Tape) chanEvent(op, name string, cseq int, hash string, leaves []string, secret bool) {
@@ -474,6 +499,20 @@ func (t *Tape) Finish() error {
 		if t.err == nil && t.truncAt != 0 {
 			// A partial recording never replays as complete.
 			t.err = &TapeError{"replay_truncated", t.truncAt}
+		}
+		if len(t.chanPend) > 0 {
+			// A redacted chan event whose value holds no secret the run
+			// bound was not redacted by the recorder: an edit.
+			secrets := make([]string, 0, len(t.secrets))
+			for s := range t.secrets {
+				secrets = append(secrets, s)
+			}
+			cs := chanSecrets(secrets)
+			for _, p := range t.chanPend {
+				if (first == 0 || p.seq < first) && !leavesHold(p.leaves, cs) {
+					first = p.seq
+				}
+			}
 		}
 		if t.err == nil && first != 0 {
 			t.divergeLocked(first)
@@ -691,11 +730,9 @@ func (t *Tape) Segments() [][]byte {
 }
 
 // see adds secret texts to the run's set. It only grows: a secret later
-// unset or reassigned is still redacted everywhere.
+// unset or reassigned is still redacted everywhere. Replay keeps the set
+// too, for the check of redacted chan events at Finish.
 func (t *Tape) see(texts []string) {
-	if t.replay {
-		return
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, s := range texts {

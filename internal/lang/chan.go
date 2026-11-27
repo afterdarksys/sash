@@ -30,6 +30,7 @@ package lang
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strconv"
@@ -242,6 +243,11 @@ type chanItem struct {
 	keep   int
 	kept   bool
 	secret bool
+	// stars (replay) is a value that may come from a response the
+	// recorder redacted (an origin with the hash of ***, or a *** in a
+	// leaf): replay answers one with *** and no secret text, so the
+	// value no longer shows what made the recorder redact it.
+	stars bool
 }
 
 // chanOrigin is one origin as it crosses: the record, and whether the
@@ -523,6 +529,12 @@ func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 		return true
 	}
 	if op == "send" {
+		if it.stars {
+			// Its size on record is unknown here (*** stands for the
+			// response), so the budget can no longer be followed: every
+			// later value is taken as past it, as this one is.
+			t.tapes[i].chanKeepEnd()
+		}
 		if it.kept = t.tapes[i].chanKeep(it.keep); !it.kept {
 			it.leaves = nil
 		}
@@ -565,8 +577,15 @@ func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 	case op == "close":
 		return true
 	case rec.Redacted:
-		// The recorder redacts against secrets bound later in the run,
-		// which replay does not know yet: a redacted event keeps no hash.
+		// A redacted event matches only a value that is secret: known
+		// at send, past the keep budget (redacted for that alone, and
+		// decided the same way here), made from a response the recorder
+		// redacted (***, its text gone), or else holding the text of a
+		// secret bound later, which Finish checks against every secret
+		// the replay bound. Anything else there is replay_diverged.
+		if !it.secret && it.kept && !it.stars {
+			t.tapes[i].chanPending(rec.Seq, it.leaves)
+		}
 		return true
 	case !it.secret && rec.Hash == it.hash:
 		return true
@@ -753,6 +772,15 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		it.secret = (it.over && hides) || holdsSecret(cp.d, 0) || leavesHold(it.leaves, chanSecrets(m.secretTexts()))
 		for _, o := range it.orig {
 			it.secret = it.secret || o.secret
+		}
+		if t.replay {
+			star := sha256.Sum256([]byte(redacted3))
+			for _, o := range it.orig {
+				it.stars = it.stars || (!o.o.nohash && o.o.hash == star)
+			}
+			for _, l := range it.leaves {
+				it.stars = it.stars || strings.Contains(l, redacted3)
+			}
 		}
 	}
 	t.mu.Lock()

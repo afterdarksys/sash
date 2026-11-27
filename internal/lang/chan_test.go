@@ -555,6 +555,79 @@ func TestChanRecordReplay(t *testing.T) {
 	}
 }
 
+// A redacted event matches only a value that is secret: a recording with
+// every hash replaced by redacted is replay_diverged, and so is one that
+// also swaps two workers' receives, which only the hashes could see.
+func TestChanReplayRedactedTamper(t *testing.T) {
+	redactAll := func(c [][]byte, evs []int) {
+		for _, i := range evs {
+			if chanEv(t, c[i]).Op != "close" {
+				c[i] = edit(t, c[i], func(m map[string]any) { delete(m, "hash"); m["redacted"] = true })
+			}
+		}
+	}
+	rec, _ := record(t, chanRecSrc)
+	lines := recLines(rec)
+	evs := chanEvents(t, lines)
+	c := append([][]byte(nil), lines...)
+	redactAll(c, evs)
+	if got, err := replay(t, rechain(t, c), chanRecSrc); diverged(err) != chanEv(t, lines[evs[0]]).Seq {
+		t.Errorf("redacted: %v %+v", err, got)
+	}
+
+	src := "par 3 chan c(1) { for i in [ range(1, 10) ] { send c $i }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }"
+	rec, _ = record(t, src)
+	lines = recLines(rec)
+	evs = chanEvents(t, lines)
+	c = append([][]byte(nil), lines...)
+	swapped := false
+	for k := 0; k < len(evs) && !swapped; k++ {
+		a := chanEv(t, c[evs[k]])
+		for j := k + 1; j < len(evs) && a.Op == "recv"; j++ {
+			if b := chanEv(t, c[evs[j]]); b.Op == "recv" && b.Branch != a.Branch {
+				c[evs[k]] = edit(t, c[evs[k]], func(m map[string]any) { m["cseq"] = b.CSeq })
+				c[evs[j]] = edit(t, c[evs[j]], func(m map[string]any) { m["cseq"] = a.CSeq })
+				swapped = true
+				break
+			}
+		}
+	}
+	redactAll(c, evs)
+	if got, err := replay(t, rechain(t, c), src); !swapped || diverged(err) < 0 {
+		t.Errorf("swapped and redacted: %v %+v", err, got)
+	}
+
+	// Honest recordings still replay: a value made from a response the
+	// recorder redacted holds *** on replay, not the secret's text, with
+	// the secret bound before the par or after it.
+	for _, src := range []string{
+		"par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c $l }; for j in recv c { echo got } }\ndeclare -s tok = \"hunter2-SECRET\"",
+		"declare -s tok = \"hunter2-SECRET\"\npar 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c [ \"x\" + $l[0].line ] }; for j in recv c { echo got } }",
+		"par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c [ \"x\" + $l[0].line ] }; for j in recv c { echo got } }\ndeclare -s tok = \"hunter2-SECRET\"",
+	} {
+		rec := recordFiles(t, src, map[string]string{"/srv/ops/u": "hunter2-SECRET\n"})
+		if got, err := replay(t, rec, src); err != nil || got.Status != 0 {
+			t.Errorf("%q: %v %+v", src, err, got)
+		}
+	}
+	// Two 8 MB values from a redacted response fill the keep budget on
+	// record, so the plain value after them is redacted for the budget
+	// alone; on replay they are *** and small, and the budget is no
+	// longer followed past the first of them.
+	src = "declare -s tok = \"hunter2-SECRET\"\npar 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c $l; send c $l; send c [ \"b\" * 1000000 ] }; for j in recv c { echo got } }"
+	rec = recordFiles(t, src, map[string]string{"/srv/ops/u": "hunter2-SECRET" + strings.Repeat("a", 8000000) + "\n"})
+	lines = recLines(rec)
+	n := 0
+	for _, i := range chanEvents(t, lines) {
+		if ev := chanEv(t, lines[i]); ev.Op == "send" && ev.Redacted {
+			n++
+		}
+	}
+	if got, err := replay(t, rec, src); n != 3 || err != nil || got.Status != 0 {
+		t.Errorf("budget: %d redacted sends, %v %+v", n, err, got)
+	}
+}
+
 // A chan event's shape is checked at load: a hash and redacted together,
 // an unknown op, a chan field on another kind, or a chan event outside a
 // par is replay_bad_format.
