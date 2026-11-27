@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/afterdarksys/sash/internal/codes"
+	"github.com/afterdarksys/sash/internal/wsclient"
 	"github.com/afterdarksys/sash/internal/wsclient/wstest"
 )
 
@@ -589,18 +592,34 @@ func TestTLSIsNotNegotiable(t *testing.T) {
 		}
 	})
 	t.Run("TLS 1.2 server", func(t *testing.T) {
+		// Bounded: a client that accepted TLS 1.2 fails here within
+		// seconds, not at the test binary's timeout.
+		defer func(a, b time.Duration) { httpTimeout, handshakeTimeout = a, b }(httpTimeout, handshakeTimeout)
+		httpTimeout, handshakeTimeout = 2*time.Second, 2*time.Second
 		var hits atomic.Int32
 		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
 		srv.TLS = &tls.Config{MaxVersion: tls.VersionTLS12}
 		srv.StartTLS()
-		defer srv.Close()
+		defer func() {
+			srv.CloseClientConnections()
+			srv.Close()
+		}()
 		testRoots = x509.NewCertPool()
 		testRoots.AddCert(srv.Certificate())
 		con := newFakeCon()
 		e := &env{vars: map[string]string{"SYSTEMAPI_URL": srv.URL, "SYSTEMAPI_TOKEN_FILE": tokenFile(t)}}
-		res := begin(con, e, "web1").wait(t)
-		if res.Code != 1 || con.err.String() != "connect: request_failed\n" || hits.Load() != 0 {
-			t.Errorf("code %d stderr %q hits %d", res.Code, con.err.String(), hits.Load())
+		run := begin(con, e, "web1")
+		select {
+		case res := <-run.done:
+			if res.Code != 1 || con.err.String() != "connect: request_failed\n" || hits.Load() != 0 {
+				t.Errorf("code %d stderr %q hits %d", res.Code, con.err.String(), hits.Load())
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("no end within 5 s; hits %d", hits.Load())
+			if err := con.keys.Close(); err != nil {
+				t.Error(err)
+			}
+			con.sig <- syscall.SIGTERM
 		}
 	})
 	t.Run("the configuration", func(t *testing.T) {
@@ -1152,5 +1171,74 @@ func TestProtocolViolationsEndWithProtocol(t *testing.T) {
 			}
 			checkClean(t, cp, con)
 		})
+	}
+}
+
+// No proxy is ever used: with HTTPS_PROXY, HTTP_PROXY and ALL_PROXY set
+// to a listening proxy, neither the two calls nor the WebSocket dial
+// connects to it. A child process runs both, because net/http reads the
+// proxy variables once per process.
+func TestProxyIsNeverUsed(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			if err := c.Close(); err != nil {
+				continue
+			}
+		}
+	}()
+	defer func() {
+		if err := ln.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	proxy := "http://" + ln.Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProxyChild$", "-test.v")
+	cmd.Env = append(os.Environ(), "SASH_CONNECT_PROXY_CHILD=1",
+		"HTTPS_PROXY="+proxy, "HTTP_PROXY="+proxy, "ALL_PROXY="+proxy,
+		"https_proxy="+proxy, "http_proxy="+proxy, "all_proxy="+proxy, "NO_PROXY=", "no_proxy=")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: TestProxyChild") {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Errorf("the proxy received %d connections", n)
+	}
+}
+
+// TestProxyChild is TestProxyIsNeverUsed's child: a run of sash connect
+// and a WebSocket dial, both to a name that is not loopback (net/http
+// never proxies loopback) and does not resolve.
+func TestProxyChild(t *testing.T) {
+	if os.Getenv("SASH_CONNECT_PROXY_CHILD") != "1" {
+		t.Skip("run by TestProxyIsNeverUsed")
+	}
+	defer func(a, b time.Duration) { httpTimeout, handshakeTimeout = a, b }(httpTimeout, handshakeTimeout)
+	httpTimeout, handshakeTimeout = 3*time.Second, 3*time.Second
+	testRoots = x509.NewCertPool()
+	con := newFakeCon()
+	e := &env{vars: map[string]string{"SYSTEMAPI_URL": "https://proxy-guard.invalid", "SYSTEMAPI_TOKEN_FILE": tokenFile(t)}}
+	if res := begin(con, e, "web1").wait(t); res.Code != 1 || con.err.String() != "connect: request_failed\n" {
+		t.Errorf("code %d stderr %q", res.Code, con.err.String())
+	}
+	conn, err := wsclient.Dial(context.Background(), "wss://proxy-guard.invalid/api/v1/systems/terminal/x", wsclient.Options{
+		TLS: tlsConfig("proxy-guard.invalid"), HandshakeTimeout: 3 * time.Second, ReadLimit: readLimit,
+	})
+	if err == nil {
+		t.Errorf("the dial succeeded")
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
 	}
 }
