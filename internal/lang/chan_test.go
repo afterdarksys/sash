@@ -338,6 +338,59 @@ func TestChanInterruptWakesWaiters(t *testing.T) {
 	waitFor(t, "goroutines back to baseline", func() bool { return runtime.NumGoroutine() <= base+1 })
 }
 
+// gateParent is a parent without the multiplexed pipe (the baton): each
+// call says it started, then waits for release.
+type gateParent struct {
+	in      chan struct{}
+	release chan struct{}
+}
+
+func (g *gateParent) Do(v parent.Verb) (parent.Result, error) {
+	g.in <- struct{}{}
+	<-g.release
+	return parent.Result{Kind: parent.KindBytes, Bytes: []byte("x\n")}, nil
+}
+
+// Under the baton, the first Ctrl-C while the holder is in a door call
+// leaves no branch waiting for the baton behind it: the two receivers,
+// one woken from its channel and one never started, end at once, before
+// the door call returns.
+func TestChanInterruptBaton(t *testing.T) {
+	g := &gateParent{in: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	release := func() { once.Do(func() { close(g.release) }) }
+	defer release()
+	intr := make(chan struct{}, 1)
+	opt := Options{Interrupts: func() (<-chan struct{}, func()) { return intr, func() {} }}
+	var ct *chanTable
+	var hookMu sync.Mutex
+	chanTableHook = func(t *chanTable) { hookMu.Lock(); ct = t; hookMu.Unlock() }
+	defer func() { chanTableHook = nil }()
+	state := func() (running, waiters, want int) {
+		hookMu.Lock()
+		defer hookMu.Unlock()
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		return ct.running, len(ct.waiters), len(ct.want)
+	}
+	src := "par 3 chan c(1) { branch { send c 1; send c 2; cat /srv/ops/a; send c 3 }; for x in recv c { echo $x }; for x in recv c { echo $x } }"
+	done := make(chan Outcome, 1)
+	go func() { done <- Run(src, parGrant(), g, opt) }()
+	<-g.in
+	// Branch 1 holds the baton in its door call; the other two are
+	// runnable and wait for it.
+	if r, w, b := state(); r != 3 || w != 0 || b != 2 {
+		t.Fatalf("before: running %d waiters %d want %d", r, w, b)
+	}
+	intr <- struct{}{}
+	waitFor(t, "receivers ended", func() bool { r, w, b := state(); return r == 1 && w == 0 && b == 0 })
+	release()
+	out := <-done
+	if out.Status != exitInterrupted || !strings.Contains(out.Stderr, "par: interrupted") {
+		t.Fatalf("%+v", out)
+	}
+}
+
 // A deadline wakes a blocked op: timeout, which try catches.
 func TestChanTimeout(t *testing.T) {
 	a := &prototest.Agent{Max: 4, Handle: func(v parent.Verb) (parent.Result, error) {
@@ -351,6 +404,16 @@ func TestChanTimeout(t *testing.T) {
 	out := Run(src, parGrant(), c, Options{})
 	if time.Since(start) > 3*time.Second || out.Stdout != "2\n" {
 		t.Fatalf("%+v", out)
+	}
+	// Under the baton: the receiver parks on the channel while the
+	// sender holds the baton in a door call past the deadline. The
+	// sender's next statement is timeout, which ends the par; the
+	// receiver is woken, never left parked.
+	src = "try { timeout 200ms { par 2 chan c(1) as r { for x in recv c { echo $x }; branch { cat /srv/ops/a; send c 1 } } } } catch e { echo $e.status }\necho [ $r[1].message ]"
+	start = time.Now()
+	out = Run(src, parGrant(), &catCounter{seen: map[string]int{}, delay: time.Second}, Options{})
+	if time.Since(start) > 3*time.Second || out.Stdout != "x\n2\ntimeout\n" {
+		t.Fatalf("baton: %v %+v", time.Since(start), out)
 	}
 }
 

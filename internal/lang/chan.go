@@ -400,13 +400,20 @@ func (t *chanTable) wake(w *chanWaiter) {
 }
 
 // acquire waits for the baton: free, and this the lowest runnable
-// branch. Under t.mu.
+// branch. Under t.mu. Once the par is cancelled it returns without it:
+// the holder may be in a door call the first Ctrl-C does not stop, and a
+// branch must not stay parked behind it; the caller sees the cancel next
+// (wait's loop, or runProg before the branch's first statement).
 func (t *chanTable) acquire(i int) {
 	if !t.baton {
 		return
 	}
 	t.want[i] = true
 	for {
+		if t.ctx.Err() != nil {
+			delete(t.want, i)
+			return
+		}
 		if t.holder == -1 {
 			low := -1
 			for j := range t.want {
