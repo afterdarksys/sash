@@ -59,6 +59,8 @@ A terminal exists when sash's stdin and stderr are both terminals (`line.IsTerm`
 
 `sash < script`, a pipe, a job, `--replay`: `Options.Term` is nil. Then `term prompt` and `term confirm` are exit 2 `term needs a terminal` and stop the script (`ctlHalt`, as `confirm needs a terminal` does, `eval.go:530-533`); `is_tty()` is `false`. `Options.Confirm` is untouched: `set -o confirm` in a script is still `confirm needs a terminal` (`eval.go:433-435`), terminal or not.
 
+Every `term` question is written after the fixed prefix `script asks: ` (`line.TermAsks`), which sash's own questions (`confirm <key> ...?`, `confirm off?`) never use, so a script cannot render a question identical to sash's own.
+
 ### 1.3 Reading the answer
 
 | Event | `term prompt` | `term confirm` |

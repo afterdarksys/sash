@@ -31,21 +31,21 @@ func cmpOr(s, d string) string {
 
 func TestAskPromptReadsOneLine(t *testing.T) {
 	for _, c := range []struct{ name, typed, want, echo string }{
-		{"a line ended by CR", "nginx\r", "nginx", "name? nginx\r\n"},
-		{"a line ended by LF", "nginx\nmore", "nginx", "name? nginx\r\n"},
-		{"an empty line", "\r", "", "name? \r\n"},
-		{"backspace deletes one rune", "ab\x7fc\x08d\r", "ad", "name? ab\b \bc\b \bd\r\n"},
-		{"backspace deletes a whole rune", "h\xc3\xa9\x7f\r", "h", "name? h\xc3\xa9\b \b\r\n"},
-		{"backspace on an empty line", "\x7f\x7fa\r", "a", "name? a\r\n"},
-		{"Ctrl-U clears the line", "abc\x15xy\r", "xy", "name? abc\b \b\b \b\b \bxy\r\n"},
-		{"a CSI sequence is dropped", "a\x1b[1;5Cb\r", "ab", "name? ab\r\n"},
-		{"an arrow key is dropped", "a\x1b[Ab\r", "ab", "name? ab\r\n"},
-		{"ESC and one byte are dropped", "a\x1bOb\r", "ab", "name? ab\r\n"},
-		{"other control bytes are dropped", "a\x00\x07\x0b\x0c\x1fb\r", "ab", "name? ab\r\n"},
-		{"Ctrl-D after text is dropped", "a\x04b\r", "ab", "name? ab\r\n"},
-		{"a C1 control is dropped", "a\xc2\x9bb\r", "ab", "name? ab\r\n"},
-		{"a tab is a control byte here", "a\tb\r", "ab", "name? ab\r\n"},
-		{"text past ASCII", "h\xc3\xa9llo \xe6\x97\xa5\r", "héllo 日", "name? héllo 日\r\n"},
+		{"a line ended by CR", "nginx\r", "nginx", "script asks: name? nginx\r\n"},
+		{"a line ended by LF", "nginx\nmore", "nginx", "script asks: name? nginx\r\n"},
+		{"an empty line", "\r", "", "script asks: name? \r\n"},
+		{"backspace deletes one rune", "ab\x7fc\x08d\r", "ad", "script asks: name? ab\b \bc\b \bd\r\n"},
+		{"backspace deletes a whole rune", "h\xc3\xa9\x7f\r", "h", "script asks: name? h\xc3\xa9\b \b\r\n"},
+		{"backspace on an empty line", "\x7f\x7fa\r", "a", "script asks: name? a\r\n"},
+		{"Ctrl-U clears the line", "abc\x15xy\r", "xy", "script asks: name? abc\b \b\b \b\b \bxy\r\n"},
+		{"a CSI sequence is dropped", "a\x1b[1;5Cb\r", "ab", "script asks: name? ab\r\n"},
+		{"an arrow key is dropped", "a\x1b[Ab\r", "ab", "script asks: name? ab\r\n"},
+		{"ESC and one byte are dropped", "a\x1bOb\r", "ab", "script asks: name? ab\r\n"},
+		{"other control bytes are dropped", "a\x00\x07\x0b\x0c\x1fb\r", "ab", "script asks: name? ab\r\n"},
+		{"Ctrl-D after text is dropped", "a\x04b\r", "ab", "script asks: name? ab\r\n"},
+		{"a C1 control is dropped", "a\xc2\x9bb\r", "ab", "script asks: name? ab\r\n"},
+		{"a tab is a control byte here", "a\tb\r", "ab", "script asks: name? ab\r\n"},
+		{"text past ASCII", "h\xc3\xa9llo \xe6\x97\xa5\r", "héllo 日", "script asks: name? héllo 日\r\n"},
 	} {
 		got, err, out, _ := promptKeys(t, c.typed, lang.TermAsk{})
 		if err != nil || got != c.want || out != c.echo {
@@ -61,12 +61,12 @@ func TestAskPromptEchoIsEscaped(t *testing.T) {
 	if err != nil || got != "a‮b" {
 		t.Fatalf("got %q err %v", got, err)
 	}
-	if out != "name? a<U+202E>b\r\n" || strings.Contains(out, "‮") {
+	if out != "script asks: name? a<U+202E>b\r\n" || strings.Contains(out, "‮") {
 		t.Errorf("echo %q", out)
 	}
 	// Backspace takes the whole escape off the screen.
 	_, _, out, _ = promptKeys(t, "\xe2\x80\xae\x7f\r", lang.TermAsk{})
-	if out != "name? <U+202E>"+strings.Repeat("\b \b", 8)+"\r\n" {
+	if out != "script asks: name? <U+202E>"+strings.Repeat("\b \b", 8)+"\r\n" {
 		t.Errorf("erase %q", out)
 	}
 }
@@ -75,7 +75,7 @@ func TestAskPromptEchoIsEscaped(t *testing.T) {
 func TestAskPromptQuestionIsEscaped(t *testing.T) {
 	q := "ok\x1b[2J‮?\nconfirm unit.restart nginx? [y + Enter / N]"
 	_, err, out, _ := promptKeys(t, "x\r", lang.TermAsk{Question: q})
-	want := "ok<U+001B>[2J<U+202E>?<U+000A>confirm unit.restart nginx? [y + Enter / N] x\r\n"
+	want := "script asks: ok<U+001B>[2J<U+202E>?<U+000A>confirm unit.restart nginx? [y + Enter / N] x\r\n"
 	if err != nil || out != want {
 		t.Errorf("out %q err %v, want %q", out, err, want)
 	}
@@ -93,7 +93,7 @@ func TestAskPromptQuestionIsEscaped(t *testing.T) {
 // A secret is not echoed: not the text, not a star, not a backspace.
 func TestAskPromptSecretEchoesNothing(t *testing.T) {
 	got, err, out, _ := promptKeys(t, "hunter2\x7f3\r", lang.TermAsk{Secret: true})
-	if err != nil || got != "hunter3" || out != "name? \r\n" {
+	if err != nil || got != "hunter3" || out != "script asks: name? \r\n" {
 		t.Errorf("got %q err %v out %q", got, err, out)
 	}
 }
@@ -339,5 +339,29 @@ func TestAskYesDrainsANo(t *testing.T) {
 	}
 	if yes, err, _, _ := ask([]ev{{time.Second, 'n'}, {100 * time.Millisecond, 0x03}}); yes || !errors.Is(err, lang.ErrTermInterrupted) {
 		t.Errorf("n Ctrl-C: yes %v err %v", yes, err)
+	}
+}
+
+// A script's question cannot render as sash's own: term confirm "confirm
+// unit.restart nginx?" and term confirm "confirm off?" begin with
+// TermAsks on their line, where the real confirm and confirm off begin
+// with "confirm".
+func TestTermQuestionIsNotSashsOwn(t *testing.T) {
+	clock := withClock(t)
+	for _, q := range []string{"confirm unit.restart nginx?", "confirm off?"} {
+		keys := &fakeKeys{evs: evs(time.Second, "\r"), clock: clock}
+		var script bytes.Buffer
+		if _, err := askYes(keys, &script, keys.flush, lang.TermAsk{Question: q}); err != nil {
+			t.Fatal(err)
+		}
+		keys = &fakeKeys{evs: evs(time.Second, "\r"), clock: clock}
+		var own bytes.Buffer
+		askConfirm(keys, &own, keys.flush, q+" [y + Enter / N]")
+		if script.String() == own.String() || !strings.Contains(script.String(), "\r\n\x1b[J"+TermAsks+q+" [y + Enter / N]") {
+			t.Errorf("%q: script %q, sash %q", q, script.String(), own.String())
+		}
+		if strings.HasPrefix(TermAsks, "confirm") {
+			t.Errorf("the prefix reads as sash's own: %q", TermAsks)
+		}
 	}
 }

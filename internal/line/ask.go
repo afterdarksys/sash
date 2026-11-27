@@ -27,6 +27,11 @@ import (
 	"github.com/afterdarksys/sash/internal/lang"
 )
 
+// TermAsks begins every question a script asks with term, so it never
+// reads as one of sash's own (confirm <key> ...? or confirm off?), whose
+// questions never begin with it.
+const TermAsks = "script asks: "
+
 // askSlice is how often a read checks its deadline and for a hangup.
 const askSlice = 50 * time.Millisecond
 
@@ -112,7 +117,7 @@ func askPrompt(r keySource, out io.Writer, flush func() error, lead string, a la
 	}
 	r.Discard()
 	w := watch(r, a)
-	if werr := writeAll(out, []byte(lead+lang.TermLine(a.Question)+" ")); werr != nil {
+	if werr := writeAll(out, []byte(lead+TermAsks+lang.TermLine(a.Question)+" ")); werr != nil {
 		return "", lang.ErrTermNone
 	}
 	defer func() {
@@ -275,7 +280,7 @@ func askPrompt(r keySource, out io.Writer, flush func() error, lead string, a la
 // and a failed flush are all no.
 func askYes(r keySource, out io.Writer, flush func() error, a lang.TermAsk) (bool, error) {
 	w := watch(r, a)
-	yes, interrupted := askConfirm(w, out, flush, lang.TermLine(a.Question)+" [y + Enter / N]")
+	yes, interrupted := askConfirm(w, out, flush, TermAsks+lang.TermLine(a.Question)+" [y + Enter / N]")
 	switch {
 	case w.why != nil:
 		return false, w.why

@@ -241,7 +241,7 @@ Atomic here means one thing: the agent writes a temporary file beside the target
 
 ## Asking the person
 
-`term prompt "<question>"` prints the question on the terminal and gives the line the person types, without its Enter. `term confirm "<question>"` prints `<question> [y + Enter / N]`; its status is 0 for `y` or `Y` then Enter and 1 for anything else. Both take exactly one question word, at most 1024 bytes, and no input: `term` is the first stage of its pipeline. `prompt` and `confirm` are literal words: from a value they are exit 2 `command_from_value`.
+`term prompt "<question>"` prints `script asks: <question>` on the terminal and gives the line the person types, without its Enter. `term confirm "<question>"` prints `script asks: <question> [y + Enter / N]`. sash's own questions (`confirm <key> ...?` under `set -o confirm`, `confirm off?`) never begin with `script asks:`, so a script's question cannot pass for one of them; its status is 0 for `y` or `Y` then Enter and 1 for anything else. Both take exactly one question word, at most 1024 bytes, and no input: `term` is the first stage of its pipeline. `prompt` and `confirm` are literal words: from a value they are exit 2 `command_from_value`.
 
 A terminal can be asked only when sash's stdin and stderr are both terminals and the script is not on stdin: the prompt, `sash -c`, or `sash file`. `sash < script`, a pipe, a job, and a replay have none: `term` is then exit 2 `term needs a terminal` and the script stops there. Test `[ is_tty() ]` first in a script that may run unattended.
 
