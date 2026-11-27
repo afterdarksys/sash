@@ -37,6 +37,13 @@ const (
 	// provOverflow marks a value whose origins were cut, or a State out
 	// of room. It sorts last.
 	provOverflow = ^uint32(0)
+	// provRedacted (replay) marks a value made from a response, an
+	// answer, or a reading that replay served as *** for an event the
+	// recording holds redacted: its text is gone (chan.go stars). It is
+	// not an origin. It sorts after every origin id and a cut keeps it
+	// (trimProv), so the bit stays with the value however far its
+	// provenance overflows, and only with that value.
+	provRedacted = ^uint32(0) - 1
 )
 
 // fnSource is where a fn was defined: its text's name and line offsets.
@@ -53,9 +60,6 @@ type origin struct {
 	hash   [32]byte
 	// nohash is an origin with no response to hash: a term prompt answer.
 	nohash bool
-	// redacted (replay) is a response replay answered from an event the
-	// recording holds redacted: its text is gone (chan.go stars).
-	redacted bool
 }
 
 // unionProv merges two sorted origin lists, keeping at most provPerValue
@@ -94,10 +98,23 @@ func unionProv(a, b []uint32) []uint32 {
 			out = append(out, x)
 		}
 	}
-	if len(out) > provPerValue {
-		out = append(out[:provPerValue-1], provOverflow)
+	return trimProv(out)
+}
+
+// trimProv cuts a provenance past provPerValue to its first ids and the
+// overflow marker, keeping provRedacted when the cut list held it.
+func trimProv(out []uint32) []uint32 {
+	if len(out) <= provPerValue {
+		return out
 	}
-	return out
+	red := false
+	for _, id := range out {
+		red = red || id == provRedacted
+	}
+	if red {
+		return append(out[:provPerValue-2], provRedacted, provOverflow)
+	}
+	return append(out[:provPerValue-1], provOverflow)
 }
 
 // addProv is unionProv(p, {id}) without building the one-element list.
@@ -108,10 +125,7 @@ func addProv(p []uint32, id uint32) []uint32 {
 	}
 	out := make([]uint32, 0, len(p)+1)
 	out = append(append(append(out, p[:i]...), id), p[i:]...)
-	if len(out) > provPerValue {
-		out = append(out[:provPerValue-1], provOverflow)
-	}
-	return out
+	return trimProv(out)
 }
 
 // unionLen is the size of a's and b's union, both sorted and unique.
@@ -185,6 +199,9 @@ func (m *machine) markSecret(v value) {
 	overflow := false
 	mark := func(prov []uint32) {
 		for _, id := range prov {
+			if id == provRedacted {
+				continue
+			}
 			if id == provOverflow || int(id) >= len(st.origins) {
 				overflow = true
 				continue
@@ -291,9 +308,9 @@ func (m *machine) noteOrigin(v parent.Verb, res parent.Result, redacted bool) {
 	if target != "" {
 		target = needsCell(target)
 	}
-	id := m.st.addOrigin(origin{src: src, line: m.provLine(), key: v.Key, target: target, hash: h, redacted: redacted})
+	id := m.st.addOrigin(origin{src: src, line: m.provLine(), key: v.Key, target: target, hash: h})
 	if redacted {
-		m.st.replayRedacted = true
+		m.prov = addProv(m.prov, provRedacted)
 	}
 	// A response holding a secret already bound is secret from the start;
 	// the bytes are not kept, so this is checked here, once.
@@ -360,6 +377,9 @@ func (m *machine) runOrigin(name string) (value, int) {
 	secret := isSecret(toDatum(v))
 	rows := make([]parent.Row, 0, len(v.prov))
 	for _, id := range v.prov {
+		if id == provRedacted {
+			continue
+		}
 		if id == provOverflow || int(id) >= len(m.st.origins) {
 			rows = append(rows, parent.Row{"origin": "overflow", "key": "", "target": "truncated", "line": "", "hash": ""})
 			continue

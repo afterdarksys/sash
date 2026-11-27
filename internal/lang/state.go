@@ -50,9 +50,6 @@ type State struct {
 	secretOrigin map[uint32]bool
 	secretHash   map[[32]byte]bool
 	secretText   map[string]bool
-	// replayRedacted (replay): a door call was answered from a response
-	// the recording holds redacted (prov.go noteOrigin).
-	replayRedacted bool
 	// secrets memoizes SecretCount for one generation.
 	secrets    int
 	secretsGen uint64

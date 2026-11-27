@@ -686,6 +686,131 @@ func TestChanReplayRedactedTamper(t *testing.T) {
 	}
 }
 
+// redactResp makes event line i's response a redacted one, as a forger
+// would.
+func redactResp(t *testing.T, c [][]byte, i int) {
+	t.Helper()
+	c[i] = edit(t, c[i], func(m map[string]any) {
+		r := m["resp"].(map[string]any)
+		m["resp"] = map[string]any{"kind": r["kind"], "exit": r["exit"], "redacted": true, "len": 5}
+	})
+}
+
+// firstCall is the index of a recording's first call event.
+func firstCall(t *testing.T, c [][]byte) int {
+	t.Helper()
+	for i, l := range c[1:] {
+		if ev := chanEv(t, l); ev.Kind == "call" && ev.Resp != nil {
+			return i + 1
+		}
+	}
+	t.Fatal("no call")
+	return 0
+}
+
+// What marks a value as made from something replay served as ***
+// belongs to that value, not to its branch: a redacted response the
+// branch read for something else does not excuse a value whose
+// provenance overflowed. The value that does hold one still replays,
+// however far it overflowed (TestChanReplayRedactedTamper), and so does
+// a term answer the recorder wrote as ***.
+func TestChanReplayStarsPerValue(t *testing.T) {
+	files := map[string]string{"/srv/ops/z": "unrelated\n"}
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 17; i++ {
+		files[fmt.Sprintf("/srv/ops/f%d", i)] = fmt.Sprintf("f%d\n", i)
+		fmt.Fprintf(&b, "let c%d = (cat /srv/ops/f%d | lines); ", i, i)
+		sum += fmt.Sprintf(" + $c%d[0].line", i)
+	}
+	src := "par 2 chan c(1) { branch { let z = (cat /srv/ops/z); " + b.String() + "let y = [ \"\"" + sum + " ]; send c $y }; for j in recv c { echo \"got $j\" } }"
+	rec := recordFiles(t, src, files)
+	for _, forged := range []bool{false, true} {
+		c := append([][]byte(nil), recLines(rec)...)
+		for _, i := range chanEvents(t, c) {
+			if chanEv(t, c[i]).Op != "close" {
+				c[i] = edit(t, c[i], func(m map[string]any) { delete(m, "hash"); m["redacted"] = true })
+			}
+		}
+		if forged {
+			redactResp(t, c, firstCall(t, c))
+		}
+		if got, err := replay(t, rechain(t, c), src); diverged(err) < 0 {
+			t.Errorf("forged %v: %v %+v", forged, err, got)
+		}
+	}
+
+	src = "let a = (term prompt \"x?\")\npar 2 chan c(1) { send c $a; for j in recv c { echo got } }\ndeclare -s tok = \"hunter2-SECRET\""
+	clocks(t)
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, src, recNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Run(src, termGrant(), &hostParent{}, Options{Tape: tape, State: NewState(), Term: &fakeTerm{answers: []string{"my hunter2-SECRET"}}})
+	if err := tape.Finish(); err != nil || out.Status != 0 {
+		t.Fatalf("record: %v %+v", err, out)
+	}
+	if got, err := replay(t, buf.Bytes(), src); err != nil || got.Status != 0 {
+		t.Errorf("term answer: %v %+v", err, got)
+	}
+}
+
+// One forged redacted response feeding a send cannot claim the whole
+// keep budget, and so switch off the value checks of every later send:
+// a value's share is at most dataMaxBytes.
+func TestChanReplayKeepForged(t *testing.T) {
+	src := "par 3 chan c(1) { branch { let s = (cat /srv/ops/s | lines); send c [ $s[0].line ]; for i in [ range(1, 10) ] { send c $i } }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }"
+	rec := recordFiles(t, src, map[string]string{"/srv/ops/s": "plain line\n"})
+	c := append([][]byte(nil), recLines(rec)...)
+	evs := chanEvents(t, c)
+	for _, i := range evs {
+		ev := chanEv(t, c[i])
+		if ev.Op == "close" {
+			continue
+		}
+		c[i] = edit(t, c[i], func(m map[string]any) {
+			delete(m, "hash")
+			m["redacted"] = true
+			if ev.Op == "send" {
+				m["keep"] = chanKeepMax
+			}
+		})
+	}
+	redactResp(t, c, firstCall(t, c))
+	if got, err := replay(t, rechain(t, c), src); diverged(err) < 0 {
+		t.Errorf("forged keep: %v %+v", err, got)
+	}
+}
+
+// Every call sets whether replay served it redacted, and a glob listing
+// takes it: a redacted listing never marks the next verb's value.
+func TestTapeServedRedactedPairs(t *testing.T) {
+	src := "declare -s tok = \"content of /var/log/a\"\ncat /var/log/a\ncat /var/log/b"
+	rec, _ := record(t, src)
+	tape, err := LoadReplay(bytes.NewReader(rec), src, recNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verb := func(p string) parent.Verb {
+		return parent.Verb{Key: "file.read", Argv: []string{"cat", p}, Path: p}
+	}
+	// The first response is redacted in the recording.
+	check, err := LoadReplay(bytes.NewReader(rec), src, recNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := check.call(nil, verb("/var/log/a"), false, nil); err != nil || !check.takeServedRedacted() {
+		t.Fatalf("first call not served redacted: %v", err)
+	}
+	if _, err := (tapeParent{t: tape}).Do(verb("/var/log/a")); err != nil || tape.servedRedacted {
+		t.Fatalf("listing left the flag: %v %v", err, tape.servedRedacted)
+	}
+	if _, err := tape.call(nil, verb("/var/log/b"), false, nil); err != nil || tape.takeServedRedacted() {
+		t.Fatalf("plain call marked: %v", err)
+	}
+}
+
 // A send's keep total is checked: missing, on another op, or past the
 // budget is replay_bad_format; one that goes down or does not follow the
 // value's cost is replay_diverged.

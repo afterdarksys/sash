@@ -242,10 +242,11 @@ type chanItem struct {
 	keep   int
 	kept   bool
 	secret bool
-	// stars (replay) is a value that may come from a response the
-	// recording holds redacted: replay answers one with *** and no
-	// secret text, so the value no longer shows what made the recorder
-	// redact it, nor its size on record.
+	// stars (replay) is a value whose provenance holds provRedacted:
+	// made from something replay served as *** for an event the
+	// recording holds redacted, so it no longer shows what made the
+	// recorder redact it, nor its size on record. It crosses with the
+	// value.
 	stars bool
 }
 
@@ -749,6 +750,12 @@ func (m *machine) runSend(s *Send) (int, bool) {
 	}
 	it := chanItem{v: cp, size: size}
 	for _, id := range unionProv(v.prov, m.prov) {
+		if id == provRedacted {
+			// Only replay adds it: the value came from something
+			// replay served as *** (chan.go took).
+			it.stars = true
+			continue
+		}
 		if id == provOverflow || int(id) >= len(m.st.origins) {
 			it.over = true
 			continue
@@ -766,22 +773,13 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		writeJSON(&b, toDatum(cp))
 		it.hash = sha([]byte(b.String()))
 		it.leaves = chanLeaves(cp)
-		for _, l := range it.leaves {
-			it.keep += len(l) + 16
-		}
+		// What the leaves cost the keep budget is the value's size: at
+		// most dataMaxBytes, so one value's share is bounded.
+		it.keep = size
 		hides := len(m.st.secretOrigin) > 0 || len(m.st.secretHash) > 0
 		it.secret = (it.over && hides) || holdsSecret(cp.d, 0) || leavesHold(it.leaves, chanSecrets(m.secretTexts()))
 		for _, o := range it.orig {
 			it.secret = it.secret || o.secret
-		}
-		if t.replay {
-			// Only what replay knows: an origin it answered with a
-			// response the recording holds redacted, or an overflow in a
-			// branch that has had one (the origin may be the lost one).
-			it.stars = it.over && m.st.replayRedacted
-			for _, o := range it.orig {
-				it.stars = it.stars || o.o.redacted
-			}
 		}
 	}
 	t.mu.Lock()
@@ -1163,6 +1161,9 @@ func (m *machine) internOrigins(it chanItem) []uint32 {
 	}
 	if it.over {
 		prov = addProv(prov, provOverflow)
+	}
+	if it.stars {
+		prov = addProv(prov, provRedacted)
 	}
 	if marked {
 		m.sinkSecrets()

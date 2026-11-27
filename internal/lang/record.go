@@ -177,7 +177,8 @@ type Tape struct {
 	bseq   int    // events this branch has recorded
 	at     int
 	// servedRedacted (replay): the last call was answered from a
-	// response the recording holds redacted (takeServedRedacted).
+	// response the recording holds redacted. Every call sets it, and
+	// every caller takes it (takeServedRedacted).
 	servedRedacted bool
 }
 
@@ -417,7 +418,7 @@ const chanKeepMax = 16 << 20
 func (t *Tape) chanKeep(n int) (kept bool, total int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.chanKept+n > chanKeepMax {
+	if n > dataMaxBytes || t.chanKept+n > chanKeepMax {
 		return false, t.chanKept
 	}
 	t.chanKept += n
@@ -428,8 +429,9 @@ func (t *Tape) chanKeep(n int) (kept bool, total int) {
 // value replay sees as recorded, n is its cost: the total grew by n
 // (kept), or stayed where n does not fit (redacted for the budget). For
 // a stars value its size on record is unknown, so the recorded increment
-// is taken, within the budget. ok is false for a total that went down,
-// past the budget, or that does not follow; the run then diverges.
+// is taken, at most one value's (dataMaxBytes) and within the budget. ok
+// is false for a total that went down, past the budget, or that does not
+// follow; the run then diverges.
 func (t *Tape) chanKeepReplay(total, n int, stars bool) (kept, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -440,10 +442,15 @@ func (t *Tape) chanKeepReplay(total, n int, stars bool) (kept, ok bool) {
 	d := total - prev
 	switch {
 	case stars:
+		// No value costs more than dataMaxBytes (its size), so a
+		// recorded increment past that is not a value's.
+		if d > dataMaxBytes {
+			return false, false
+		}
 		kept = d > 0
-	case d == n:
+	case d == n && n <= dataMaxBytes:
 		kept = true
-	case d == 0 && prev+n > chanKeepMax:
+	case d == 0 && (n > dataMaxBytes || prev+n > chanKeepMax):
 		kept = false
 	default:
 		return false, false
@@ -1013,6 +1020,7 @@ func reqMatches(rec *recReq, v parent.Verb) bool {
 // call is one door call under the tape: recorded through p, or answered
 // from the recording.
 func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []string) (parent.Result, error) {
+	t.servedRedacted = false
 	if !t.replay {
 		res, err := p.Do(v)
 		vv := v
@@ -1032,13 +1040,13 @@ func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []stri
 		t.diverge(ev.Seq)
 		return parent.Result{}, t.Err()
 	}
+	t.servedRedacted = r.Redacted
 	res := parent.Result{Kind: parent.KindBytes, Exit: r.Exit, Cols: r.Cols, Rows: r.Rows, Bytes: r.Bytes}
 	if r.Kind == "rows" {
 		res.Kind = parent.KindRows
 	}
 	if r.Redacted {
 		res = parent.Result{Kind: parent.KindBytes, Exit: r.Exit, Bytes: []byte(redacted3)}
-		t.servedRedacted = true
 	}
 	if r.Error != "" {
 		return res, errors.New(r.Error)
@@ -1149,7 +1157,11 @@ type tapeParent struct {
 }
 
 func (tp tapeParent) Do(v parent.Verb) (parent.Result, error) {
-	return tp.t.call(tp.p, v, false, nil)
+	// A listing makes no origin: its flag is taken here, never left for
+	// the next verb.
+	res, err := tp.t.call(tp.p, v, false, nil)
+	tp.t.takeServedRedacted()
+	return res, err
 }
 
 // Machine seams: every clock reading, sleep, and uuid a run makes goes
@@ -1199,6 +1211,10 @@ func (m *machine) uuidPin() func() (string, error) {
 		})
 		if rerr != nil {
 			return "", rerr
+		}
+		if m.tape.replay && v == redacted3 {
+			// Recorded as *** (it held a secret's text).
+			m.prov = addProv(m.prov, provRedacted)
 		}
 		if err := m.tape.Err(); err != nil {
 			m.ctl = ctlHalt
