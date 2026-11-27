@@ -77,14 +77,14 @@ func main() {
 	}
 	stopHup := watchHangup(st, hupGrace, os.Exit)
 	got := lang.Run(src, g, p, lang.Options{State: st, Interrupts: sigInterrupts, Term: scriptTerm(args)})
-	fmt.Fprint(os.Stdout, got.Stdout)
-	fmt.Fprint(os.Stderr, got.Stderr)
+	emit(os.Stdout, got.Stdout)
+	emit(os.Stderr, got.Stderr)
 	// A recording set -o record started is written when the script ends,
 	// and after a hangup, which stops the run at its next statement.
 	fin := lang.FinishRecording(g, p, lang.Options{State: st, Prefix: got.Prefix})
 	stopHup()
-	fmt.Fprint(os.Stdout, fin.Stdout)
-	fmt.Fprint(os.Stderr, fin.Stderr)
+	emit(os.Stdout, fin.Stdout)
+	emit(os.Stderr, fin.Stderr)
 	if got.Status == 0 && fin.Status != 0 {
 		got.Status = fin.Status
 	}
@@ -170,6 +170,19 @@ func readSource(args []string) (string, error) {
 		return string(b), nil
 	}
 	return "", errors.New(usage)
+}
+
+// emit writes a run's output to f. Threats: a file body, a journal line,
+// or a process name that repaints the screen, sets the title, or makes
+// the terminal answer a query. When f is a terminal the text goes through
+// lang.TermText, at this last write; stdout and stderr are judged each on
+// its own. A pipe or a file receives the bytes unchanged, so this does
+// not protect whoever reads those.
+func emit(f *os.File, s string) {
+	if line.IsTerm(f) {
+		s = lang.TermText(s)
+	}
+	fmt.Fprint(f, s)
 }
 
 // scriptTerm is the terminal a script may ask (is_tty, term): only when

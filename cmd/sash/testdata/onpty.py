@@ -57,12 +57,19 @@ process = subprocess.Popen(
 piped = {"stdout": bytearray(), "stderr": bytearray()}
 
 
+master_open = True
+
+
 def pump(timeout):
-    fds = [master]
+    global master_open
+    fds = [master] if master_open else []
     for name in ("stdout", "stderr"):
         f = getattr(process, name)
         if f is not None and not f.closed:
             fds.append(f.fileno())
+    if not fds:
+        time.sleep(timeout)
+        return False
     ready = select.select(fds, [], [], timeout)[0]
     for fd in ready:
         try:
@@ -70,6 +77,9 @@ def pump(timeout):
         except OSError:
             data = b""
         if fd == master:
+            # A terminal whose session ended reads as closed from then on.
+            if not data:
+                master_open = False
             transcript.extend(data)
             continue
         for name in ("stdout", "stderr"):
@@ -114,12 +124,15 @@ try:
     while pump(0.05):
         pass
     report["code"] = process.returncode
-    restored = termios.tcgetattr(slave)
-    # Darwin sets the transient PENDIN flag when canonical mode is restored.
-    pending = getattr(termios, "PENDIN", 0)
-    restored[3] &= ~pending
-    original[3] &= ~pending
-    report["restored"] = restored == original
+    try:
+        restored = termios.tcgetattr(slave)
+        # Darwin sets the transient PENDIN flag when canonical mode is restored.
+        pending = getattr(termios, "PENDIN", 0)
+        restored[3] &= ~pending
+        original[3] &= ~pending
+        report["restored"] = restored == original
+    except termios.error:
+        report["restored"] = False
 except AssertionError as e:
     report["error"] = str(e)
 finally:

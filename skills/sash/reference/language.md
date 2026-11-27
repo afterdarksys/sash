@@ -310,6 +310,10 @@ Globs, braces, and history expand once, before the line or script runs, against 
 echo /srv/app/*.nomatch
 ```
 
+## Output to a terminal
+
+Byte output (`echo`, `cat`, a value printed) that goes to a terminal is escaped at the last write: a line feed and a tab pass, and every other control character, format character (bidi, zero-width), and unprintable rune prints as `<U+XXXX>`, a byte that is not UTF-8 as `<0xHH>`, and a literal `<U+` or `<0x` as `<U+003C>U+` or `<U+003C>0x`. Row cells and messages keep their own form (`\x1b`). A pipe, a file, a value, a `>` body, and a recording get the bytes unchanged, so what a script computes never depends on this. It keeps host data from driving the screen; it does not make that data trustworthy.
+
 ## Exit statuses
 
 | status | meaning |

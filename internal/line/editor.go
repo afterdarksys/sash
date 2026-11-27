@@ -1312,7 +1312,7 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 	// confirm like any file.write.
 	fin := e.FinishRecording()
 	if text := fin.Stdout + fin.Stderr; text != "" {
-		if err := writeAll(errOut, []byte(strings.ReplaceAll(text, "\n", "\r\n"))); err != nil {
+		if err := writeAll(errOut, []byte(strings.ReplaceAll(termBytes(errOut, text), "\n", "\r\n"))); err != nil {
 			status = 1
 		}
 	}
@@ -1555,13 +1555,32 @@ func writeSubmit(out, errOut io.Writer, before View, last lang.Outcome) error {
 	if err := writeAll(out, []byte(b.String())); err != nil {
 		return err
 	}
-	if err := writeAll(out, []byte(last.Stdout)); err != nil {
+	if err := writeAll(out, []byte(termBytes(out, last.Stdout))); err != nil {
 		return err
 	}
-	if err := writeAll(errOut, []byte(last.Stderr)); err != nil {
+	if err := writeAll(errOut, []byte(termBytes(errOut, last.Stderr))); err != nil {
 		return err
 	}
 	return nil
+}
+
+// isTermWriter reports a writer that is a terminal; tests replace it.
+var isTermWriter = func(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && IsTerm(f)
+}
+
+// termBytes is a line's output as it goes to w. Threats: host data (a
+// file body, a journal line, a process name) that repaints the screen,
+// sets the title, or makes the terminal answer a query. When w is a
+// terminal the text goes through lang.TermText at this last write; out
+// and errOut are judged each on its own. Anything else receives the bytes
+// unchanged.
+func termBytes(w io.Writer, s string) string {
+	if isTermWriter(w) {
+		return lang.TermText(s)
+	}
+	return s
 }
 
 func writeAll(f io.Writer, b []byte) error {

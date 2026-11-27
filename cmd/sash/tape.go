@@ -261,8 +261,8 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 		return 2
 	}
 	got := lang.Run(src, g, p, lang.Options{Tape: tape, Term: term})
-	fmt.Fprint(os.Stdout, got.Stdout)
-	fmt.Fprint(os.Stderr, got.Stderr)
+	emit(os.Stdout, got.Stdout)
+	emit(os.Stderr, got.Stderr)
 	if err := tape.Finish(); err != nil {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2
@@ -321,8 +321,8 @@ func replay(src, recPath string, g grant.Grant) int {
 		return 2
 	}
 	got := lang.Run(src, g, closedParent{}, lang.Options{Tape: tape})
-	fmt.Fprint(os.Stdout, got.Stdout)
-	fmt.Fprint(os.Stderr, got.Stderr)
+	emit(os.Stdout, got.Stdout)
+	emit(os.Stderr, got.Stderr)
 	if tape.Err() != nil {
 		return 2
 	}
