@@ -55,12 +55,16 @@ var secretCalls = map[string]string{
 	"values": "values($m)", "has": `has($m, "a")`, "get": `get($m, "a", 0)`, "merge": `merge($m, {"b": 2})`,
 	"sha256": "sha256($s)", "base64": "base64($s)", "hex": "hex($s)", "unbase64": "unbase64($b)",
 	"contains": `contains($s, "b")`,
+	"unhex":    "unhex(hex($s))", "radix": "radix($n, 2)", "band": "band($n, 1)", "bor": "bor($n, 4)",
+	"bxor": "bxor($n, 1)", "bnot": "bnot($n)", "shl": "shl($n, 1)", "shr": "shr($n, 1)", "popcount": "popcount($n)",
+	"is_ip": "is_ip($a)", "ip": "ip($a)", "ip_version": "ip_version($a)", "ip_in": `ip_in($a, "10.0.0.0/8")`,
+	"cidr": `cidr($a + "/8")`, "ip_class": "ip_class($a)", "ip_next": "ip_next($a)", "ip_prev": "ip_prev($a)",
 }
 
 // Every expression function returns a secret for a secret argument, and
 // used as an if condition the line exits 2: no function is an oracle.
 func TestEveryFunctionTaints(t *testing.T) {
-	const setup = "declare -s s = abc\ndeclare -s n = [ 3 ]\ndeclare -s l = [ [1, 2, 3] ]\ndeclare -s m = [ {\"a\": 1} ]\ndeclare -s b = YWJj\n"
+	const setup = "declare -s s = abc\ndeclare -s n = [ 3 ]\ndeclare -s l = [ [1, 2, 3] ]\ndeclare -s m = [ {\"a\": 1} ]\ndeclare -s b = YWJj\ndeclare -s a = [ \"10.0.0.1\" ]\n"
 	for name := range exprFuncs {
 		if name == "uuid" || name == "is_tty" {
 			continue
@@ -70,10 +74,10 @@ func TestEveryFunctionTaints(t *testing.T) {
 			t.Errorf("%s has no secret-taint case", name)
 			continue
 		}
-		for _, arg := range []string{"$s", "$n", "$l", "$m", "$b"} {
+		for _, arg := range []string{"$s", "$n", "$l", "$m", "$b", "$a"} {
 			if strings.Contains(call, arg) {
 				// The plain call works, so a failure below is the taint.
-				plain := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(call, "$s", `"abc"`), "$n", "3"), "$l", "[1, 2, 3]"), "$m", `{"a": 1}`), "$b", `"YWJj"`)
+				plain := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(call, "$s", `"abc"`), "$n", "3"), "$l", "[1, 2, 3]"), "$m", `{"a": 1}`), "$b", `"YWJj"`), "$a", `"10.0.0.1"`)
 				if out := Run("let r = [ "+plain+" ]", grant.Grant{}, &countParent{}, Options{}); out.Status != 0 {
 					t.Errorf("%s plain: %+v", plain, out)
 				}
@@ -81,7 +85,7 @@ func TestEveryFunctionTaints(t *testing.T) {
 		}
 		st := NewState()
 		out := Run(setup+"let r = [ "+call+" ]\necho [ $r ]", grant.Grant{}, &countParent{}, Options{State: st})
-		if out.Status != 0 || out.Stdout != redacted+"\n" || st.SecretCount() != 6 {
+		if out.Status != 0 || out.Stdout != redacted+"\n" || st.SecretCount() != 7 {
 			t.Errorf("%s: result not secret: %+v (secrets %d)", call, out, st.SecretCount())
 		}
 		out = Run(setup+"if [ "+call+" ] { echo yes } else { echo no }", grant.Grant{}, &countParent{}, Options{})

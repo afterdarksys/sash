@@ -145,7 +145,7 @@ template_file /srv/app/db.yaml /srv/app/db.tpl /srv/app/db.conf
 template_file /srv/app/db.yaml /srv/app/db.tpl /srv/app/db.conf
 ```
 
-A secret render's `--check` and plan diffs print `files differ (a secret is in the render or the file; not listed)`. An agent too old for the mode is exit 2 `agent too old for file.write mode`; sash never retries without the mode. Known limits: an encoding of a secret (base64, hex) is not its text and is written with the default mode, and a secret bound after the write cannot reach back to it (lint `secret-after-write`).
+A secret render's `--check` and plan diffs print `files differ (a secret is in the render or the file; not listed)`. An agent too old for the mode is exit 2 `agent too old for file.write mode`; sash never retries without the mode. Known limits: an encoding of a secret (base64, hex, radix) is not its text and is written with the default mode, and a secret bound after the write cannot reach back to it (lint `secret-after-write`).
 
 ```sash
 template_file /srv/app/app.yaml /srv/app/app.tpl /srv/app/app.conf --check

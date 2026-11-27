@@ -117,11 +117,46 @@ Functions, pure and in process (`builtin` lists them; a name not here is exit 2 
 | --- | --- |
 | text | `len` `upper` `lower` `trim` `split(s, sep)` `join(list, sep)` `replace(s, old, new)` `starts(s, p)` `ends(s, p)` `pad(s, n)` `repeat(s, n)` `contains(s, sub)` |
 | regex (RE2, pattern up to 1 KiB) | `match(s, re)` `find(s, re)` `groups(s, re)` `sub(s, re, repl)` |
-| convert | `int` `float` `str` `bool` `type` |
+| convert | `int` `int(s, base)` `float` `str` `bool` `type` |
 | list | `len` `sum` `min` `max` `avg` `sort` `uniq` `reverse` `first(l, n)` `last(l, n)` `range(a, b)` `contains(list, x)` |
 | map | `keys` `values` `has(m, k)` `get(m, k, default)` `merge(a, b)` |
-| encode | `sha256(s)` `base64(s)` `unbase64(s)` `hex(s)` `uuid()` |
+| encode | `sha256(s)` `base64(s)` `unbase64(s)` `hex(s)` `unhex(s)` `uuid()` |
+| number | `radix(n, base)` `band(a, b)` `bor(a, b)` `bxor(a, b)` `bnot(a)` `shl(a, n)` `shr(a, n)` `popcount(a)` |
+| net | `is_ip(s)` `ip(s)` `ip_version(s)` `ip_in(addr, prefix)` `cidr(s)` `ip_class(s)` `ip_next(s)` `ip_prev(s)` |
 | terminal | `is_tty()` |
+
+Number bases: `int(x)` with one argument reads only a decimal number, so `int("0x10")` is an error. `int(s, base)` reads `s` in base 2, 8, 10 or 16 (any other base is exit 2 `type int base`): an optional sign, then an optional prefix that must match the base (`0x` for 16, `0b` for 2, `0o` for 8, either case), then digits. Only the base's own prefix is a prefix: in base 16, `0b101` is hex digits, so `int("0b101", 16)` is 45313. `_` is refused, and so is a string that does not parse (`type int(text)`); past int64 is `type expr overflow`. `radix(n, base)` writes an int in base 2 to 36, lowercase, no prefix, `-` for a negative: `radix(255, 16)` is `"ff"`. `hex(s)` stays a string's bytes, so `hex(255)` is a type error; `unhex(s)` is its inverse, an even number of hex digits in either case (anything else is `type unhex`).
+
+Bitwise functions work on int64; a float is exit 2 `type <name>(float)`, never truncated. `shl` and `shr` take a count from 0 to 63 (anything else is `type shift`); `shr` is arithmetic, and `shl` has no overflow check: a bit shifted out is gone. `popcount` counts the set bits of the 64-bit two's complement, so `popcount(-1)` is 64.
+
+Addresses are text, read by Go's `net/netip`: dotted v4 with no leading zeros (`010.1.1.1` is refused, never read as octal), v6 in any RFC 4291 form, and v4-mapped v6 (`::ffff:1.2.3.4`). A zone (`fe80::1%eth0`, or any `%`) is refused everywhere (`type ip zone`). An address that does not parse is `type ip`, a prefix `type cidr`, and an input over 1 KiB `type <name>(text)`.
+
+- `is_ip(s)` is `true` or `false` for any value and never fails, so `where` over host data can filter with it.
+- `ip(s)` is the canonical text (v6 compressed lowercase; a mapped address stays mapped). `ip_version(s)` is `4` or `6` (a mapped address is `6`).
+- `ip_in(addr, prefix)` is `true` when the address is in the prefix as written; or, for a v4 address and a v6 prefix, when its mapped form `::ffff:a.b.c.d` is; or when the unmapped address is in the unmapped prefix (a v4-mapped prefix of /96 or longer unmaps to the v4 prefix it stands for). So containment never shrinks as a prefix widens: `127.0.0.1` and `::ffff:127.0.0.1` are each in `127.0.0.0/8`, `::ffff:0:0/96` and `::/0`, and neither is in `::1/128` or `2001:db8::/32`. A v6 address that is not mapped is in no v4 prefix. A mismatch is `false`, not an error.
+- `cidr(s)` is a map: `network` (masked, so `10.1.2.3/8` gives `10.0.0.0/8`), `prefix`, `bits` (32 or 128), `first`, `last`, and `size` (the address count, or `null` past int64, as for `::/0`).
+- `ip_class(s)` is the first of `unspecified`, `loopback`, `private` (RFC 1918 and fc00::/7), `link_local` (unicast), `multicast`, `reserved` that holds for the unmapped address, else `global`. `reserved` is a fixed table of special-purpose ranges: v4 0.0.0.0/8 (but 0.0.0.0), 100.64.0.0/10, 192.0.0.0/24, 192.0.2.0/24, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 240.0.0.0/4 (with 255.255.255.255); v6 ::/96 (but `::` and `::1`), 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/23, 2001:db8::/32, 2002::/16, fec0::/10, 3fff::/20. `global` means only none of the above, so it may be publicly routable; it is not a guarantee that the address is reachable or assigned.
+- `ip_next(s)` and `ip_prev(s)` step one address; past the end of the family is `type ip range`, and so is a mapped address stepping out of `::ffff:0:0/96` (`ip_next("::ffff:255.255.255.255")`).
+
+A result computed from a secret is a secret, and one computed from a `term prompt` answer still selects no subcommand. Known limit, as for `hex` and `base64`: an encoding of a secret made with `radix` or `hex` is not the secret's text for the file-mode and recording checks.
+
+```sash
+# expect: host 0
+# stdout: 255 ff -5 Hi 6 -4 8
+echo [ int("0xff", 16) ] [ radix(255, 16) ] [ int("-0b101", 2) ] [ unhex("4869") ] [ bxor(12, 10) ] [ shr(-16, 2) ] [ popcount(255) ]
+```
+
+```sash
+# expect: host 0
+# stdout: true 2001:db8::1 true 10.255.255.255 private 10.0.1.0
+let c = [ cidr("10.1.2.3/8") ]
+echo [ is_ip("10.0.0.1") ] [ ip("2001:DB8::1") ] [ ip_in("::ffff:10.0.0.1", "10.0.0.0/8") ] $c.last [ ip_class("192.168.1.1") ] [ ip_next("10.0.0.255") ]
+```
+
+```sash
+# expect: host 2 type ip zone
+echo [ ip("fe80::1%eth0") ]
+```
 
 `is_tty()` takes no argument and is `true` only when a person can be asked: sash's stdin and stderr are both terminals and the script is not on stdin (`sash -c`, `sash file`, or the prompt). `sash < script`, a pipe, a job, and a replay are `false`. It is not pure like the others: it reads the terminal, and a recording pins it.
 

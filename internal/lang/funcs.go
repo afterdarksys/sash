@@ -50,7 +50,7 @@ func init() {
 		"find":    {2, 2, fnFind},
 		"groups":  {2, 2, fnGroups},
 		"sub":     {3, 3, fnSub},
-		"int":     {1, 1, fnInt},
+		"int":     {1, 2, fnInt},
 		"float":   {1, 1, fnFloat},
 		"str": {1, 1, func(a []any, c *evalCtx) (any, error) {
 			if err := charge(c, dataSize(a[0], 0)); err != nil {
@@ -90,7 +90,24 @@ func init() {
 			}
 			return charged(c, string(b))
 		}},
-		"uuid": {0, 0, fnUUID},
+		"unhex":      {1, 1, fnUnhex},
+		"radix":      {2, 2, fnRadix},
+		"band":       {2, 2, bitFn("band", func(x []int64) (int64, error) { return x[0] & x[1], nil })},
+		"bor":        {2, 2, bitFn("bor", func(x []int64) (int64, error) { return x[0] | x[1], nil })},
+		"bxor":       {2, 2, bitFn("bxor", func(x []int64) (int64, error) { return x[0] ^ x[1], nil })},
+		"bnot":       {1, 1, bitFn("bnot", func(x []int64) (int64, error) { return ^x[0], nil })},
+		"shl":        {2, 2, bitFn("shl", fnShl)},
+		"shr":        {2, 2, bitFn("shr", fnShr)},
+		"popcount":   {1, 1, bitFn("popcount", fnPopcount)},
+		"is_ip":      {1, 1, fnIsIP},
+		"ip":         {1, 1, addrFn("ip", fnIP)},
+		"ip_version": {1, 1, addrFn("ip_version", fnIPVersion)},
+		"ip_in":      {2, 2, fnIPIn},
+		"cidr":       {1, 1, fnCIDR},
+		"ip_class":   {1, 1, addrFn("ip_class", fnIPClass)},
+		"ip_next":    {1, 1, addrFn("ip_next", fnIPNext)},
+		"ip_prev":    {1, 1, addrFn("ip_prev", fnIPPrev)},
+		"uuid":       {0, 0, fnUUID},
 		// is_tty() is true when a terminal can be asked (term.go).
 		"is_tty": {0, 0, func(_ []any, c *evalCtx) (any, error) {
 			if c == nil || c.tty == nil {
@@ -414,7 +431,11 @@ func subBound(re *regexp.Regexp, s, repl string) int {
 	return bound
 }
 
+// fnInt is int(x), which reads only a decimal number, or int(s, base).
 func fnInt(a []any, _ *evalCtx) (any, error) {
+	if len(a) == 2 {
+		return fnIntBase(a)
+	}
 	switch x := a[0].(type) {
 	case bool:
 		if x {
