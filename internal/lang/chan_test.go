@@ -597,6 +597,38 @@ func TestChanReplayRedactedTamper(t *testing.T) {
 		t.Errorf("swapped and redacted: %v %+v", err, got)
 	}
 
+	// A *** in a value, from host data or the script, is not a response
+	// replay served redacted: the swap and the redaction still diverge.
+	for _, sc := range []struct{ src, file string }{
+		{"par 3 chan c(1) { branch { let s = (cat /srv/ops/s | lines); send c [ $s[0].line ]; for i in [ range(1, 10) ] { send c $i } }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }", "masked: ***\n"},
+		{"par 3 chan c(1) { branch { send c [ \"***\" ]; for i in [ range(1, 10) ] { send c $i } }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }", ""},
+		{"par 3 chan c(1) { for i in [ range(1, 10) ] { send c \"*** $i\" }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }", ""},
+	} {
+		rec := recordFiles(t, sc.src, map[string]string{"/srv/ops/s": sc.file})
+		if _, err := replay(t, rec, sc.src); err != nil {
+			t.Fatalf("%q: honest replay %v", sc.src, err)
+		}
+		lines := recLines(rec)
+		evs := chanEvents(t, lines)
+		c := append([][]byte(nil), lines...)
+		swapped := false
+		for k := 0; k < len(evs) && !swapped; k++ {
+			a := chanEv(t, c[evs[k]])
+			for j := k + 1; j < len(evs) && a.Op == "recv"; j++ {
+				if b := chanEv(t, c[evs[j]]); b.Op == "recv" && b.Branch != a.Branch {
+					c[evs[k]] = edit(t, c[evs[k]], func(m map[string]any) { m["cseq"] = b.CSeq })
+					c[evs[j]] = edit(t, c[evs[j]], func(m map[string]any) { m["cseq"] = a.CSeq })
+					swapped = true
+					break
+				}
+			}
+		}
+		redactAll(c, evs)
+		if got, err := replay(t, rechain(t, c), sc.src); !swapped || diverged(err) < 0 {
+			t.Errorf("*** %q: %v %+v", sc.src, err, got)
+		}
+	}
+
 	// Honest recordings still replay: a value made from a response the
 	// recorder redacted holds *** on replay, not the secret's text, with
 	// the secret bound before the par or after it.
@@ -609,6 +641,20 @@ func TestChanReplayRedactedTamper(t *testing.T) {
 		if got, err := replay(t, rec, src); err != nil || got.Status != 0 {
 			t.Errorf("%q: %v %+v", src, err, got)
 		}
+	}
+	// The same with the redacted response's origin lost to an overflow:
+	// the branch has had a redacted response, so the overflow may hide it.
+	files := map[string]string{"/srv/ops/u": "hunter2-SECRET\n"}
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 17; i++ {
+		files[fmt.Sprintf("/srv/ops/f%d", i)] = fmt.Sprintf("f%d\n", i)
+		fmt.Fprintf(&b, "let c%d = (cat /srv/ops/f%d | lines); ", i, i)
+		sum += fmt.Sprintf("$c%d[0].line + ", i)
+	}
+	src = "declare -s tok = \"hunter2-SECRET\"\npar 2 chan c(1) { branch { " + b.String() + "let l = (cat /srv/ops/u | lines); send c [ " + sum + "$l[0].line ] }; for j in recv c { echo got } }"
+	if got, err := replay(t, recordFiles(t, src, files), src); err != nil || got.Status != 0 {
+		t.Errorf("overflow: %v %+v", err, got)
 	}
 	// Two 8 MB values from a redacted response fill the keep budget on
 	// record, so the plain value after them is redacted for the budget
@@ -625,6 +671,56 @@ func TestChanReplayRedactedTamper(t *testing.T) {
 	}
 	if got, err := replay(t, rec, src); n != 3 || err != nil || got.Status != 0 {
 		t.Errorf("budget: %d redacted sends, %v %+v", n, err, got)
+	}
+}
+
+// A send's keep total is checked: missing, on another op, or past the
+// budget is replay_bad_format; one that goes down or does not follow the
+// value's cost is replay_diverged.
+func TestChanReplayKeepTotal(t *testing.T) {
+	rec, _ := record(t, chanRecSrc)
+	lines := recLines(rec)
+	evs := chanEvents(t, lines)
+	var sends, recvs []int
+	for _, i := range evs {
+		switch chanEv(t, lines[i]).Op {
+		case "send":
+			sends = append(sends, i)
+		case "recv":
+			recvs = append(recvs, i)
+		}
+	}
+	try := func(i int, f func(map[string]any)) error {
+		c := append([][]byte(nil), lines...)
+		c[i] = edit(t, c[i], f)
+		_, err := replay(t, rechain(t, c), chanRecSrc)
+		return err
+	}
+	for name, err := range map[string]error{
+		"missing":     try(sends[0], func(m map[string]any) { delete(m, "keep") }),
+		"on a recv":   try(recvs[0], func(m map[string]any) { m["keep"] = 0 }),
+		"past budget": try(sends[3], func(m map[string]any) { m["keep"] = chanKeepMax + 1 }),
+		"negative":    try(sends[3], func(m map[string]any) { m["keep"] = -1 }),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "replay_bad_format") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, err := range map[string]error{
+		"goes down":    try(sends[5], func(m map[string]any) { m["keep"] = 0 }),
+		"off by one":   try(sends[5], func(m map[string]any) { m["keep"] = m["keep"].(float64) + 1 }),
+		"not followed": try(sends[0], func(m map[string]any) { m["keep"] = 0 }),
+		// The last send claims the budget was full and is redacted: it
+		// was not, so that is not why it was redacted.
+		"claims the budget": try(sends[len(sends)-1], func(m map[string]any) {
+			m["keep"] = chanEv(t, lines[sends[len(sends)-2]]).Keep
+			delete(m, "hash")
+			m["redacted"] = true
+		}),
+	} {
+		if diverged(err) < 0 {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 

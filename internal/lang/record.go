@@ -129,7 +129,11 @@ type recEvent struct {
 	CSeq     int    `json:"cseq,omitempty"`
 	Hash     string `json:"hash,omitempty"`
 	Redacted bool   `json:"redacted,omitempty"`
-	Prev     string `json:"prev"`
+	// Keep, on a send, is the tape's keep budget total after it
+	// (chanKeep): replay follows it to tell a value redacted for the
+	// budget alone.
+	Keep *int   `json:"keep,omitempty"`
+	Prev string `json:"prev"`
 }
 
 // pending is one recorded event held in memory until Finish, unredacted,
@@ -156,6 +160,7 @@ type pending struct {
 	ch     string
 	cseq   int
 	leaves []string
+	keep   int
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -171,6 +176,17 @@ type Tape struct {
 	branch string // "" at top level
 	bseq   int    // events this branch has recorded
 	at     int
+	// servedRedacted (replay): the last call was answered from a
+	// response the recording holds redacted (takeServedRedacted).
+	servedRedacted bool
+}
+
+// takeServedRedacted reports, once, whether the last call was answered
+// from a redacted response. Only this view's machine uses it.
+func (t *Tape) takeServedRedacted() bool {
+	r := t.servedRedacted
+	t.servedRedacted = false
+	return r
 }
 
 type tapeCore struct {
@@ -356,7 +372,7 @@ func (t *Tape) loadEvents(sc *bufio.Scanner, prevp *string, totalp *int) error {
 		if ev.Kind == "truncated" {
 			t.truncAt = ev.Seq
 		}
-		chanFields := ev.Chan != "" || ev.Op != "" || ev.CSeq != 0 || ev.Hash != "" || ev.Redacted
+		chanFields := ev.Chan != "" || ev.Op != "" || ev.CSeq != 0 || ev.Hash != "" || ev.Redacted || ev.Keep != nil
 		if (ev.Kind == "chan") != chanFields || (ev.Kind == "chan" && !chanEventOK(ev)) {
 			return &TapeError{"replay_bad_format", len(t.events) + 1}
 		}
@@ -379,10 +395,12 @@ func chanEventOK(ev recEvent) bool {
 		return false
 	}
 	switch ev.Op {
-	case "send", "recv":
-		return (ev.Hash != "") != ev.Redacted
+	case "send":
+		return (ev.Hash != "") != ev.Redacted && ev.Keep != nil && *ev.Keep >= 0 && *ev.Keep <= chanKeepMax
+	case "recv":
+		return (ev.Hash != "") != ev.Redacted && ev.Keep == nil
 	case "close":
-		return ev.Hash == "" && !ev.Redacted
+		return ev.Hash == "" && !ev.Redacted && ev.Keep == nil
 	}
 	return false
 }
@@ -393,25 +411,45 @@ func chanEventOK(ev recEvent) bool {
 // closed.
 const chanKeepMax = 16 << 20
 
-// chanKeep charges n bytes of a value's leaves to the tape's keep budget,
-// or reports that they do not fit. Record and replay call it in the same
-// order (cseq), so they decide the same.
-func (t *Tape) chanKeep(n int) bool {
+// chanKeep charges n bytes of a value's leaves to the tape's keep budget
+// (record), or reports that they do not fit; total is the budget's total
+// after it, written on the send event.
+func (t *Tape) chanKeep(n int) (kept bool, total int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.chanKept+n > chanKeepMax {
-		return false
+		return false, t.chanKept
 	}
 	t.chanKept += n
-	return true
+	return true, t.chanKept
 }
 
-// chanKeepEnd spends the rest of the keep budget (replay, at a value
-// whose recorded size is unknown).
-func (t *Tape) chanKeepEnd() {
+// chanKeepReplay follows the recorded total of a send (replay). For a
+// value replay sees as recorded, n is its cost: the total grew by n
+// (kept), or stayed where n does not fit (redacted for the budget). For
+// a stars value its size on record is unknown, so the recorded increment
+// is taken, within the budget. ok is false for a total that went down,
+// past the budget, or that does not follow; the run then diverges.
+func (t *Tape) chanKeepReplay(total, n int, stars bool) (kept, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.chanKept = chanKeepMax
+	prev := t.chanKept
+	if total < prev || total > chanKeepMax {
+		return false, false
+	}
+	d := total - prev
+	switch {
+	case stars:
+		kept = d > 0
+	case d == n:
+		kept = true
+	case d == 0 && prev+n > chanKeepMax:
+		kept = false
+	default:
+		return false, false
+	}
+	t.chanKept = total
+	return kept, true
 }
 
 // chanPending notes, on replay, a redacted chan event whose value was not
@@ -431,15 +469,16 @@ type chanPend struct {
 
 // chanEvent records a completed channel op of this branch (record mode):
 // the value's hash, and its leaves unless it is already secret.
-func (t *Tape) chanEvent(op, name string, cseq int, hash string, leaves []string, secret bool) {
+func (t *Tape) chanEvent(op, name string, cseq int, hash string, leaves []string, secret bool, total int) {
 	if secret {
 		leaves = nil
 	}
-	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: hash, leaves: leaves, redact: secret})
+	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: hash, leaves: leaves, redact: secret, keep: total})
 }
 
 // chanScript is par p's chan events in cseq order (replay), or the seq of
-// the first event out of place when the cseqs are not exactly 1 to n.
+// the first event out of place when the cseqs are not exactly 1 to n or
+// a send's keep total goes down.
 func (t *Tape) chanScript(p int) ([]recEvent, int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -451,9 +490,17 @@ func (t *Tape) chanScript(p int) ([]recEvent, int) {
 		}
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].CSeq < out[b].CSeq })
+	keep := 0
 	for k, ev := range out {
 		if ev.CSeq != k+1 {
 			return nil, ev.Seq
+		}
+		if ev.Op == "send" {
+			// The keep total never goes down.
+			if *ev.Keep < keep {
+				return nil, ev.Seq
+			}
+			keep = *ev.Keep
 		}
 	}
 	return out, 0
@@ -559,6 +606,10 @@ func (t *Tape) Finish() error {
 		}
 		if p.kind == "chan" {
 			ev.Chan, ev.Op, ev.CSeq = p.ch, p.op, p.cseq
+			if p.op == "send" {
+				keep := p.keep
+				ev.Keep = &keep
+			}
 			if p.op != "close" {
 				// The hash of a value holding a secret's text could be
 				// guessed offline: such a value keeps no hash. Its leaves
@@ -987,6 +1038,7 @@ func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []stri
 	}
 	if r.Redacted {
 		res = parent.Result{Kind: parent.KindBytes, Exit: r.Exit, Bytes: []byte(redacted3)}
+		t.servedRedacted = true
 	}
 	if r.Error != "" {
 		return res, errors.New(r.Error)

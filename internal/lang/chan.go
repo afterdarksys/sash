@@ -30,7 +30,6 @@ package lang
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strconv"
@@ -244,9 +243,9 @@ type chanItem struct {
 	kept   bool
 	secret bool
 	// stars (replay) is a value that may come from a response the
-	// recorder redacted (an origin with the hash of ***, or a *** in a
-	// leaf): replay answers one with *** and no secret text, so the
-	// value no longer shows what made the recorder redact it.
+	// recording holds redacted: replay answers one with *** and no
+	// secret text, so the value no longer shows what made the recorder
+	// redact it, nor its size on record.
 	stars bool
 }
 
@@ -521,27 +520,23 @@ func (t *chanTable) turn(i int, op, c string) bool {
 // the par's order and the branch's own stream, its hash checked. A late
 // close may match out of order. false is a divergence. Under t.mu.
 //
-// A send first charges its leaves to the tape's keep budget, in cseq
-// order on record and on replay alike, so both decide the same: a value
-// past it keeps no leaves and is recorded redacted.
+// A send charges its leaves to the tape's keep budget, in cseq order, and
+// its event carries the budget's running total: a value past it keeps no
+// leaves and is recorded redacted. Replay follows the recorded totals
+// (chanKeepReplay).
 func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 	if t.tapes == nil {
 		return true
 	}
-	if op == "send" {
-		if it.stars {
-			// Its size on record is unknown here (*** stands for the
-			// response), so the budget can no longer be followed: every
-			// later value is taken as past it, as this one is.
-			t.tapes[i].chanKeepEnd()
-		}
-		if it.kept = t.tapes[i].chanKeep(it.keep); !it.kept {
-			it.leaves = nil
-		}
-	}
 	if !t.replay {
+		total := -1
+		if op == "send" {
+			if it.kept, total = t.tapes[i].chanKeep(it.keep); !it.kept {
+				it.leaves = nil
+			}
+		}
 		t.cseq++
-		t.tapes[i].chanEvent(op, c, t.cseq, it.hash, it.leaves, it.secret || !it.kept)
+		t.tapes[i].chanEvent(op, c, t.cseq, it.hash, it.leaves, it.secret || !it.kept, total)
 		return true
 	}
 	if t.div {
@@ -567,6 +562,18 @@ func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 	t.used[k] = true
 	rec := t.script[k]
 	ev, ok := t.tapes[i].next("chan")
+	if ok && ev.Seq == rec.Seq && op == "send" {
+		kept, good := t.tapes[i].chanKeepReplay(*rec.Keep, it.keep, it.stars)
+		if !good {
+			t.tapes[i].diverge(rec.Seq)
+			t.div = true
+			t.cancel()
+			return false
+		}
+		if it.kept = kept; !kept {
+			it.leaves = nil
+		}
+	}
 	switch {
 	case !ok:
 		t.div = true
@@ -578,11 +585,11 @@ func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 		return true
 	case rec.Redacted:
 		// A redacted event matches only a value that is secret: known
-		// at send, past the keep budget (redacted for that alone, and
-		// decided the same way here), made from a response the recorder
-		// redacted (***, its text gone), or else holding the text of a
-		// secret bound later, which Finish checks against every secret
-		// the replay bound. Anything else there is replay_diverged.
+		// at send, past the keep budget (the recorded total says so and
+		// replay checks it), made from a response replay served as
+		// redacted (its text gone), or else holding the text of a secret
+		// bound later, which Finish checks against every secret the
+		// replay bound. Anything else there is replay_diverged.
 		if !it.secret && it.kept && !it.stars {
 			t.tapes[i].chanPending(rec.Seq, it.leaves)
 		}
@@ -774,12 +781,12 @@ func (m *machine) runSend(s *Send) (int, bool) {
 			it.secret = it.secret || o.secret
 		}
 		if t.replay {
-			star := sha256.Sum256([]byte(redacted3))
+			// Only what replay knows: an origin it answered with a
+			// response the recording holds redacted, or an overflow in a
+			// branch that has had one (the origin may be the lost one).
+			it.stars = it.over && m.st.replayRedacted
 			for _, o := range it.orig {
-				it.stars = it.stars || (!o.o.nohash && o.o.hash == star)
-			}
-			for _, l := range it.leaves {
-				it.stars = it.stars || strings.Contains(l, redacted3)
+				it.stars = it.stars || o.o.redacted
 			}
 		}
 	}

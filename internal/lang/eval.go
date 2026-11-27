@@ -519,8 +519,10 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 	if m.pb != nil {
 		m.pb.begin(v)
 	}
+	redacted := false
 	if m.tape != nil {
 		res, err = m.tapeDo(v)
+		redacted = m.tape.takeServedRedacted()
 	} else {
 		res, err = m.p.Do(v)
 	}
@@ -529,7 +531,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		m.pb.end(v, res, err)
 	}
 	if err == nil {
-		m.noteOrigin(v, res)
+		m.noteOrigin(v, res, redacted)
 	}
 	return res, err
 }

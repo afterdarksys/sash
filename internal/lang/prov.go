@@ -53,6 +53,9 @@ type origin struct {
 	hash   [32]byte
 	// nohash is an origin with no response to hash: a term prompt answer.
 	nohash bool
+	// redacted (replay) is a response replay answered from an event the
+	// recording holds redacted: its text is gone (chan.go stars).
+	redacted bool
 }
 
 // unionProv merges two sorted origin lists, keeping at most provPerValue
@@ -272,7 +275,7 @@ func (m *machine) provLine() int { return sort.SearchInts(m.nl, m.at) + 1 }
 
 // noteOrigin records a door call that answered: its key, target, place,
 // and response hash.
-func (m *machine) noteOrigin(v parent.Verb, res parent.Result) {
+func (m *machine) noteOrigin(v parent.Verb, res parent.Result, redacted bool) {
 	target := v.Path
 	if target == "" && len(v.Argv) > 2 && (v.Argv[0] == "unit" || v.Argv[0] == "package" || v.Argv[0] == "sysctl") {
 		target = v.Argv[2]
@@ -288,7 +291,10 @@ func (m *machine) noteOrigin(v parent.Verb, res parent.Result) {
 	if target != "" {
 		target = needsCell(target)
 	}
-	id := m.st.addOrigin(origin{src: src, line: m.provLine(), key: v.Key, target: target, hash: h})
+	id := m.st.addOrigin(origin{src: src, line: m.provLine(), key: v.Key, target: target, hash: h, redacted: redacted})
+	if redacted {
+		m.st.replayRedacted = true
+	}
 	// A response holding a secret already bound is secret from the start;
 	// the bytes are not kept, so this is checked here, once.
 	if id != provOverflow && (m.st.secretHash[h] || m.st.respHoldsSecret(res)) {
