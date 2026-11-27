@@ -260,6 +260,9 @@ type chanTable struct {
 	slots chan struct{}
 }
 
+// chanTableHook, when set (tests), is given each new table.
+var chanTableHook func(*chanTable)
+
 func newChanTable(ctx context.Context, cancel context.CancelFunc, s *Par, bodies []*Program, eff int) *chanTable {
 	t := &chanTable{ctx: ctx, cancel: cancel, chans: map[string]*pchan{}, running: len(bodies), holder: -1}
 	t.cond = sync.NewCond(&t.mu)
@@ -292,6 +295,9 @@ func newChanTable(ctx context.Context, cancel context.CancelFunc, s *Par, bodies
 		}
 	} else {
 		t.slots = make(chan struct{}, eff)
+	}
+	if chanTableHook != nil {
+		chanTableHook(t)
 	}
 	return t
 }

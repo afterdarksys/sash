@@ -226,10 +226,26 @@ func TestChanInterruptWakesWaiters(t *testing.T) {
 	c, done := muxClient(t, a)
 	intr := make(chan struct{}, 1)
 	opt := Options{Interrupts: func() (<-chan struct{}, func()) { return intr, func() {} }}
+	var ct *chanTable
+	var hookMu sync.Mutex
+	chanTableHook = func(t *chanTable) { hookMu.Lock(); ct = t; hookMu.Unlock() }
+	defer func() { chanTableHook = nil }()
+	parked := func() int {
+		hookMu.Lock()
+		defer hookMu.Unlock()
+		if ct == nil {
+			return -1
+		}
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		return len(ct.waiters)
+	}
 	go func() {
-		waitFor(t, "read running", func() bool { return a.Stats().Running == 1 })
+		waitFor(t, "read running", func() bool { return a.Stats().Running == 1 && parked() == 2 })
 		intr <- struct{}{}
-		time.Sleep(20 * time.Millisecond)
+		// The first cancel wakes every waiter while the door call still
+		// runs: nothing stays parked on a channel.
+		waitFor(t, "waiters woken", func() bool { return parked() == 0 })
 		close(release)
 	}()
 	src := "par 3 chan c(1) { branch { cat /srv/ops/a; send c 1 }; for x in recv c { echo $x }; for x in recv c { echo $x } }"
@@ -276,6 +292,15 @@ par 3 chan c(1) {
 			t.Fatalf("%+v %q", out, asked)
 		}
 		if got := strings.Join(asked, "\n"); i == 0 {
+			// Lowest-numbered runnable branch first, switching only when
+			// it blocks on a channel or ends.
+			var want []string
+			for _, u := range []string{"a", "b", "w1-a", "c", "w1-b", "d", "w1-c", "w1-d"} {
+				want = append(want, "confirm unit.restart unit restart "+u+"? [y + Enter / N]")
+			}
+			if got != strings.Join(want, "\n") {
+				t.Fatalf("order %q", asked)
+			}
 			first = got
 		} else if got != first {
 			t.Fatalf("run %d: %q\nfirst: %q", i, got, first)
