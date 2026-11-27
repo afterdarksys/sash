@@ -146,6 +146,8 @@ func TestChanValueRefusals(t *testing.T) {
 	big := strings.Repeat("a", 3<<20)
 	for src, want := range map[string]string{
 		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c $b; for x in recv c { echo $x } }":                                                   "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ $b ]; for x in recv c { echo $x } }":                                               "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c \"x$b\"; for x in recv c { echo $x } }":                                              "type send: bytes cannot cross a channel; lift with lines or rows",
 		"let s = (cat /srv/ops/g | lines)\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }":                                           "send c: value over 8 MiB",
 		"let s = [ repeat(\"a\", 3145728) ]\npar 2 chan c(64) { for i in [ range(1, 20) ] { send c $s }; for x in recv c { echo [ len($x) ] } }": "send c: buffers over 32 MiB",
 	} {
@@ -154,6 +156,21 @@ func TestChanValueRefusals(t *testing.T) {
 		if out.Status != exitType || !strings.Contains(out.Stderr, want) {
 			t.Errorf("%q: %d %q", src[:30], out.Status, firstLine(out.Stderr))
 		}
+	}
+}
+
+// A row set sent as a lone $r arrives as rows, with its provenance: the
+// receiver's echo $x fails as echo $r does, for walks its rows, and origin
+// names the sender's read.
+func TestChanRowsKeepKind(t *testing.T) {
+	alone := Run("let r = (ps)\necho $r", recGrant(), &hostParent{}, Options{})
+	out := Run("let r = (ps)\npar 2 chan c(1) { send c $r; for x in recv c { echo $x } }", recGrant(), &hostParent{}, Options{})
+	if alone.Status != exitType || alone.Stderr != "type value\n" || out.Status != exitType || out.Stdout != "" || !strings.HasPrefix(out.Stderr, alone.Stderr) {
+		t.Fatalf("echo: alone %+v, received %+v", alone, out)
+	}
+	out = Run("let r = (ps)\npar 2 chan c(1) { send c $r; for x in recv c { for w in $x { echo $w.user }; origin x |> select key } }", recGrant(), &hostParent{}, Options{})
+	if out.Status != 0 || out.Stdout != "root\nryan\nps\n" {
+		t.Fatalf("for: %+v", out)
 	}
 }
 
@@ -530,7 +547,7 @@ func TestChanAnswerCrosses(t *testing.T) {
 func TestChanOriginIDCollision(t *testing.T) {
 	src := `let a = (term prompt "q")
 par 2 chan c(1) {
-  branch { let s1 = (cat /srv/s1); let s2 = (cat /srv/s2); let s3 = (cat /srv/s3); let s4 = (cat /srv/s4); let s5 = (cat /srv/s5); send c [ $s3 ]; send c [ $s5 + $a ] }
+  branch { let s1 = (cat /srv/s1); let s2 = (cat /srv/s2); let s3 = (cat /srv/s3 | lines); let s4 = (cat /srv/s4); let s5 = (cat /srv/s5 | lines); send c [ $s3[0].line ]; send c [ $s5[0].line + $a ] }
   branch {
     let r1 = (cat /srv/r1); let r2 = (cat /srv/r2); let r3 = (cat /srv/r3); let r4 = (cat /srv/r4); let r5 = (cat /srv/r5)
     let n = 0

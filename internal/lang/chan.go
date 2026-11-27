@@ -663,22 +663,32 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("type send: send outside its par\n")
 		return exitType, true
 	}
-	// A lone $name keeps its kind, so bytes are seen as bytes.
-	var v value
-	if w := s.Word; len(w.Parts) == 1 && w.Parts[0].Exp {
-		v = m.vars[w.Parts[0].Lit]
+	// Bytes do not cross, as a lone $b or read anywhere in the word: an
+	// expression or an expansion would turn them into text that does.
+	refs := map[string]bool{}
+	wordRefs(s.Word, refs)
+	for name := range refs {
+		if v, ok := m.vars[name]; ok && v.kind == valBytes {
+			m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
+			return exitType, true
+		}
 	}
-	if v.kind != valBytes {
-		m.sawSecret = false
+	// A lone $name of a row or rows keeps its kind, with its provenance;
+	// anything else is the word's value.
+	var v value
+	m.sawSecret = false
+	if w := s.Word; len(w.Parts) == 1 && w.Parts[0].Exp {
+		if rv, ok := m.vars[w.Parts[0].Lit]; ok && (rv.kind == valRow || rv.kind == valRows) {
+			m.readProv(w.Parts[0].Lit)
+			v = rv
+		}
+	}
+	if v.kind != valRow && v.kind != valRows {
 		var err error
 		if v, err = m.wordValue(s.Word); err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return exitType, true
 		}
-	}
-	if v.kind == valBytes {
-		m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
-		return exitType, true
 	}
 	if m.sawSecret {
 		// A secret spelled into a word is plain text: it would cross as
