@@ -576,3 +576,10 @@ Sentences that must hold in every added line (frontier §6; checked by the exist
 Phase 2: agent §9.1 then sash §6.2; control plane §10.1 and agent §9.2 then sash §7. Phase 3 after Q1 and after sahxfer `get` exists.
 
 **Size:** Phase 1, human 2 to 3 weeks / CC 3 to 4 days (`connect` is half of it). Phase 2, human 2 weeks / CC 3 days. Phase 3, human 4 to 6 weeks / CC 1 to 2 weeks, mostly outside this repo.
+
+## 15. Follow-ups
+
+Found by the review of `ed9e6dd..4e7bd35` and left as they are, by decision:
+
+- **The last event of a recording is not covered by its hash chain.** Each event's hash covers the one before it, so the final event can be edited undetected (a `term` answer changed from `bob` to `mallory` replays as `mallory`); editing any earlier event is `replay_bad_chain`, and a changed confirm whose yes-branch calls a verb is `replay_diverged`. This is the recording format's design from before this contract and affects offline replay output only. A fix closes the chain with a final record over the last event.
+- **ESC handling in `term prompt` can store the tail of a sequence.** Only a CSI is dropped through its final byte; any other ESC drops ESC and one byte, so `ESC ] 0;t BEL` stores `0;t` and `ESC O P` stores `P`. Cosmetic: the answer is escaped wherever it is written to a terminal.
