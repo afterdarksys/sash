@@ -1053,7 +1053,10 @@ func TestResetTailOnEveryEnd(t *testing.T) {
 			case "SIGINT":
 				con.sig <- os.Interrupt
 			}
-			run.wait(t)
+			res := run.wait(t)
+			if end == "SIGINT" && (res.Code != 130 || !strings.HasSuffix(con.err.String(), "\nconnect: interrupted\n")) {
+				t.Errorf("SIGINT in the session: code %d stderr %q", res.Code, con.err.String())
+			}
 			out := con.out.String()
 			if !strings.HasSuffix(out, "X"+want) {
 				t.Errorf("screen %q, want it to end X then %q", out, want)

@@ -115,7 +115,7 @@
     "code": "connect_interrupted",
     "exit": 130,
     "area": "connect",
-    "meaning": "\"connect: interrupted\": Ctrl-C before the session started; the connection was closed",
+    "meaning": "\"connect: interrupted\": Ctrl-C before the session started, or a SIGINT sent to the client during the session (where Ctrl-C is the host's input); the connection was closed and the terminal restored",
     "fix": "Nothing to change: this reports what happened."
   },
   {
