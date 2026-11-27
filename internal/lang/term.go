@@ -80,3 +80,143 @@ func (m *machine) isTTY() (bool, error) {
 	}
 	return v == "true", nil
 }
+
+// msgTermNoTerminal refuses term without a terminal to ask.
+const msgTermNoTerminal = "term needs a terminal"
+
+// termQuestionMax caps a question after expansion, in bytes.
+const termQuestionMax = 1024
+
+// Outcomes of one question, as a recording stores them.
+const (
+	termOK          = ""
+	termEOF         = "eof"
+	termInterrupted = "interrupted"
+	termTimeout     = "timeout"
+	termHangup      = "hangup"
+	termLong        = "long"
+	termNotText     = "not_text"
+	termNone        = "no_terminal"
+)
+
+func termCode(err error) string {
+	switch {
+	case err == nil:
+		return termOK
+	case errors.Is(err, ErrTermEOF):
+		return termEOF
+	case errors.Is(err, ErrTermInterrupted):
+		return termInterrupted
+	case errors.Is(err, ErrTermTimeout):
+		return termTimeout
+	case errors.Is(err, ErrTermHangup):
+		return termHangup
+	case errors.Is(err, ErrTermLong):
+		return termLong
+	case errors.Is(err, ErrTermNotText):
+		return termNotText
+	}
+	// Anything else is a terminal that cannot be asked: fail closed.
+	return termNone
+}
+
+// runTerm is term prompt "<question>" and term confirm "<question>". It
+// asks through Options.Term, or answers from a recording on replay. It
+// sets only its own value and status: m.declined, State.confirm, and the
+// plan lock are never written here, so a yes is not the answer to confirm
+// mode and the next mutating verb still asks its own question.
+func (m *machine) runTerm(st expStage) (value, int) {
+	fail := func(status int, msg string) (value, int) {
+		m.err.WriteString(msg + "\n")
+		return value{}, status
+	}
+	halt := func(status int, msg string) (value, int) {
+		m.ctl = ctlHalt
+		m.haltStatus = status
+		return fail(status, msg)
+	}
+	op := st.argv[1]
+	question := st.argv[len(st.argv)-1]
+	switch {
+	case m.pb != nil:
+		// A branch has no terminal of its own: the parser refuses a
+		// literal term in a par body, and this a call that reaches one.
+		return fail(exitType, "term inside par")
+	case m.atomic != nil:
+		// A person at a prompt would let the agent's transaction deadline
+		// restore the block.
+		return fail(exitType, "atomic_irreversible: term")
+	case m.st.HungUp():
+		return halt(exitHangup, "hangup")
+	case m.pastDeadline():
+		return fail(exitType, "timeout")
+	}
+	ask := TermAsk{Question: question, Hung: m.st.HungUp}
+	if !m.deadline.IsZero() {
+		// Waiting counts against timeout: the read ends at the deadline.
+		if ask.Wait = m.deadline.Sub(m.now()); ask.Wait <= 0 {
+			return fail(exitType, "timeout")
+		}
+	}
+	live := func() (string, string) {
+		if m.term == nil {
+			return "", termNone
+		}
+		if op == "confirm" {
+			yes, err := m.term.Confirm(ask)
+			if err == nil && yes {
+				return "yes", termOK
+			}
+			return "no", termCode(err)
+		}
+		answer, err := m.term.Prompt(ask)
+		if err != nil {
+			return "", termCode(err)
+		}
+		return answer, termOK
+	}
+	var answer, code string
+	if m.tape != nil {
+		var ok bool
+		if answer, code, ok = m.tape.term(op, live); !ok {
+			// Run reports the tape's error once, at the end.
+			m.ctl = ctlHalt
+			return value{}, exitType
+		}
+	} else {
+		answer, code = live()
+	}
+	switch code {
+	case termOK:
+	case termEOF:
+		// The end of input is not asked again by retry.
+		m.termEnded = true
+		if op == "confirm" {
+			return value{kind: valBytes}, 1
+		}
+		m.err.WriteString("term prompt: end of input\n")
+		return value{kind: valStr}, 1
+	case termInterrupted:
+		return halt(exitInterrupt, "term: interrupted")
+	case termTimeout:
+		return fail(exitType, "timeout")
+	case termHangup:
+		return halt(exitHangup, "hangup")
+	case termLong:
+		return fail(exitType, "term prompt: answer over 4096 bytes")
+	case termNotText:
+		return fail(exitType, "term prompt: answer is not text")
+	default:
+		return halt(exitType, msgTermNoTerminal)
+	}
+	if op == "confirm" {
+		if answer == "yes" {
+			return value{kind: valBytes}, 0
+		}
+		return value{kind: valBytes}, 1
+	}
+	// The answer is untrusted text a person typed: origin names it.
+	id := m.st.addOrigin(origin{src: m.provSrcName(), line: m.provLine(), key: "term prompt", nohash: true})
+	m.prov = addProv(m.prov, id)
+	return value{kind: valStr, s: answer}, 0
+}

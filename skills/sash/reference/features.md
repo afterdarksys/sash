@@ -65,7 +65,7 @@ The manifest is advisory: it grants nothing, and the agent still checks every ve
 sash --lint (-c script | file | stdin)
 ```
 
-Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`. `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
+Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `prompt-to-mutation` (a name bound from `term prompt` reaches an argument, a path, or the body of a mutating stage), `prompt-in-retry` (a `retry` body asks again on every attempt), `prompt-needs-terminal` (info, once per script). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
 
 `--lint` and `--needs` refuse every other flag (`--session`, `--plan`, each other) and anything after the source: exit 2, nothing runs.
 
@@ -212,6 +212,63 @@ echo after
 retry 3 delay 2s { package query nginx }
 timeout 30s { package query nginx }
 ```
+
+## Asking the person
+
+`term prompt "<question>"` prints the question on the terminal and gives the line the person types, without its Enter. `term confirm "<question>"` prints `<question> [y + Enter / N]`; its status is 0 for `y` or `Y` then Enter and 1 for anything else. Both take exactly one question word, at most 1024 bytes, and no input: `term` is the first stage of its pipeline. `prompt` and `confirm` are literal words: from a value they are exit 2 `command_from_value`.
+
+A terminal can be asked only when sash's stdin and stderr are both terminals and the script is not on stdin: the prompt, `sash -c`, or `sash file`. `sash < script`, a pipe, a job, and a replay have none: `term` is then exit 2 `term needs a terminal` and the script stops there. Test `[ is_tty() ]` first in a script that may run unattended.
+
+```sash
+# expect: host 2 term needs a terminal
+# nostdout: after
+# lint: prompt-needs-terminal
+let name = (term prompt "unit to check?")
+echo after
+```
+
+```sash
+# expect: host 0
+# stdout: unattended
+if [ is_tty() ] {
+  term confirm "continue?" && echo yes
+} else {
+  echo unattended
+}
+```
+
+An answer is text a person typed, and a person can be told what to type: treat it as you treat host data. It is a value, never a command word (`$ans status nginx` is exit 2 `command_from_value`). A yes to `term confirm` sets only that statement's status: under `set -o confirm` the next mutating verb still asks its own question, and no answer changes plan mode or confirm mode. Lint warns `prompt-to-mutation` when an answer reaches a mutating stage.
+
+```sash
+# expect: host 2 term needs a terminal
+# lint: prompt-to-mutation
+# nocall: unit.restart
+let unit = (term prompt "unit to restart?")
+unit restart $unit
+```
+
+The question and the echo are escaped, so neither can drive the terminal. What was typed before the question is thrown away. Backspace and Ctrl-U edit the line; escape sequences and control characters are dropped. An answer is at most 4096 bytes (`term prompt: answer over 4096 bytes`, exit 2) and must be text (`term prompt: answer is not text`, exit 2). Ctrl-D on an empty line or the end of input is status 1 `term prompt: end of input` with an empty value, and `retry` does not ask again. Ctrl-C is status 130 `term: interrupted`; it stops the script and `try` does not catch it. Inside `timeout` the wait counts: the read ends at the deadline, exit 2 `timeout`.
+
+`term` is refused in `par` (`parse: term inside par`; reached through a `fn`, exit 2 `term inside par`) and in `atomic { }` (exit 2 `atomic_irreversible: term`): a person at a prompt would let the transaction's deadline restore the block, so ask before the block. In `retry` it asks on every attempt; lint warns `prompt-in-retry`. Under plan mode it asks as in a real run.
+
+```sash
+# expect: parse term inside par
+par 2 {
+  term confirm "first?"
+  echo second
+}
+```
+
+```sash
+# expect: host 2 atomic_irreversible: term
+# nocall: atomic.begin
+atomic {
+  term confirm "write it?"
+  echo x > /srv/app/flag
+}
+```
+
+A recording keeps a plain answer in clear, as a `term` event; a replay answers from the recording and asks nobody. A plain `term prompt` echoes what is typed and is not for a secret.
 
 ## `check`
 

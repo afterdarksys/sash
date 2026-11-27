@@ -373,6 +373,18 @@ func (p *parser) par() (Stmt, error) {
 			return nil, fmt.Errorf("parse: %s", msg)
 		}
 	}
+	// A branch has no terminal of its own, and the par's source is read
+	// before any branch runs but is part of the statement: term anywhere
+	// in a par is refused. A call that reaches one is refused when it runs.
+	asks := false
+	needsEachStage(&s.Body, func(st Stage) {
+		if len(st.Argv) > 0 && plain(st.Argv[0]) == "term" {
+			asks = true
+		}
+	})
+	if asks {
+		return nil, fmt.Errorf("parse: term inside par")
+	}
 	return s, nil
 }
 

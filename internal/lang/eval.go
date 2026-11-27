@@ -25,6 +25,8 @@ const (
 	exitUnknown = 127
 	// exitHangup is a run stopped by SIGHUP, as a shell reports it.
 	exitHangup = 129
+	// exitInterrupt is Ctrl-C at a term question.
+	exitInterrupt = 130
 )
 
 // fnDepth matches globDepth. A deeper call exits 2 and does not run.
@@ -249,6 +251,9 @@ type machine struct {
 	// in the current retry attempt, so retry does not ask again.
 	confirm  func(string) (bool, bool)
 	declined bool
+	// termEnded is set when a term question met the end of input in the
+	// current retry attempt, so retry does not ask it again.
+	termEnded bool
 	// haltStatus, when set, is the status of a ctlHalt (a Ctrl-C at a
 	// confirm prompt stops the line with 126).
 	haltStatus int
@@ -360,6 +365,7 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 			}
 		}
 		m.declined = false
+		m.termEnded = false
 		st, stop = m.runProg(&r.Body)
 		if stop && m.ctl != ctlNone {
 			return st, true
@@ -367,6 +373,10 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 		if m.declined {
 			// A no is an answer, not a failure: asking again would make
 			// the person decline it N times.
+			return st, stop
+		}
+		if m.termEnded {
+			// The input ended: there is nobody to ask again.
 			return st, stop
 		}
 		if !stop && st == 0 {
@@ -1448,6 +1458,25 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		if name == "origin" && (len(st.Argv) != 2 || plain(st.Argv[1]) == "") {
 			return nil, &problem{exitType, "usage origin name"}, refusal{}
 		}
+		// term's second word selects what the person is asked, so it is a
+		// literal like the command word, and so is any flag. term takes
+		// no input.
+		if name == "term" {
+			if len(st.Argv) > 1 && plain(st.Argv[1]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) > 3 && plain(st.Argv[2]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if i != 0 {
+				return nil, &problem{exitType, "usage term"}, refusal{}
+			}
+			for _, r := range st.Redirs {
+				if r.Kind != ">" {
+					return nil, &problem{exitType, "usage term"}, refusal{}
+				}
+			}
+		}
 		// A recording's path is a literal, so needs can report it.
 		if name == "set" && len(st.Argv) == 4 && plain(st.Argv[1]) == "-o" && plain(st.Argv[2]) == "record" && plain(st.Argv[3]) == "" {
 			return nil, &problem{exitType, "usage set -o record: the path must be literal"}, refusal{}
@@ -1657,6 +1686,14 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{in: inNone, out: inBytes}, nil
 	case "template_file":
 		return classifyTemplateFile(argv)
+	case "term":
+		if len(argv) != 3 || (argv[1] != "prompt" && argv[1] != "confirm") {
+			return classified{}, &problem{exitType, "usage term"}
+		}
+		if len(argv[2]) > termQuestionMax {
+			return classified{}, &problem{exitType, "usage term: question over 1024 bytes"}
+		}
+		return classified{in: inNone, out: inBytes}, nil
 	case "template":
 		if len(argv) != 2 {
 			return classified{}, &problem{exitType, "usage template tpl"}
@@ -1827,7 +1864,7 @@ func stageShape(st expStage) (int, int) {
 		return inAny, inRows
 	case "lines", "parse":
 		return inBytes, inRows
-	case "template_file", "check", "log":
+	case "template_file", "check", "log", "term":
 		return inNone, inBytes
 	case "checks", "origin":
 		return inNone, inRows
@@ -2109,6 +2146,8 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return m.runOrigin(st.argv[1])
 	case "log":
 		return m.runLog(st)
+	case "term":
+		return m.runTerm(st)
 	case "template":
 		return m.runTemplate(st, in)
 	case "sub":
@@ -2660,7 +2699,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term"} {
 		reservedNames[n] = true
 	}
 }

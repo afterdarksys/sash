@@ -320,7 +320,7 @@ echo /srv/app/*.nomatch
 | 126 | denied by the grant, or declined at a confirm prompt; that statement ran nothing, earlier ones did |
 | 127 | unknown name; no host binary is run |
 | 129 | hangup (SIGHUP) |
-| 130 | a `par` interrupted (Ctrl-C) |
+| 130 | a `par` interrupted (Ctrl-C), or Ctrl-C at a `term` question |
 
 ## Error strings
 
@@ -343,6 +343,11 @@ Each is one line on stderr.
 | `type glob` | a glob qualifier other than `(/)`, or a glob that matches nothing (2) |
 | `parse: ...` | `parse: try needs catch`, `parse: too deep` (65 nested blocks), `parse: env not in this series` (2) |
 | `usage <form>...` | wrong arguments to a form (2) |
+| `term needs a terminal` | `term` with no terminal to ask; the script stops (2) |
+| `term prompt: end of input` | Ctrl-D on an empty line, or the input ended (1) |
+| `term prompt: answer over 4096 bytes`, `term prompt: answer is not text` | an answer that is too long or not UTF-8; there is no value (2) |
+| `term: interrupted` | Ctrl-C at a question; the script stops, `try` cannot catch it (130) |
+| `term inside par`, `atomic_irreversible: term` | a question inside `par` or `atomic { }` (2) |
 | `a secret cannot decide a branch`, `a secret cannot leave sash`, `a secret ended the line` | secret rules, `features.md` (2) |
 | `atomic_irreversible: <what>`, `atomic: rolled back` | `features.md` (2) |
 | `wasm_unsupported` | the release build has no wasm (2) |

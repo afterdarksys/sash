@@ -151,6 +151,8 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `checks` | builtin | - | no | The check rows so far (`check`, `result`). |
 | `origin` | builtin | - | no | `origin name`: where a name's value came from, as rows. |
 | `log` | builtin | - | no | `log debug\|info\|warn\|error <msg> [ {fields} ]`: one line on stderr. |
+| `term prompt` | builtin | - | no | `term prompt "<question>"`: asks the person at the terminal and gives the line they type, without its Enter. No terminal is exit 2 `term needs a terminal`. The answer is untrusted text (`features.md`). |
+| `term confirm` | builtin | - | no | `term confirm "<question>"`: status 0 for `y` or `Y` then Enter, 1 for anything else. It is not the answer to confirm mode or to any approval. |
 
 ## Session words
 

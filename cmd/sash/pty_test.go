@@ -54,6 +54,16 @@ func latin1(s string) []byte {
 	return out
 }
 
+// rawBytes is s for a step: each byte as the latin-1 rune the harness
+// writes back as that byte.
+func rawBytes(s string) string {
+	out := make([]rune, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		out = append(out, rune(s[i]))
+	}
+	return string(out)
+}
+
 var (
 	ptyBinOnce sync.Once
 	ptyBinPath string

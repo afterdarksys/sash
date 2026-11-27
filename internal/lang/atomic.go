@@ -11,7 +11,8 @@ package lang
 // calls by literal name, conditions and sources included) is checked:
 // unit.restart, package.install, and sysctl.set cannot be undone, and use,
 // a nested atomic, and par are refused too, all as exit 2
-// atomic_irreversible, before the agent is asked anything. machine.do
+// atomic_irreversible, before the agent is asked anything. term is refused
+// the same way: a question holds the transaction open. machine.do
 // refuses those keys again inside a block (a backstop for unit $op), and
 // the agent denies them as well. If begin is refused, the block does not
 // run: an agent too old for atomic (denied) is a clear error, never a run
@@ -85,6 +86,12 @@ func (m *machine) atomicRefusal(body *Program) string {
 			}
 			if k := lintKey(st); irreversible[k] {
 				why = k
+				return
+			}
+			if plain(st.Argv[0]) == "term" {
+				// A person at a prompt would let the transaction's
+				// deadline restore the block: ask before it.
+				why = "term"
 				return
 			}
 			if fn := fns[plain(st.Argv[0])]; fn != nil && !seen[fn] {

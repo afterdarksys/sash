@@ -97,6 +97,8 @@ type recReq struct {
 }
 
 type recResp struct {
+	// Op is a term event's question kind: prompt, confirm, or prompt-s.
+	Op       string       `json:"op,omitempty"`
 	Kind     string       `json:"kind,omitempty"`
 	Exit     int          `json:"exit,omitempty"`
 	Cols     []string     `json:"cols,omitempty"`
@@ -134,6 +136,9 @@ type pending struct {
 	err     error
 	hasResp bool
 	value   string
+	// A term event: its op and its outcome, "" for an answer.
+	op   string
+	code string
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -423,6 +428,14 @@ func (t *Tape) Finish() error {
 			ev.Resp = &recResp{Value: p.value}
 			if holdsAny(p.value, secrets) {
 				ev.Resp = &recResp{Value: redacted3}
+			}
+		}
+		if p.kind == "term" {
+			// What a person answered a term question. The question is in
+			// the script, not the event.
+			ev.Resp = &recResp{Op: p.op, Value: p.value, Error: p.code}
+			if holdsAny(p.value, secrets) {
+				ev.Resp.Value = redacted3
 			}
 		}
 		// Every prev is 64 hex digits, so a line's size is known before
@@ -862,6 +875,26 @@ func (t *Tape) value(kind string, read func() string) string {
 		return ""
 	}
 	return ev.Resp.Value
+}
+
+// term records what a person answered a term question (ask returns the
+// answer and its outcome), or returns the recorded answer on replay
+// without asking anyone. ok is false when the tape failed.
+func (t *Tape) term(op string, ask func() (string, string)) (answer, code string, ok bool) {
+	if !t.replay {
+		answer, code = ask()
+		t.add(pending{kind: "term", op: op, value: answer, code: code})
+		return answer, code, t.Err() == nil
+	}
+	ev, ok := t.next("term")
+	if !ok {
+		return "", "", false
+	}
+	if ev.Resp == nil || ev.Resp.Op != op {
+		t.diverge(ev.Seq)
+		return "", "", false
+	}
+	return ev.Resp.Value, ev.Resp.Error, true
 }
 
 // module records a loaded wasm module's hash in the header, or, on

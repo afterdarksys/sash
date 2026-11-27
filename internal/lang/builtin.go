@@ -104,6 +104,8 @@ var builtins = []builtinRow{
 	{"checks", "builtin", "", "the check rows so far", true},
 	{"origin", "builtin", "", "origin name: where a name's value came from", true},
 	{"log", "builtin", "", "log level msg [ {fields} ]: one line on stderr", true},
+	{"term prompt", "builtin", "", "term prompt \"question\": ask the person at the terminal for one line", true},
+	{"term confirm", "builtin", "", "term confirm \"question\": 0 for y or Y then Enter, else 1", true},
 	{"with", "keyword", "", "with set -e, loopmax N, prefix P, x = v { ... }: restored after", true},
 	{"else", "keyword", "", "the other branch of if", false},
 	{"in", "keyword", "", "the source of for", false},
