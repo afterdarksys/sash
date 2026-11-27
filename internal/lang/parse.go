@@ -137,6 +137,14 @@ type Par struct {
 
 func (*Par) stmt() {}
 
+// Branch groups several statements into one branch of a par N { } body.
+// It is legal only as a top-level statement of that body.
+type Branch struct {
+	Body Program
+}
+
+func (*Branch) stmt() {}
+
 // Atomic runs Body as one transaction of file writes (v6 section 3): the
 // agent journals each write and restores them all unless the block
 // succeeds. Deadline, when set, is the transaction's deadline.
@@ -187,6 +195,9 @@ type parser struct {
 	tok   []token
 	i     int
 	depth int
+	// branchDepth is the block depth of the par N { } body being read,
+	// where branch { } may stand; 0 outside one.
+	branchDepth int
 }
 
 // blockDepthMax bounds { } nesting, as exprDepthMax bounds [ ]: the v1
@@ -344,6 +355,19 @@ func (p *parser) stmt() (Stmt, error) {
 			return r, nil
 		case "par":
 			return p.par()
+		case "branch":
+			if p.branchDepth == 0 || p.depth != p.branchDepth {
+				return nil, fmt.Errorf("parse: branch outside par")
+			}
+			p.i++
+			saved := p.branchDepth
+			p.branchDepth = 0
+			body, err := p.block()
+			p.branchDepth = saved
+			if err != nil {
+				return nil, err
+			}
+			return &Branch{Body: *body}, nil
 		case "atomic":
 			return p.atomic()
 		case "timeout":
@@ -401,7 +425,10 @@ func (p *parser) par() (Stmt, error) {
 		s.Body = Program{Stmts: []Stmt{f}, Pos: []int{at}}
 		s.Each = true
 	} else {
+		saved := p.branchDepth
+		p.branchDepth = p.depth + 1
 		body, err := p.block()
+		p.branchDepth = saved
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +439,11 @@ func (p *parser) par() (Stmt, error) {
 		branches = s.Body.Stmts[0].(*For).Body.Stmts
 	}
 	for _, b := range branches {
-		if msg := parBranchCheck(b, false); msg != "" {
+		msg := parBranchCheck(b, false)
+		if br, ok := b.(*Branch); ok {
+			msg = parBodyCheck(&br.Body, false)
+		}
+		if msg != "" {
 			return nil, fmt.Errorf("parse: %s", msg)
 		}
 	}
@@ -486,6 +517,8 @@ func jumpLeaves(s Stmt, inLoop bool, what string) string {
 	case *Retry:
 		return jumpsIn(&s.Body, inLoop, what)
 	case *Timeout:
+		return jumpsIn(&s.Body, inLoop, what)
+	case *Branch:
 		return jumpsIn(&s.Body, inLoop, what)
 	case *Atomic:
 		return jumpsIn(&s.Body, false, what)

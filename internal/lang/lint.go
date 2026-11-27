@@ -163,6 +163,8 @@ func lintBodies(s Stmt) []*Program {
 		return []*Program{&s.Body}
 	case *Timeout:
 		return []*Program{&s.Body}
+	case *Branch:
+		return []*Program{&s.Body}
 	case *Par:
 		return []*Program{&s.Body}
 	case *Atomic:

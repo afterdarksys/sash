@@ -205,6 +205,19 @@ par 2 { egrep zz <<< a; echo b }
 echo after
 ```
 
+`branch { a; b }` makes several statements one branch of a `par N { }` body; anywhere else it is `parse: branch outside par`. `branch` is a reserved word, as `par` is.
+
+```sash
+# expect: host 0
+# stdout: a1
+par 2 { branch { echo a1; echo a2 }; echo b }
+```
+
+```sash
+# expect: parse branch outside par
+if [ true ] { branch { echo a } }
+```
+
 ## `retry` and `timeout`
 
 `retry N [delay D] { }` runs the block again on failure, up to N times (N 1 to 100, D up to 1h). A failure is what `try` catches; a cap or jump passes through; a confirm no is not retried. `timeout D { }` (D up to 24h) checks the deadline before every statement and agent call; past it is exit 2 `timeout`, which `try` and `retry` catch. A verb already in flight finishes. Durations are Go durations: `500ms`, `2s`, `5m`, `1h`. Lint warns `retry-on-mutation` when a retry body can repeat a mutation.

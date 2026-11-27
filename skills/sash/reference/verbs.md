@@ -147,6 +147,7 @@ In process, no key. Input is capped and nested data stops at depth 64.
 | `timeout` | keyword | - | no | `timeout D { }`: D up to 24h, checked before each statement and verb. |
 | `atomic` | keyword | file.write | yes | `atomic [deadline D] { }`: on a failure the agent restores the file writes inside, except files another writer changed meanwhile; writes are visible as they land. The key is the writes it holds. |
 | `par` | keyword | - | no | `par N [as r] { }` or `par N [as r] for x in <src> { }`: branches at once, N 1 to 16. |
+| `branch` | keyword | - | no | `branch { a; b }`: several statements as one branch, only at the top of a `par N { }` body. |
 | `with` | keyword | - | no | `with set -e, loopmax N, prefix P, x = v { }`: scoped, restored on every way out. |
 | `check` | builtin | - | no | `check "name" [ <expr> ]`: prints `ok name` or `FAIL name` (status 1). |
 | `checks` | builtin | - | no | The check rows so far (`check`, `result`). |

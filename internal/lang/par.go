@@ -329,6 +329,10 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		}
 	} else {
 		for i, st := range s.Body.Stmts {
+			if br, ok := st.(*Branch); ok {
+				branches = append(branches, branch{body: &br.Body})
+				continue
+			}
 			branches = append(branches, branch{body: &Program{Stmts: []Stmt{st}, Pos: []int{s.Body.Pos[i]}}})
 		}
 	}

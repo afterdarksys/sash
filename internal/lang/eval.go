@@ -704,6 +704,11 @@ func (m *machine) runStmt(s Stmt) (int, bool) {
 		return m.runRetry(s)
 	case *Timeout:
 		return m.runTimeout(s)
+	case *Branch:
+		// The parser allows branch only at the top of a par body, which
+		// runPar unwraps.
+		m.err.WriteString("type branch: branch outside par\n")
+		return exitType, true
 	case *Par:
 		if m.atomic != nil {
 			m.err.WriteString("atomic_irreversible: par\n")
@@ -2880,7 +2885,8 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs",
+		"branch"} {
 		reservedNames[n] = true
 	}
 }

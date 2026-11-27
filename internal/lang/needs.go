@@ -381,6 +381,8 @@ func (n *needsRun) stmt(s Stmt, b needBase) needBase {
 		return n.loop(&s.Body, nil, b)
 	case *Timeout:
 		return n.prog(&s.Body, b)
+	case *Branch:
+		return n.prog(&s.Body, b)
 	case *Par:
 		// Branches run from the same prefixes, in any order.
 		return n.prog(&s.Body, b)
@@ -705,6 +707,8 @@ func needsEachStmt(p *Program, fn func(Stmt)) {
 		case *Retry:
 			needsEachStmt(&s.Body, fn)
 		case *Timeout:
+			needsEachStmt(&s.Body, fn)
+		case *Branch:
 			needsEachStmt(&s.Body, fn)
 		case *Par:
 			needsEachStmt(&s.Body, fn)
