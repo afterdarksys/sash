@@ -50,7 +50,7 @@ on `shl`, and that is stated in the docs.
 
 Inputs are text. Parsing is `netip.ParseAddr` / `netip.ParsePrefix`: dotted v4 with no
 leading zeros (`010.1.1.1` is refused, not read as octal), v6 in any RFC 4291 form,
-v4-mapped v6 (`::ffff:1.2.3.4`). A zone (`fe80::1%eth0`) is refused everywhere
+v4-mapped v6 (`::ffff:1.2.3.4`). A zone (`fe80::1%eth0`, or any `%`) is refused everywhere
 (`type ip zone`): a zone names an interface on one machine and means nothing to sash.
 
 | call | result |
@@ -58,10 +58,10 @@ v4-mapped v6 (`::ffff:1.2.3.4`). A zone (`fe80::1%eth0`) is refused everywhere
 | `is_ip(s)` | `true` when `s` parses as an address, else `false`, for any input type. The one function here that never errors, so a `where` over host data can filter. |
 | `ip(s)` | the canonical text (v6 compressed lowercase; v4-mapped v6 stays mapped, `::ffff:1.2.3.4`); exit 2 `type ip` when it does not parse. |
 | `ip_version(s)` | `4` or `6` (a v4-mapped v6 is `6`). |
-| `ip_in(addr, prefix)` | `true` when the address is in the prefix. Both sides are unmapped first, so `::ffff:10.0.0.1` is in `10.0.0.0/8`. A v4 address and a v6 prefix (or the reverse, after unmapping) is `false`, not an error. |
+| `ip_in(addr, prefix)` | `true` when the address is in the prefix as written, or when the unmapped address is in the unmapped prefix (a v4-mapped prefix of /96 or longer unmaps to its v4 prefix; a shorter one stays v6). So `::ffff:10.0.0.1` is in `10.0.0.0/8` and in every v6 prefix that holds it, down to `::/0` (containment is monotone for it). A v4 address is in no v6 prefix but a mapped one of /96 or longer; a v6 address is in no v4 prefix. A mismatch is `false`, not an error. |
 | `cidr(s)` | a map: `network` (the masked prefix as text, so `10.1.2.3/8` gives `10.0.0.0/8`), `prefix` (int), `bits` (32 or 128), `first` and `last` (text), `size` (the address count as an int when it fits in int64, else `null`). A prefix that does not parse is exit 2 `type cidr`. |
-| `ip_class(s)` | one of `unspecified`, `loopback`, `private`, `link_local`, `multicast`, `global`, by netip's predicates checked in that order (an unmapped address); `private` is netip's `IsPrivate` (RFC 1918 and fc00::/7). |
-| `ip_next(s)` `ip_prev(s)` | the next and previous address; past the end of the family is exit 2 `type ip range`. |
+| `ip_class(s)` | one of `unspecified`, `loopback`, `private`, `link_local`, `multicast`, `reserved`, `global`, checked in that order on the unmapped address: the first five are netip's predicates (`private` is `IsPrivate`, RFC 1918 and fc00::/7; `link_local` is `IsLinkLocalUnicast`), `reserved` is a fixed table of special-purpose ranges (v4 0.0.0.0/8 (but 0.0.0.0), 100.64.0.0/10, 192.0.0.0/24, 192.0.2.0/24, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 240.0.0.0/4 (with 255.255.255.255); v6 ::/96 (but `::` and `::1`), 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001::/23, 2001:db8::/32, 2002::/16, fec0::/10, 3fff::/20), and `global` is none of these, so it may be publicly routable, not a guarantee of reachability. |
+| `ip_next(s)` `ip_prev(s)` | the next and previous address; past the end of the family is exit 2 `type ip range`, and so is a v4-mapped address stepping out of `::ffff:0:0/96`. |
 
 No range expansion (`hosts(prefix)` that lists every address) in this round: a /8 is 16M
 entries. `[ range(...) ]` style limits would apply if it is added later.
