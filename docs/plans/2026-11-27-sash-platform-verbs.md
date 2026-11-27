@@ -248,7 +248,7 @@ The WebSocket client is new code (§12 Q4): RFC 6455 client role only, masked fr
 
 | Matter | Rule |
 | --- | --- |
-| Raw mode | Entered only after `started` (`enterRaw`); restored exactly once on every exit by a `termGuard` (`editor.go:1360-1380`) and by `watchSignals` on SIGTERM and SIGHUP. A failed restore prints `sash: terminal not restored` (`signal_unix.go:33-38`). |
+| Raw mode | Entered only after `started` (`enterRaw`); restored exactly once on every exit by a `termGuard` (`editor.go:1360-1380`) and by `watchSignals` on SIGTERM and SIGHUP. A failed restore prints `sash: terminal not restored` (`signal_unix.go:33-38`). Before the mode is restored, every exit writes one fixed reset tail, whether or not the host set any of these modes: `ESC ( B`, `ESC >`, `CSI ? 1 l`, `CSI ? 7 h`, `CSI ? 12 l`, `ESC 7 CSI r ESC 8`, `CSI 0 m`, `CSI ? 25 h`, then `CSI ? 1049 l` when the host entered the alternate screen, and the guard's `CSI ? 2004 l`. These are every persistent mode the filter passes. |
 | Window size | Initial `rows`, `cols` from a new `termSize(fd)` (`TIOCGWINSZ`; today's `termWidth` returns columns only, `term_linux.go:45`); unknown is 24 by 80. SIGWINCH sends one `pty_resize`, coalesced to at most 10 a second. |
 | Input | Bytes read from stdin go out as `pty_input`, at most 16 KiB of raw bytes per frame. EOF on stdin sends `pty_eof`. |
 | Ctrl-C | Before `started`: local, exit 130, socket closed. After: raw mode has `ISIG` off, so 0x03 is input for the host's sash. |

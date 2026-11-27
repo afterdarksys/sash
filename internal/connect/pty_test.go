@@ -143,6 +143,11 @@ func TestRawModeIsRestoredOnAPTY(t *testing.T) {
 			if !strings.Contains(rep.TTY, "connect: session on web1") || !strings.Contains(rep.TTY, c.shown) {
 				t.Errorf("tty %q", rep.TTY)
 			}
+			// The modes a host may set are reset, then bracketed paste
+			// is turned off by the raw-mode guard.
+			if !strings.Contains(rep.TTY, resetTail+"\x1b[?2004l") {
+				t.Errorf("no reset tail: tty %q", rep.TTY)
+			}
 			// A pseudo terminal starts with no size: the client asks for
 			// 24 by 80.
 			select {

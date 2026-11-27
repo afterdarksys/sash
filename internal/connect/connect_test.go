@@ -991,3 +991,60 @@ func TestAgentName(t *testing.T) {
 		}
 	}
 }
+
+// Every persistent mode the filter lets a host set is undone on the way
+// out, by the same fixed tail, however the session ends.
+func TestResetTailOnEveryEnd(t *testing.T) {
+	const modes = "\x1b(0\x1b[?7l\x1b[2;3r\x1b=\x1b[?1h\x1b[?12h\x1b[?25lX"
+	want := "\x1b(B\x1b>\x1b[?1l\x1b[?7h\x1b[?12l\x1b7\x1b[r\x1b8\x1b[0m\x1b[?25h"
+	if resetTail != want {
+		t.Fatalf("reset tail %q, want %q", resetTail, want)
+	}
+	for _, end := range []string{"exit", "SIGTERM", "SIGHUP", "SIGINT", "server close", "plain exit, no mode set"} {
+		t.Run(end, func(t *testing.T) {
+			cp := newFakeCP(t)
+			up := make(chan struct{})
+			cp.terminal = func(ctx context.Context, c *wstest.Conn, r *http.Request) {
+				start(ctx, c)
+				if end == "plain exit, no mode set" {
+					sendBytes(ctx, c, []byte("X"))
+				} else {
+					sendBytes(ctx, c, []byte(modes))
+				}
+				close(up)
+				switch end {
+				case "exit", "plain exit, no mode set":
+					sendFrame(ctx, c, `{"type":"pty_exit","payload":{"code":0}}`)
+				case "server close":
+				default:
+					for {
+						if _, ok := readClient(ctx, c); !ok {
+							return
+						}
+					}
+				}
+			}
+			con := newFakeCon()
+			run := begin(con, goodEnv(t, cp), "web1")
+			<-up
+			deadline := time.Now().Add(5 * time.Second)
+			for !strings.Contains(con.out.String(), "X") && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			switch end {
+			case "SIGTERM":
+				con.sig <- syscall.SIGTERM
+			case "SIGHUP":
+				con.sig <- syscall.SIGHUP
+			case "SIGINT":
+				con.sig <- os.Interrupt
+			}
+			run.wait(t)
+			out := con.out.String()
+			if !strings.HasSuffix(out, "X"+want) {
+				t.Errorf("screen %q, want it to end X then %q", out, want)
+			}
+			checkClean(t, cp, con)
+		})
+	}
+}

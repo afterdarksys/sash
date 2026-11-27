@@ -37,8 +37,8 @@ import (
 // second request with another purpose); a server that stalls before or
 // after the upgrade (every wait before the session starts is bounded);
 // frames of any size (a message over 1 MiB ends the session); and a
-// terminal left in raw mode (it is restored once on every way out, on
-// SIGTERM and SIGHUP too). The client holds no grant and no key, records
+// terminal left in raw mode or in a mode the host set (it is restored once
+// on every way out, on SIGTERM and SIGHUP too, after resetTail). The client holds no grant and no key, records
 // nothing, and never speaks to an agent. It does not protect what the
 // screen shows, which is the host's, nor a workstation whose user or root
 // is hostile.
@@ -345,13 +345,26 @@ func (r *run) bySignal(sig os.Signal) Result {
 	return Result{Code: code, Signal: sig, RestoreErr: rerr}
 }
 
-// restoreTerm puts the terminal back, when raw mode was entered. The
-// restore itself acts once; calling this again is harmless.
+// resetTail undoes every persistent mode the filter lets a host set, on
+// every way out of a session, whether or not the host set it: G0 back to
+// ASCII (ESC ( 0 draws letters as boxes), the keypad numeric (ESC =),
+// cursor keys normal (CSI ? 1 h), autowrap on (CSI ? 7 l), cursor blink
+// off (CSI ? 12 h), the scroll region the whole screen (CSI r, between a
+// cursor save and restore because it homes the cursor), colour and style
+// plain, and the cursor shown. The alternate screen is left after it when
+// the host entered it, and bracketed paste (CSI ? 2004) is turned off by
+// the raw-mode guard (package line). Every other mode a host could set is
+// dropped by the filter.
+const resetTail = "\x1b(B" + "\x1b>" + "\x1b[?1l" + "\x1b[?7h" + "\x1b[?12l" + "\x1b7\x1b[r\x1b8" + "\x1b[0m" + "\x1b[?25h"
+
+// restoreTerm puts the terminal back, when raw mode was entered: the
+// reset tail, then the mode. The restore itself acts once; calling this
+// again is harmless.
 func (r *run) restoreTerm() error {
 	if r.restore == nil {
 		return nil
 	}
-	tail := "\x1b[0m\x1b[?25h"
+	tail := resetTail
 	if r.filter.AltScreen {
 		tail += "\x1b[?1049l"
 		r.filter.AltScreen = false
