@@ -260,12 +260,28 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 		fmt.Fprintln(os.Stderr, "record_failed")
 		return 2
 	}
-	got := lang.Run(src, g, p, lang.Options{Tape: tape, Term: term})
+	// A hangup stops the run at its next statement, or ends a question,
+	// as without --record; the recording is still written, within grace.
+	st := lang.NewState()
+	stopHup := watchHangup(st, hupGrace, os.Exit)
+	opt := lang.Options{State: st, Tape: tape, Term: term}
+	if term != nil {
+		opt.Show = func(stdout, stderr string) {
+			emit(os.Stdout, stdout)
+			emit(os.Stderr, stderr)
+		}
+	}
+	got := lang.Run(src, g, p, opt)
 	emit(os.Stdout, got.Stdout)
 	emit(os.Stderr, got.Stderr)
-	if err := tape.Finish(); err != nil {
+	err = tape.Finish()
+	stopHup()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2
+	}
+	if st.HungUp() {
+		return 129
 	}
 	return langExit(got.Status)
 }

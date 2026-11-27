@@ -17,3 +17,8 @@ func watchSignalsOf(restore func() error, exit func(os.Signal, error), sigs ...o
 func reraise(os.Signal, error) { os.Exit(1) }
 
 func isHangup(os.Signal) bool { return false }
+
+// askEnds is SIGINT here; there is no raw mode to restore.
+var askEnds = []os.Signal{os.Interrupt}
+
+func watchStop(suspend func() error, resume func()) (stop func()) { return func() {} }

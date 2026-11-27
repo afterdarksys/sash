@@ -55,7 +55,7 @@ Exactly one question word. It is expanded like any word, then capped at 1024 byt
 A terminal exists when sash's stdin and stderr are both terminals (`line.IsTerm`, `internal/line/term_linux.go:33`, `term_darwin.go:33`) and stdin is not the script. Two callers provide it through one new field `lang.Options.Term` (beside `Confirm`, `eval.go:90-94`):
 
 - the editor (`line.Loop`, `internal/line/editor.go:1282`), already in raw mode;
-- script mode in `cmd/sash/main.go` when the source is `-c` or a file and both fds are terminals: the asker enters raw mode for one question (`enterRaw`, `term_linux.go:11`) and restores it on every way out, including SIGTERM and SIGHUP (`watchSignals`, `internal/line/signal_unix.go:15`).
+- script mode in `cmd/sash/main.go` when the source is `-c` or a file and both fds are terminals: the asker enters raw mode for one question (`enterRaw`, `term_linux.go:11`) and restores it on every way out, including SIGTERM, SIGINT, SIGQUIT (each then ends sash as the signal says) and SIGHUP (the run's hangup path, under `--record` too); on SIGTSTP it restores, stops, and enters raw mode again when continued, and a failure to re-enter fails the question closed (`askEnds`, `watchStop`, `internal/line/signal_unix.go`).
 
 `sash < script`, a pipe, a job, `--replay`: `Options.Term` is nil. Then `term prompt` and `term confirm` are exit 2 `term needs a terminal` and stop the script (`ctlHalt`, as `confirm needs a terminal` does, `eval.go:530-533`); `is_tty()` is `false`. `Options.Confirm` is untouched: `set -o confirm` in a script is still `confirm needs a terminal` (`eval.go:433-435`), terminal or not.
 

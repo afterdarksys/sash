@@ -10,7 +10,9 @@ package line
 // away, and a failed flush asks nothing. The question and every echoed
 // rune go through lang.TermLine and lang.TermText; control bytes are
 // never stored. A secret is not echoed at all. In script mode raw mode
-// lasts one question and is restored on every way out, SIGTERM included.
+// lasts one question and is restored on every way out: SIGTERM, SIGINT
+// and SIGQUIT restore it before the signal ends sash, and SIGTSTP restores
+// it, stops, and enters raw mode again when continued.
 // It does not protect a secret typed at a plain prompt: that is echoed
 // and returned as ordinary text.
 
@@ -19,7 +21,6 @@ import (
 	"io"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -295,28 +296,92 @@ type asker struct {
 	lead  string
 	raw   func(fd int) (func() error, error)
 	flush func() error
+	// lost is set when raw mode could not be entered again after SIGTSTP.
+	lostMu sync.Mutex
+	lost   error
 }
 
 func (k *asker) ready() (done func() error, err error) {
 	if k.keys == nil {
 		k.keys = newTTYSource(k.in)
 	}
+	k.lost = nil
 	if k.raw == nil {
 		return func() error { return nil }, nil
 	}
-	restore, err := k.raw(int(k.in.Fd()))
+	fd := int(k.in.Fd())
+	restore, err := k.raw(fd)
 	if err != nil {
 		return nil, err
 	}
 	// A confirm question may leave bracketed paste on; the guard turns it
-	// off and restores the mode once, on SIGTERM too. SIGHUP is the
-	// run's own hangup path: the read ends and this returns normally.
-	guard := &termGuard{restore: restore, out: k.out}
-	stop := watchSignalsOf(guard.Restore, reraise, syscall.SIGTERM)
+	// off and restores the mode on SIGTERM, SIGINT and SIGQUIT (sent with
+	// kill: in raw mode Ctrl-C is a key) before the signal's own end. On
+	// SIGTSTP it restores the mode, the process stops, and when continued
+	// raw mode is entered again; if that fails the question fails closed.
+	// SIGHUP is the run's own hangup path: the read ends and this returns
+	// normally.
+	guard := &rawGuard{fd: fd, raw: k.raw, restore: restore, out: k.out}
+	stop := watchSignalsOf(guard.Restore, reraise, askEnds...)
+	stopTSTP := watchStop(guard.Restore, func() {
+		if rerr := guard.Resume(); rerr != nil {
+			k.lostMu.Lock()
+			k.lost = rerr
+			k.lostMu.Unlock()
+		}
+	})
 	return func() error {
+		stopTSTP()
 		stop()
 		return guard.Restore()
 	}, nil
+}
+
+// lostRaw is the error of re-entering raw mode after a stop, if any.
+func (k *asker) lostRaw() error {
+	k.lostMu.Lock()
+	defer k.lostMu.Unlock()
+	return k.lost
+}
+
+// rawGuard holds a question's raw mode: Restore puts the terminal back
+// (bracketed paste off first), once until Resume enters raw mode again.
+type rawGuard struct {
+	mu      sync.Mutex
+	fd      int
+	raw     func(fd int) (func() error, error)
+	restore func() error // nil while restored
+	out     io.Writer
+	err     error // the last Restore's
+}
+
+func (g *rawGuard) Restore() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.restore == nil {
+		return g.err
+	}
+	werr := writeAll(g.out, []byte("\x1b[?2004l"))
+	g.err = g.restore()
+	g.restore = nil
+	if g.err == nil {
+		g.err = werr
+	}
+	return g.err
+}
+
+func (g *rawGuard) Resume() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.restore != nil {
+		return nil
+	}
+	restore, err := g.raw(g.fd)
+	if err != nil {
+		return err
+	}
+	g.restore = restore
+	return nil
 }
 
 func (k *asker) Prompt(a lang.TermAsk) (string, error) {
@@ -329,6 +394,11 @@ func (k *asker) Prompt(a lang.TermAsk) (string, error) {
 	answer, err := askPrompt(k.keys, k.out, k.flush, k.lead, a)
 	if derr := done(); derr != nil {
 		return "", k.notRestored()
+	}
+	if k.lostRaw() != nil {
+		// Raw mode could not be entered again after a stop: what was
+		// read since is not trusted as an answer.
+		return "", lang.ErrTermNone
 	}
 	return answer, err
 }
@@ -343,6 +413,9 @@ func (k *asker) Confirm(a lang.TermAsk) (bool, error) {
 	yes, err := askYes(k.keys, k.out, k.flush, a)
 	if derr := done(); derr != nil {
 		return false, k.notRestored()
+	}
+	if k.lostRaw() != nil {
+		return false, lang.ErrTermNone
 	}
 	return yes, err
 }

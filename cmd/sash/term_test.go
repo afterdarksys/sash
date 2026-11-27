@@ -297,3 +297,42 @@ func TestBinaryTermOutputComesBeforeTheQuestion(t *testing.T) {
 		t.Errorf("prompt: code %d tty %q", rep.Code, rep.TTY)
 	}
 }
+
+// A signal sent while a script-mode question holds raw mode puts the
+// terminal back first: SIGINT and SIGQUIT end sash after it, SIGTSTP
+// stops it with the terminal restored and raw mode comes back when it is
+// continued, and under --record a SIGHUP ends the question as without it,
+// with the recording written.
+func TestBinaryTermSignalsRestoreTheTerminal(t *testing.T) {
+	bin := ptyBin(t)
+	const src = "let a = (term prompt \"q?\")\necho got $a end\n"
+	for _, c := range []struct {
+		sig  string
+		code int
+	}{{"INT", -2}, {"QUIT", 2}} {
+		rep := runPTY(t, ptyRun{Argv: []string{bin, "-c", src}, Steps: []ptyStep{{Expect: "q? "}, {Sleep: 0.4}, {Signal: c.sig}}})
+		if rep.Code != c.code || !rep.Restored || strings.Contains(rep.TTY, " end") {
+			t.Errorf("%s: code %d restored %v tty %q", c.sig, rep.Code, rep.Restored, rep.TTY)
+		}
+	}
+	rep := runPTY(t, ptyRun{Argv: []string{bin, "-c", src}, Steps: []ptyStep{
+		{Expect: "q? "}, {Sleep: 0.4}, {Check: true}, {Signal: "TSTP"}, {Sleep: 0.4}, {Check: true},
+		{Signal: "CONT"}, {Sleep: 0.4}, {Check: true}, {Send: "bob\r"}, {Expect: " end"},
+	}})
+	if rep.Code != 0 || !rep.Restored || !strings.Contains(rep.TTY, "got bob end") || len(rep.Checks) != 3 || rep.Checks[0] || !rep.Checks[1] || rep.Checks[2] {
+		t.Errorf("TSTP: code %d restored %v checks %v tty %q", rep.Code, rep.Restored, rep.Checks, rep.TTY)
+	}
+	dir := t.TempDir()
+	fixture := filepath.Join(dir, "fx.json")
+	if err := os.WriteFile(fixture, []byte(`{"grant":{"entitlements":[],"file_read":[],"file_write":[]},"results":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := filepath.Join(dir, "rec.jsonl")
+	rep = runPTY(t, ptyRun{Argv: []string{bin, "--record", rec, "--fixture", fixture, "-c", src}, Steps: []ptyStep{{Expect: "q? "}, {Sleep: 0.4}, {Signal: "HUP"}}})
+	if rep.Code != 129 || !rep.Restored || strings.Contains(rep.TTY, " end") {
+		t.Errorf("record HUP: code %d restored %v tty %q", rep.Code, rep.Restored, rep.TTY)
+	}
+	if _, err := os.Stat(rec); err != nil {
+		t.Errorf("record HUP: no recording: %v", err)
+	}
+}

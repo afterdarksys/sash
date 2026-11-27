@@ -30,6 +30,7 @@ type ptyStep struct {
 	Send   string  `json:"send,omitempty"`
 	Signal string  `json:"signal,omitempty"`
 	Sleep  float64 `json:"sleep,omitempty"`
+	Check  bool    `json:"check,omitempty"`
 }
 
 // ptyReport is what the run did: what the terminal showed (latin-1, so
@@ -42,7 +43,10 @@ type ptyReport struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	Restored bool   `json:"restored"`
-	Error    string `json:"error"`
+	// Checks are the {check} steps: whether the mode was the starting
+	// one at that moment.
+	Checks []bool `json:"checks"`
+	Error  string `json:"error"`
 }
 
 // latin1 is the bytes of a report string.

@@ -9,12 +9,15 @@ The scenario is one JSON object on argv[1]:
   env      the whole environment
   cwd      the working directory
   steps    a list of {"expect": text}, {"send": text}, {"signal": name},
-           {"sleep": seconds}, {"eof": true}, {"winsize": [rows, cols]};
+           {"sleep": seconds}, {"eof": true}, {"winsize": [rows, cols]},
+           {"check": true};
            expect waits for text on the terminal; winsize sets the
            terminal's size (send the WINCH signal after it: the child has
-           no controlling terminal, so the kernel does not)
+           no controlling terminal, so the kernel does not); check adds to
+           "checks" whether the terminal's mode is, now, the one it started
+           with
   wait     seconds to wait for the exit (default 5)
-The report: {"code", "tty", "stdout", "stderr", "restored", "error"}; the
+The report: {"code", "tty", "stdout", "stderr", "restored", "checks", "error"}; the
 captured text is latin-1, so every byte survives.
 """
 import fcntl
@@ -97,6 +100,20 @@ def pump(timeout):
     return bool(ready)
 
 
+def same_mode():
+    """Whether the terminal's mode is the one it started with."""
+    try:
+        now = termios.tcgetattr(slave)
+    except termios.error:
+        return False
+    # Darwin sets the transient PENDIN flag when canonical mode is restored.
+    pending = getattr(termios, "PENDIN", 0)
+    want = [list(x) if isinstance(x, list) else x for x in original]
+    now[3] &= ~pending
+    want[3] &= ~pending
+    return now == want
+
+
 def expect(needle):
     deadline = time.monotonic() + 5
     while needle not in transcript:
@@ -117,6 +134,8 @@ try:
             os.write(master, step["send"].encode("latin-1"))
         elif "signal" in step:
             os.kill(process.pid, getattr(signal, "SIG" + step["signal"]))
+        elif "check" in step:
+            report.setdefault("checks", []).append(same_mode())
         elif "winsize" in step:
             rows, cols = step["winsize"]
             fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -132,15 +151,7 @@ try:
     while pump(0.05):
         pass
     report["code"] = process.returncode
-    try:
-        restored = termios.tcgetattr(slave)
-        # Darwin sets the transient PENDIN flag when canonical mode is restored.
-        pending = getattr(termios, "PENDIN", 0)
-        restored[3] &= ~pending
-        original[3] &= ~pending
-        report["restored"] = restored == original
-    except termios.error:
-        report["restored"] = False
+    report["restored"] = same_mode()
 except AssertionError as e:
     report["error"] = str(e)
 finally:
