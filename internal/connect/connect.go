@@ -30,8 +30,10 @@ import (
 // what the client prints (the client prints only its own fixed lines; a
 // server's code is shown only when it is a plain token, with this build's
 // own meaning for it, and the server's message, fix or any other text is
-// never printed; the host's name is escaped and cut; the token and the
-// ticket are replaced in every server string before it is judged); a
+// never printed; the host's name is printed only when it matches the
+// control plane's hostname rule, and the id is escaped and cut; the token
+// and the ticket are replaced in every server string before it is
+// judged); a
 // downgrade from a root session to a weaker one (--root asks for
 // terminal:root and nothing else, and a refusal ends the run: there is no
 // second request with another purpose); a server that stalls before or
@@ -572,8 +574,10 @@ func (r *run) session(ctx context.Context, conn *wsclient.Conn, sigs <-chan os.S
 				}
 				started = true
 				wait.Stop()
+				// The host's name is printed only when it is a name the
+				// control plane's own rule allows; otherwise the id alone.
 				label := r.name(host.HostID)
-				if host.Hostname != "" {
+				if hostnameRe.MatchString(host.Hostname) {
 					label = r.name(host.Hostname) + " (" + label + ")"
 				}
 				r.say(msgSession + label)

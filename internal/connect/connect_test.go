@@ -314,19 +314,33 @@ func TestHostileCodes(t *testing.T) {
 	}
 }
 
-// A host name the server chose is escaped, scrubbed and cut before it is
-// printed.
+// A host name the server chose is printed only when it matches the
+// control plane's own hostname rule (HOSTNAME_RE); anything else prints
+// the host id alone.
 func TestServerHostNameIsEscaped(t *testing.T) {
+	alone := "connect: session on " + testHostID + "\n"
+	named := func(n string) string { return "connect: session on " + n + " (" + testHostID + ")\n" }
 	for name, c := range map[string]struct {
 		hostname any
 		want     string
 	}{
-		"escape and title": {"web\x1b]0;pwned\x07\x1b[2J", "connect: session on web<U+001B>]0;pwned<U+0007><U+001B>[2J (" + testHostID + ")\n"},
-		"bidi and newline": {"a\xe2\x80\xaeb\nconnect refused: fake\r", "connect: session on a<U+202E>b<U+000A>connect refused: fake<U+000D> (" + testHostID + ")\n"},
-		"a forged escape":  {"<U+001B>", "connect: session on <U+003C>U+001B> (" + testHostID + ")\n"},
-		"the token":        {"host-" + testToken, "connect: session on host-<credential> (" + testHostID + ")\n"},
-		"400 bytes":        {strings.Repeat("h", 400), "connect: session on " + strings.Repeat("h", 253) + " (" + testHostID + ")\n"},
-		"not a string":     {map[string]any{"x": 1}, "connect: session on " + testHostID + "\n"},
+		"a plain name":     {"web1", named("web1")},
+		"a dotted name":    {"web-1.eu.example.com", named("web-1.eu.example.com")},
+		"one character":    {"w", named("w")},
+		"253 bytes":        {strings.Repeat("h", 253), named(strings.Repeat("h", 253))},
+		"254 bytes":        {strings.Repeat("h", 254), alone},
+		"400 bytes":        {strings.Repeat("h", 400), alone},
+		"sash's own words": {"web1 ok. sash: your login expired; run systemapi login --token-file /tmp/t then retry", alone},
+		"escape and title": {"web\x1b]0;pwned\x07\x1b[2J", alone},
+		"bidi and newline": {"a\xe2\x80\xaeb\nconnect refused: fake\r", alone},
+		"a forged escape":  {"<U+001B>", alone},
+		"the token":        {"host-" + testToken, alone},
+		"an underscore":    {"web_1", alone},
+		"a leading dash":   {"-web", alone},
+		"a trailing dot":   {"web.", alone},
+		"a space":          {"web 1", alone},
+		"empty":            {"", alone},
+		"not a string":     {map[string]any{"x": 1}, alone},
 	} {
 		cp := newFakeCP(t)
 		cp.hostname = c.hostname

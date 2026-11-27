@@ -54,6 +54,11 @@ var (
 	hostIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 	ticketRe = regexp.MustCompile(`^stk_[A-Za-z0-9_-]{8,508}$`)
 	codeRe   = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	// hostnameRe is the control plane's own rule for a hostname at
+	// enrollment (HOSTNAME_RE, controlplane/sshkey.js): a name that does
+	// not match it did not come from an honest control plane, and is not
+	// printed.
+	hostnameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
 )
 
 // origin is the control plane's address: https, a host, and nothing else.
