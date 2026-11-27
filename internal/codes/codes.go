@@ -81,7 +81,7 @@ var table = []Code{
 	{"use", 2, "file", "a use file that could not be read, is too large, or holds something other than fn and declare -r", "A person corrects the library file; nothing from it was loaded.", []string{"use:"}},
 	{"with_prefix", 2, "file", "\"with prefix: cannot stat\": the prefix of a with block could not be checked", "A person checks the path; the block did not run.", []string{"with prefix:"}},
 	{"chan_send", 2, "verb", "\"send <c>: ...\": a send on a par channel was refused: a value over 8 MiB, nested over 128 deep, or of a kind that cannot cross, or the par's buffers over 32 MiB", "A person reads which: the values are too large or too deep for a channel.", []string{"send"}},
-	{"chan_no_receiver", 1, "verb", "\"send <c>: no receiver left\": every branch that receives from the channel had ended, so the send failed with status 1, which try catches", "A person corrects the script: the receivers broke out or failed while a sender still had values.", []string{"no receiver left"}},
+	{"chan_no_receiver", 1, "verb", "\"send <c>: no receiver left\": every branch that receives from the channel had ended, so the send failed with status 1, which try catches", "A person corrects the script: the receivers broke out or failed while a sender still had values.", []string{"send <c>: no receiver left"}},
 	{"chan_recv_only", 2, "parse", "\"recv only as for x in recv c\": recv stood anywhere but a for source", fixScript, []string{"recv only"}},
 	{"deadlock", 2, "verb", "every branch of a par was waiting on a channel; the par named each wait and ended the line, and try does not catch it", "A person corrects the script: a branch waits for a value no running branch will send, or for room no branch will make.", []string{"deadlock"}},
 	{"chan_unread", 1, "verb", "\"par: chan <c>: N unread\": values were left in a par channel at the join, so the par failed rather than drop them", "A person corrects the script: a receiver broke out or failed before its channel was empty.", []string{"par: chan"}},
@@ -257,16 +257,17 @@ func All() []Code {
 }
 
 // Find is the entry whose printed words begin msg: the longest match
-// wins, and a match ends at the end of msg or before a space, a colon, or
-// a line end.
+// wins, a <c> in the printed words matches a name (matchPrint), and a
+// match ends at the end of msg or before a space, a colon, or a line end.
 func Find(msg string) (Code, bool) {
 	best, bestLen := -1, -1
 	for i, c := range table {
 		for _, p := range c.prints {
-			if !strings.HasPrefix(msg, p) {
+			n, ok := matchPrint(msg, p)
+			if !ok {
 				continue
 			}
-			rest := msg[len(p):]
+			rest := msg[n:]
 			whole := rest == "" || strings.HasSuffix(p, ":") || strings.HasSuffix(p, " ") || strings.ContainsRune(" :\n", rune(rest[0]))
 			if whole && len(p) > bestLen {
 				best, bestLen = i, len(p)
@@ -277,6 +278,30 @@ func Find(msg string) (Code, bool) {
 		return Code{}, false
 	}
 	return table[best], true
+}
+
+// matchPrint reports whether msg starts with print p, and where that
+// match ends. A <c> in p stands for a name sash puts in the line, such as
+// a channel's: one or more bytes up to a space, a colon, or a newline.
+func matchPrint(msg, p string) (int, bool) {
+	at := 0
+	for k, part := range strings.Split(p, "<c>") {
+		if k > 0 {
+			j := at
+			for j < len(msg) && !strings.ContainsRune(" :\n", rune(msg[j])) {
+				j++
+			}
+			if j == at {
+				return 0, false
+			}
+			at = j
+		}
+		if !strings.HasPrefix(msg[at:], part) {
+			return 0, false
+		}
+		at += len(part)
+	}
+	return at, true
 }
 
 // JSON is the catalog as sash codes --json prints its codes field.

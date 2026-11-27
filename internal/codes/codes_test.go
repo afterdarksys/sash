@@ -219,6 +219,17 @@ var notRefusals = map[string]string{
 	"no parent":           "the hand start's parent error; printed as parent <key>",
 }
 
+// notRefusal is the notRefusals key msg is, or begins as a word: a chain
+// the scan renders whole ("trace <c>") is still the entry for "trace".
+func notRefusal(msg string) (string, bool) {
+	for key := range notRefusals {
+		if msg == key || (strings.Contains(msg, "<c>") && strings.HasPrefix(msg, key+" ")) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 var exitIdents = map[string]int{"exitType": 2, "exitDenied": 126, "exitUnknown": 127, "exitHangup": 129, "exitInterrupt": 130}
 
 // leftLit is the string literal at the left of e, through + chains.
@@ -235,6 +246,39 @@ func leftLit(e ast.Expr) (string, bool) {
 		return leftLit(x.X)
 	}
 	return "", false
+}
+
+// chainLit is e as it prints, when its left end is a string literal:
+// each literal of a + chain as written and any other operand as <c>, the
+// catalog's stand-in for a name, so "send " + c + ": no receiver left" is
+// seen whole, not as its first literal.
+func chainLit(e ast.Expr) (string, bool) {
+	if _, ok := leftLit(e); !ok {
+		return "", false
+	}
+	var b strings.Builder
+	var walk func(e ast.Expr)
+	walk = func(e ast.Expr) {
+		switch x := e.(type) {
+		case *ast.BinaryExpr:
+			if x.Op == token.ADD {
+				walk(x.X)
+				walk(x.Y)
+				return
+			}
+		case *ast.ParenExpr:
+			walk(x.X)
+			return
+		case *ast.BasicLit:
+			if s, err := strconv.Unquote(x.Value); err == nil && x.Kind == token.STRING {
+				b.WriteString(s)
+				return
+			}
+		}
+		b.WriteString("<c>")
+	}
+	walk(e)
+	return b.String(), true
 }
 
 // errStream reports a writer that is an error stream: &m.err (any
@@ -298,7 +342,7 @@ func scanMessages(t *testing.T, dir string) []scanned {
 								}
 							}
 						}
-						if s, ok := leftLit(msg); ok {
+						if s, ok := chainLit(msg); ok {
 							exit := -1
 							if id, ok := status.(*ast.Ident); ok {
 								if e, known := exitIdents[id.Name]; known {
@@ -327,7 +371,7 @@ func scanMessages(t *testing.T, dir string) []scanned {
 					// line's writeAll(w, []byte("...")).
 					if fn == "writeAll" && len(x.Args) == 2 {
 						if c, ok := x.Args[1].(*ast.CallExpr); ok && len(c.Args) == 1 {
-							if s, ok := leftLit(c.Args[0]); ok {
+							if s, ok := chainLit(c.Args[0]); ok {
 								add(x.Pos(), s, -1)
 							}
 						}
@@ -335,13 +379,13 @@ func scanMessages(t *testing.T, dir string) []scanned {
 					// A print to an error stream: a machine's err, a
 					// writer named for stderr, or os.Stderr.
 					if (fn == "fmt.Fprintf" || fn == "fmt.Fprintln" || fn == "fmt.Fprint") && len(x.Args) > 1 && errStream(x.Args[0]) {
-						if s, ok := leftLit(x.Args[1]); ok {
+						if s, ok := chainLit(x.Args[1]); ok {
 							add(x.Pos(), s, -1)
 						}
 					}
 					if fn == "errors.New" || fn == "fmt.Errorf" || strings.HasSuffix(fn, "WriteString") || fn == "fail" || fn == "halt" {
 						for _, a := range x.Args {
-							if s, ok := leftLit(a); ok {
+							if s, ok := chainLit(a); ok {
 								add(x.Pos(), s, -1)
 								break
 							}
@@ -386,8 +430,8 @@ func TestEveryFixedMessageIsCatalogued(t *testing.T) {
 		}
 		for _, m := range msgs {
 			total++
-			if _, skip := notRefusals[m.msg]; skip {
-				used[m.msg] = true
+			if key, skip := notRefusal(m.msg); skip {
+				used[key] = true
 				continue
 			}
 			c, ok := Find(m.msg)
@@ -457,6 +501,9 @@ func TestFindNamesTheRightEntry(t *testing.T) {
 		"term inside par":                      "term_inside_par",
 		"usage term: question over 1024 bytes": "usage",
 		"unknown scp":                          "unknown",
+		"send jobs: no receiver left":          "chan_no_receiver",
+		"send jobs: buffers over 32 MiB":       "chan_send",
+		"send c: value over 8 MiB":             "chan_send",
 		"type |>":                              "type",
 		"parse: term inside par":               "parse",
 		"timeout":                              "timeout",

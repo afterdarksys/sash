@@ -798,7 +798,7 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		return m.chanFail(err)
 	}
 	if ch.receivers == 0 {
-		m.err.WriteString("send " + s.Chan + ": " + msgNoReceiver + "\n")
+		m.err.WriteString("send " + s.Chan + ": no receiver left\n")
 		return 1, true
 	}
 	if t.bytes+size > chanParMaxBytes {
@@ -909,10 +909,6 @@ func chanCopy(v value) (out value, size int, why string) {
 	}
 	return out, size, ""
 }
-
-// msgNoReceiver follows "send c: " when every receiver has ended: status
-// 1, not exit 2, so it has its own catalog entry.
-const msgNoReceiver = "no receiver left"
 
 // What stops a value crossing, after "send c: ".
 const (
