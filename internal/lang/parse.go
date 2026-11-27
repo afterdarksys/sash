@@ -216,7 +216,50 @@ func parseTokens(toks []token) (*Program, error) {
 	if p.peek().kind != kEOF {
 		return nil, fmt.Errorf("parse: trailing input")
 	}
+	if err := secretPromptPlaces(prog); err != nil {
+		return nil, err
+	}
 	return prog, nil
+}
+
+// msgSecretPrompt is the one place term prompt -s may stand.
+const msgSecretPrompt = `term prompt -s: only as declare -s name = (term prompt -s "question")`
+
+// secretPrompt reports a stage whose literal words begin term prompt -s.
+func secretPrompt(st Stage) bool {
+	return len(st.Argv) >= 3 && plain(st.Argv[0]) == "term" && plain(st.Argv[1]) == "prompt" && plain(st.Argv[2]) == "-s"
+}
+
+// secretPromptPlaces refuses term prompt -s anywhere but as the single
+// stage, with no redirect, of the value pipeline of a declare -s: a let,
+// a bare statement, a pipeline with another stage, a condition, a loop
+// source. A secret read any other way would be an ordinary value for a
+// moment, and could print or be recorded. Every such stage in the tree
+// is counted, and so is every declare -s that holds one properly: the
+// two counts differ exactly when one is misplaced.
+func secretPromptPlaces(prog *Program) error {
+	stages, placed := 0, 0
+	needsEachStage(prog, func(st Stage) {
+		if secretPrompt(st) {
+			stages++
+		}
+	})
+	if stages == 0 {
+		return nil
+	}
+	needsEachStmt(prog, func(s Stmt) {
+		d, ok := s.(*Declare)
+		if !ok || !strings.Contains(d.Flags, "s") || d.Value == nil || d.Value.Pipe == nil {
+			return
+		}
+		if pl := d.Value.Pipe; len(pl.Stages) == 1 && len(pl.Stages[0].Redirs) == 0 && secretPrompt(pl.Stages[0]) {
+			placed++
+		}
+	})
+	if stages != placed {
+		return fmt.Errorf("parse: %s", msgSecretPrompt)
+	}
+	return nil
 }
 
 func (p *parser) program() (*Program, error) {
@@ -372,6 +415,18 @@ func (p *parser) par() (Stmt, error) {
 		if msg := parBranchCheck(b, false); msg != "" {
 			return nil, fmt.Errorf("parse: %s", msg)
 		}
+	}
+	// A branch has no terminal of its own, and the par's source is read
+	// before any branch runs but is part of the statement: term anywhere
+	// in a par is refused. A call that reaches one is refused when it runs.
+	asks := false
+	needsEachStage(&s.Body, func(st Stage) {
+		if len(st.Argv) > 0 && plain(st.Argv[0]) == "term" {
+			asks = true
+		}
+	})
+	if asks {
+		return nil, fmt.Errorf("parse: term inside par")
 	}
 	return s, nil
 }

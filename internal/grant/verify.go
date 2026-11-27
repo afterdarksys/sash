@@ -202,7 +202,7 @@ func shape(doc []byte, w wire) error {
 			return ErrBadShape
 		}
 	}
-	if w.V != "sash/1" || w.Actor == "" || w.Host == "" || w.LeaseID == "" || w.Sig == "" {
+	if w.V != Version || w.Actor == "" || w.Host == "" || w.LeaseID == "" || w.Sig == "" {
 		return ErrBadShape
 	}
 	switch w.Purpose {

@@ -65,7 +65,7 @@ The manifest is advisory: it grants nothing, and the agent still checks every ve
 sash --lint (-c script | file | stdin)
 ```
 
-Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`. `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
+Static and advisory; runs nothing. Columns `line`, `rule`, `severity`, `what`. Exit 0 none or info only, 1 any warning or error, 2 usage or parse error. Rules: `unused-binding` (info), `unreachable`, `constant-check`, `retry-on-mutation`, `secret-to-sink` (error), `secret-fault`, `silent-catch`, `incomplete-needs` (error for `command_from_value`), `shadowed-secret`, `secret-file` (info), `secret-after-write`, `par-same-target`, `record-file` (info), `atomic-irreversible`, `prompt-to-mutation` (a name bound from `term prompt`, or from a `fn` that asks it, reaches an argument, a path, or the body of a mutating stage), `prompt-subcommand` (error: a name bound from `term prompt` is the word that selects what `unit`, `package`, or `sysctl` does), `prompt-in-retry` (a `retry` body asks again on every attempt), `prompt-needs-terminal` (info, once per script). `#lint:allow <rule> <reason>` on the same line suppresses a warning or info rule, never an error. A clean lint does not mean safe.
 
 `--lint` and `--needs` refuse every other flag (`--session`, `--plan`, each other) and anything after the source: exit 2, nothing runs.
 
@@ -82,6 +82,7 @@ For those values:
 - They print as `***`: `echo`, `trace`, `declare -p`, `log`, errors, and the `origin` hash.
 - They decide nothing: a condition that reads one (`if`, `while`, `do`, `filter`, `check`) is exit 2 `a secret cannot decide a branch`.
 - They cannot be a verb argument, a path, or the body of `>`: exit 2 `a secret cannot leave sash`. Only `template_file` writes a render it knows is secret, at mode `0600`.
+- Rows an `each` computed from one hold `***`; they are not written either, as they are or rendered later in the pipeline (`| cat`, `|> json`): `>` and `fs write-atomic` are exit 2 `a secret cannot leave sash`, and a `let` that binds such rows binds a secret.
 - One in a plain word is exit 2 `a secret in a word: build it inside [ ]`.
 - An evaluation that reads one and fails (`[ int($tok) ]`) ends the line with `a secret ended the line`, which `try` cannot catch.
 - The prompt does not keep a `declare -s` line in history, and `!!` cannot recall one.
@@ -211,6 +212,103 @@ echo after
 ```sash
 retry 3 delay 2s { package query nginx }
 timeout 30s { package query nginx }
+```
+
+## `fs`
+
+`... | fs write-atomic <path> [--mode 0600|0640|0644]` is a sink: the last stage of a pipeline, with input, and no `>` after it (anything else is exit 2 `usage fs write-atomic`). It writes what was piped to `<path>` through the same `file.write` as `>`: the same key, the same write roots (`denied file.write` before any call), the same plan line, the same confirm question, the same refusals, and a secret body is exit 2 `a secret cannot leave sash`. `write-atomic` and `--mode` are literal words, and so is the mode.
+
+What it adds over `>`: when an earlier stage, or its `<` read, failed, nothing is sent. stderr says `fs write-atomic: not written`, the status is the failing stage's, and the file on the host is as it was.
+
+```sash
+# expect: host 1 fs write-atomic: not written
+# nocall: file.write
+cat /etc/nginx/nginx.conf | egrep zzz | fs write-atomic /srv/app/out
+```
+
+```sash
+# expect: host 0
+# call: file.write argv=> /srv/app/app.conf.new path=/srv/app/app.conf.new mode= body="listen 9090\n"
+cat /srv/app/app.conf | lines |> sub line "8080" with "9090" | fs write-atomic /srv/app/app.conf.new
+```
+
+```sash
+# expect: plan 0 plan: would write /srv/app/app.conf.new (12 bytes) (mode 0640)
+# nocall: file.write
+cat /srv/app/app.conf | fs write-atomic /srv/app/app.conf.new --mode 0640
+```
+
+Atomic here means one thing: the agent writes a temporary file beside the target and renames it over, so no reader ever sees a partial file, and a crash leaves the old file or the new one. It is not isolation: two writers of one path still race, and the last rename wins. It is not `atomic { }`: a later failure does not roll this write back, unless the write is inside an `atomic { }` block, where it is journalled and restored like any `file.write`. `--mode` is one of the agent's three modes and never loosens a file that exists; an agent too old for a mode refuses (`agent too old for file.write mode`, exit 2), and the write is not sent without it. `--needs` reports `file.write` and the path; lint's `par-same-target` and `retry-on-mutation` apply.
+
+## Asking the person
+
+`term prompt "<question>"` prints `script asks: <question>` on the terminal and gives the line the person types, without its Enter. `term confirm "<question>"` prints `script asks: <question> [y + Enter / N]`. sash's own questions (`confirm <key> ...?` under `set -o confirm`, `confirm off?`) never begin with `script asks:`, so a script's question cannot pass for one of them; its status is 0 for `y` or `Y` then Enter and 1 for anything else. Both take exactly one question word, at most 1024 bytes, and no input: `term` is the first stage of its pipeline. `prompt` and `confirm` are literal words: from a value they are exit 2 `command_from_value`.
+
+A terminal can be asked only when sash's stdin and stderr are both terminals and the script is not on stdin: the prompt, `sash -c`, or `sash file`. `sash < script`, a pipe, a job, and a replay have none: `term` is then exit 2 `term needs a terminal` and the script stops there. Test `[ is_tty() ]` first in a script that may run unattended.
+
+```sash
+# expect: host 2 term needs a terminal
+# nostdout: after
+# lint: prompt-needs-terminal
+let name = (term prompt "unit to check?")
+echo after
+```
+
+```sash
+# expect: host 0
+# stdout: unattended
+if [ is_tty() ] {
+  term confirm "continue?" && echo yes
+} else {
+  echo unattended
+}
+```
+
+An answer is text a person typed, and a person can be told what to type: treat it as you treat host data. It is a value, never a command word (`$ans status nginx` is exit 2 `command_from_value`), and never the word that selects what `unit`, `package`, or `sysctl` does: a value that carries an answer, directly, through another binding, an expression, or a `fn`'s parameter or return, is refused there before any call (`unit $ans nginx` is exit 2 `command_from_value: a term prompt answer selects no subcommand`; lint reports `prompt-subcommand`). This follows how values flow, not which branch an answer chose: a literal subcommand inside `if [ $ans == "restart" ] { ... }` runs. An answer can still be an argument, such as the unit to restart. A yes to `term confirm` sets only that statement's status: under `set -o confirm` the next mutating verb still asks its own question, and no answer changes plan mode or confirm mode. Lint warns `prompt-to-mutation` when an answer reaches a mutating stage.
+
+```sash
+# expect: host 2 term needs a terminal
+# lint: prompt-to-mutation
+# nocall: unit.restart
+let unit = (term prompt "unit to restart?")
+unit restart $unit
+```
+
+Before a question, everything the script has printed so far is written to the terminal, escaped as all output is, so the person sees it before answering; it is not printed again at the end. Standard error written inside a `try` or `retry` waits until that block ends, since a `try` may move it into its catch. A pipe or a file still gets the bytes unchanged. The question and the echo are escaped, so neither can drive the terminal. What was typed before the question is thrown away, and so is anything typed until the keyboard has been quiet for 200 ms after the question appears; if input never goes quiet for 5 s there is no answer (exit 2 `term needs a terminal`). A no at `term confirm` takes the rest of its line, through its Enter, with it. So typing does not answer a question it was not meant for. Backspace and Ctrl-U edit the line; escape sequences and control characters are dropped. An answer is at most 4096 bytes (`term prompt: answer over 4096 bytes`, exit 2) and must be text (`term prompt: answer is not text`, exit 2). Ctrl-D on an empty line or the end of input is status 1 `term prompt: end of input` with an empty value, and `retry` does not ask again. Enter on an empty line is the same: status 1 `term prompt: empty answer` with an empty value, so `set -e` stops there, `try` catches it, and `retry` does not ask again; an empty answer never reaches the next statement with status 0. Lint's `prompt-to-mutation` still warns where an answer, empty or not, reaches a mutating stage. Ctrl-C is status 130 `term: interrupted`; it stops the script and `try` does not catch it. A signal sent to sash while it asks (SIGTERM, SIGINT, SIGQUIT, SIGHUP, also under `--record`) puts the terminal mode back first; after SIGTSTP the terminal is back to normal while sash is stopped, and the question goes on when it is continued. Inside `timeout` the wait counts: the read ends at the deadline, exit 2 `timeout`.
+
+`term` is refused in `par` (`parse: term inside par`; reached through a `fn`, exit 2 `term inside par`) and in `atomic { }` (exit 2 `atomic_irreversible: term`): a person at a prompt would let the transaction's deadline restore the block, so ask before the block. In `retry` it asks on every attempt; lint warns `prompt-in-retry`. Under plan mode it asks as in a real run.
+
+```sash
+# expect: parse term inside par
+par 2 {
+  term confirm "first?"
+  echo second
+}
+```
+
+```sash
+# expect: host 2 atomic_irreversible: term
+# nocall: atomic.begin
+atomic {
+  term confirm "write it?"
+  echo x > /srv/app/flag
+}
+```
+
+A recording keeps a plain answer in clear, as a `term` event; a replay answers from the recording and asks nobody. A plain `term prompt` echoes what is typed and is not for a secret.
+
+To read a secret, write exactly `declare -s name = (term prompt -s "<question>")`. Nothing is echoed, not even a `*`, and the value is a secret from its first byte: every rule under Secrets applies. `-s` is legal only there, as the single stage of that value with no redirect: in a `let`, a bare statement, a pipeline with another stage, a condition, or with `term confirm` it is refused before anything runs. A recording stores only that a secret was asked for, with no value and no length, and a replay of such a recording is exit 2 `replay_secret <seq>`.
+
+```sash
+# expect: host 2 term needs a terminal
+# nostdout: after
+declare -s tok = (term prompt -s "token?")
+echo after
+```
+
+```sash
+# expect: parse term prompt -s: only as declare -s name = (term prompt -s "question")
+let tok = (term prompt -s "token?")
 ```
 
 ## `check`

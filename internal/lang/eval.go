@@ -25,6 +25,8 @@ const (
 	exitUnknown = 127
 	// exitHangup is a run stopped by SIGHUP, as a shell reports it.
 	exitHangup = 129
+	// exitInterrupt is Ctrl-C at a term question.
+	exitInterrupt = 130
 )
 
 // fnDepth matches globDepth. A deeper call exits 2 and does not run.
@@ -103,6 +105,18 @@ type Options struct {
 	// first interrupt cancels the branches; a second stops the wait.
 	// Under confirm it is never asked, so the prompt keeps the keys.
 	Interrupts func() (ch <-chan struct{}, stop func())
+	// Term is the person at the terminal, for is_tty() and term (term.go).
+	// Only a caller whose stdin and stderr are both terminals, and whose
+	// stdin is not the script, sets it; nil is no terminal.
+	Term Term
+	// Show, when set, is handed the run's stdout and stderr so far just
+	// before a person is asked (term, or a confirm question), so what a
+	// script printed is on the screen before the question it leads to.
+	// What Show was handed is not in the Outcome again. stderr is safe
+	// text, as in the Outcome; the caller escapes for its terminal. stderr
+	// written inside a try or retry is held back, since the try may move
+	// it into its catch.
+	Show func(stdout, stderr string)
 }
 
 // Run expands src, then parses and executes it. Toolkit names call p.
@@ -148,6 +162,8 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 	m.trace = opt.Trace
 	m.confirm = opt.Confirm
 	m.interrupts = opt.Interrupts
+	m.term = opt.Term
+	m.show = opt.Show
 	if opt.Tape != nil {
 		m.tape = opt.Tape
 		m.tape.begin(expanded)
@@ -166,7 +182,7 @@ func runPlain(src string, g grant.Grant, p parent.Parent, opt Options) Outcome {
 			status = m.haltStatus
 		}
 	}
-	out := Outcome{Status: status, Stdout: m.out.String(), Stderr: safeText(m.err.String()), Prefix: m.prefix()}
+	out := Outcome{Status: status, Stdout: m.out.String()[m.shownOut:], Stderr: safeText(m.err.String()[m.shownErr:]), Prefix: m.prefix()}
 	if m.ctl == ctlExit {
 		out.Status = m.exitCode
 		out.Exit = true
@@ -240,10 +256,19 @@ type machine struct {
 	// secretWrite is set by a template_file whose render read a secret,
 	// so its write goes out with mode 0600 (jobs contract section 2).
 	secretWrite bool
+	// rowSecret is set while a pipeline runs when a per-row expression
+	// (each) read a secret: the evaluation's own taint, the mark that
+	// makes an expression's result a secret. Its rows then hold *** for a
+	// value derived from the secret, and nothing in the pipeline from
+	// there on may be written: not by >, not by fs write-atomic.
+	rowSecret bool
 	// confirm is Options.Confirm; declined is set when a verb was declined
 	// in the current retry attempt, so retry does not ask again.
 	confirm  func(string) (bool, bool)
 	declined bool
+	// termEnded is set when a term question met the end of input in the
+	// current retry attempt, so retry does not ask it again.
+	termEnded bool
 	// haltStatus, when set, is the status of a ctlHalt (a Ctrl-C at a
 	// confirm prompt stops the line with 126).
 	haltStatus int
@@ -251,6 +276,15 @@ type machine struct {
 	// Options.Interrupts.
 	pb         *parBranch
 	interrupts func() (<-chan struct{}, func())
+	// term is Options.Term: nil when there is no terminal to ask.
+	term Term
+	// show is Options.Show. shownOut and shownErr are how much of out and
+	// err it was handed; errHolds are the stderr marks of the try and
+	// retry blocks running, outermost first: stderr past the first is
+	// not shown, since those blocks rewrite it.
+	show               func(stdout, stderr string)
+	shownOut, shownErr int
+	errHolds           []int
 	// drains is set on a Run's own machine: it drains the State's late
 	// queue before each top-level statement. src is the Run's source as
 	// given (a session recording's header hashes it, as --record does)
@@ -260,6 +294,9 @@ type machine struct {
 	text   string
 	// recWriting is set while finishRecord writes the recording.
 	recWriting bool
+	// sinkWrite is set while fs write-atomic's write goes out: its mode
+	// is the one asked for, not the mark of a secret render.
+	sinkWrite bool
 	// atomic is the transaction of the atomic block running, if any;
 	// rolledBack is set once a block in this run rolled back.
 	atomic     *atomicTx
@@ -335,6 +372,8 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 		}
 	}
 	mark := m.err.Len()
+	m.errHolds = append(m.errHolds, mark)
+	defer func() { m.errHolds = m.errHolds[:len(m.errHolds)-1] }()
 	var st int
 	var stop bool
 	for attempt := 1; attempt <= n; attempt++ {
@@ -353,6 +392,7 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 			}
 		}
 		m.declined = false
+		m.termEnded = false
 		st, stop = m.runProg(&r.Body)
 		if stop && m.ctl != ctlNone {
 			return st, true
@@ -360,6 +400,10 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 		if m.declined {
 			// A no is an answer, not a failure: asking again would make
 			// the person decline it N times.
+			return st, stop
+		}
+		if m.termEnded {
+			// The input ended: there is nobody to ask again.
 			return st, stop
 		}
 		if !stop && st == 0 {
@@ -371,6 +415,9 @@ func (m *machine) runRetry(r *Retry) (int, bool) {
 	}
 	return st, stop
 }
+
+// fsModes are the file modes the agent sets (its three).
+var fsModes = map[string]bool{"0600": true, "0640": true, "0644": true}
 
 // mutating names the verbs plan mode stops.
 var mutating = map[string]bool{"unit.restart": true, "package.install": true, "sysctl.set": true, "file.write": true}
@@ -412,13 +459,13 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 		}
 		if v.Key == "file.write" && v.Mode != "" {
 			what = fmt.Sprintf("template_file %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
-			if m.recWriting {
+			if m.recWriting || m.sinkWrite {
 				what = fmt.Sprintf("write %s (%d bytes) (mode %s)", v.Path, len(v.Body), v.Mode)
 			}
 		}
 		m.err.WriteString("plan: would " + what + "\n")
 		if m.tape != nil {
-			m.tape.plan(v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
+			m.tape.plan(v, m.sawSecret || m.secretPipe || (v.Mode != "" && !m.sinkWrite), m.secretTexts())
 			if err := m.tape.Err(); err != nil {
 				m.ctl = ctlHalt
 				return parent.Result{}, err
@@ -442,6 +489,7 @@ func (m *machine) do(v parent.Verb) (parent.Result, error) {
 				cells[i] = "'" + cells[i] + "'"
 			}
 		}
+		m.showPending()
 		yes, interrupted := m.confirm("confirm " + needsCell(v.Key) + " " + strings.Join(cells, " ") + "? [y + Enter / N]")
 		if interrupted {
 			m.ctl = ctlHalt
@@ -719,6 +767,12 @@ func (m *machine) runLet(s *Let) (int, bool) {
 	st, stop, v := m.runPipe(*s.Pipe)
 	if stop {
 		return st, true
+	}
+	if m.rowSecret {
+		// Rows a per-row expression computed from a secret: the binding
+		// is a secret, so it cannot leave sash later either.
+		m.rowSecret = false
+		v = value{kind: valData, d: secretVal{toDatum(v)}}
 	}
 	if code, stop := m.bindLet(s.Name, v); stop {
 		return code, true
@@ -1306,7 +1360,9 @@ func (m *machine) wordValue(w Word) (value, error) {
 // the caught map and out of the session's stderr. A jump passes through.
 func (m *machine) runTry(t *Try) (int, bool) {
 	mark := m.err.Len()
+	m.errHolds = append(m.errHolds, mark)
 	st, stop := m.runProg(&t.Body)
+	m.errHolds = m.errHolds[:len(m.errHolds)-1]
 	if !stop || m.ctl != ctlNone {
 		return st, stop
 	}
@@ -1395,7 +1451,24 @@ type expStage struct {
 	mover   bool
 	// x is the [ ] of filter or each, kept unevaluated for each row.
 	x Expr
+	// solo is a stage that is its whole pipeline, with no redirect.
+	solo bool
+	// sink is fs write-atomic: outPath is written only when every earlier
+	// stage succeeded, with mode when one was given.
+	sink bool
+	mode string
 }
+
+// msgFsUsage is fs write-atomic given the wrong words or the wrong place.
+const msgFsUsage = "usage fs write-atomic"
+
+// msgFsNotWritten says the sink sent nothing because an earlier stage
+// failed.
+const msgFsNotWritten = "fs write-atomic: not written"
+
+// msgSubFromAnswer refuses a subcommand word that carries a term prompt
+// answer.
+const msgSubFromAnswer = "command_from_value: a term prompt answer selects no subcommand"
 
 // msgCommandFromValue refuses a stage whose command name is not a literal.
 const msgCommandFromValue = "command_from_value"
@@ -1423,6 +1496,8 @@ type refusal struct {
 // prepareAt is prepare, plus where a path denial points.
 func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 	exp := make([]expStage, len(pipe.Stages))
+	// pipeSecret is set once any stage's words read a secret.
+	pipeSecret := false
 	for i, st := range pipe.Stages {
 		// A command name is a literal on the line, never a value: the
 		// verb a line runs is the verb its reader sees. This is checked
@@ -1441,6 +1516,54 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		if name == "origin" && (len(st.Argv) != 2 || plain(st.Argv[1]) == "") {
 			return nil, &problem{exitType, "usage origin name"}, refusal{}
 		}
+		// term's second word selects what the person is asked, so it is a
+		// literal like the command word, and so is any flag. term takes
+		// no input.
+		if name == "term" {
+			if len(st.Argv) > 1 && plain(st.Argv[1]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) > 3 && plain(st.Argv[2]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) == 3 && plain(st.Argv[2]) == "-s" {
+				// -s with no question is not a plain prompt that asks
+				// "-s" and echoes what is typed.
+				return nil, &problem{exitType, "usage term"}, refusal{}
+			}
+			if i != 0 {
+				return nil, &problem{exitType, "usage term"}, refusal{}
+			}
+			for _, r := range st.Redirs {
+				if r.Kind != ">" {
+					return nil, &problem{exitType, "usage term"}, refusal{}
+				}
+			}
+		}
+		// fs's second word selects what is done to the host and its flag
+		// how, so both are literals, and so is the mode. It is a sink: the
+		// last stage, with input, and no redirect of its own.
+		if name == "fs" {
+			if len(st.Argv) > 1 && plain(st.Argv[1]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) > 3 && plain(st.Argv[3]) == "" {
+				return nil, &problem{exitType, msgCommandFromValue}, refusal{}
+			}
+			if len(st.Argv) > 4 && plain(st.Argv[4]) == "" {
+				return nil, &problem{exitType, msgFsUsage}, refusal{}
+			}
+			input := i > 0
+			for _, r := range st.Redirs {
+				if r.Kind == ">" {
+					return nil, &problem{exitType, msgFsUsage}, refusal{}
+				}
+				input = true
+			}
+			if !input || i != len(pipe.Stages)-1 {
+				return nil, &problem{exitType, msgFsUsage}, refusal{}
+			}
+		}
 		// A recording's path is a literal, so needs can report it.
 		if name == "set" && len(st.Argv) == 4 && plain(st.Argv[1]) == "-o" && plain(st.Argv[2]) == "record" && plain(st.Argv[3]) == "" {
 			return nil, &problem{exitType, "usage set -o record: the path must be literal"}, refusal{}
@@ -1455,6 +1578,13 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 			argv = append(argv, exprMark)
 		} else if argv, argProv, err = m.expandArgvProv(st.Argv); err != nil {
 			return nil, &problem{exitType, err.Error()}, refusal{}
+		}
+		// The word that selects what unit, package, or sysctl does to the
+		// host never comes from a person's answer: an answer is data, and
+		// a value carrying one (or whose origins were cut, so it might)
+		// cannot choose restart over status or set over get.
+		if (name == "unit" || name == "package" || name == "sysctl") && len(argProv) > 1 && m.fromAnswer(argProv[1]) {
+			return nil, &problem{exitType, msgSubFromAnswer}, refusal{}
 		}
 		type redirText struct {
 			kind string
@@ -1530,10 +1660,22 @@ func (m *machine) prepareAt(pipe Pipeline) ([]expStage, *problem, refusal) {
 		if i > 0 {
 			op = pipe.Ops[i-1]
 		}
+		pipeSecret = pipeSecret || m.sawSecret
+		if argv[0] == "fs" && pipeSecret {
+			// A secret in any stage would be the body: it does not leave
+			// sash, as with >.
+			return nil, &problem{exitType, "a secret cannot leave sash"}, refusal{}
+		}
 		exp[i] = expStage{
 			argv: argv, inPath: inPath, outPath: outPath, here: here,
 			key: info.key, op: op, call: info.call, mover: info.mover, x: rowX,
-			argProv: argProv,
+			argProv: argProv, solo: len(pipe.Stages) == 1 && len(st.Redirs) == 0,
+		}
+		if argv[0] == "fs" {
+			exp[i].sink = true
+			if len(argv) == 5 {
+				exp[i].mode = argv[4]
+			}
 		}
 	}
 	if prob := typecheck(exp); prob != nil {
@@ -1650,6 +1792,24 @@ func classify(argv []string, fns map[string]*Fn) (classified, *problem) {
 		return classified{in: inNone, out: inBytes}, nil
 	case "template_file":
 		return classifyTemplateFile(argv)
+	case "fs":
+		// fs write-atomic <path> [--mode 0600|0640|0644]: the agent's three
+		// modes, and no other subcommand.
+		ok := len(argv) == 3 || (len(argv) == 5 && argv[3] == "--mode" && fsModes[argv[4]])
+		if !ok || argv[1] != "write-atomic" || argv[2] == "" {
+			return classified{}, &problem{exitType, msgFsUsage}
+		}
+		return classified{key: "file.write", in: inAny, out: inBytes}, nil
+	case "term":
+		// -s stands only between prompt and the question, once.
+		secret := len(argv) == 4 && argv[1] == "prompt" && argv[2] == "-s"
+		if !secret && (len(argv) != 3 || (argv[1] != "prompt" && argv[1] != "confirm")) {
+			return classified{}, &problem{exitType, "usage term"}
+		}
+		if len(argv[len(argv)-1]) > termQuestionMax {
+			return classified{}, &problem{exitType, "usage term: question over 1024 bytes"}
+		}
+		return classified{in: inNone, out: inBytes}, nil
 	case "template":
 		if len(argv) != 2 {
 			return classified{}, &problem{exitType, "usage template tpl"}
@@ -1814,13 +1974,13 @@ func stageShape(st expStage) (int, int) {
 		return inRows, inRows
 	case "rows":
 		return inBytes, inRows
-	case "json", "to":
+	case "json", "to", "fs":
 		return inAny, inBytes
 	case "from":
 		return inAny, inRows
 	case "lines", "parse":
 		return inBytes, inRows
-	case "template_file", "check", "log":
+	case "template_file", "check", "log", "term":
 		return inNone, inBytes
 	case "checks", "origin":
 		return inNone, inRows
@@ -1873,6 +2033,17 @@ func (m *machine) bindPaths(st *expStage) (int, *problem) {
 		return 2, m.needRead(st, st.argv[2])
 	case "cd", "pushd", "template":
 		return 1, m.needRead(st, st.argv[1])
+	case "fs":
+		// The target is a > target: clean absolute or prefix-relative,
+		// under a file_write root, checked before any call.
+		full, err := resolvePath(m.prefix(), st.argv[2])
+		if err != nil {
+			return 2, &problem{exitType, "prefix_unset"}
+		}
+		if !m.g.AllowsWrite(full) {
+			return 2, &problem{exitDenied, "denied file.write"}
+		}
+		st.outPath = full
 	case "template_file":
 		if !m.g.Has("file.read") {
 			return -1, &problem{exitDenied, "denied file.read"}
@@ -1932,6 +2103,7 @@ func (m *machine) traceStage(st expStage) error {
 }
 
 func (m *machine) execPrepared(exp []expStage) (int, value) {
+	m.rowSecret = false
 	if len(exp) == 1 && exp[0].call != nil {
 		if err := m.traceStage(exp[0]); err != nil {
 			return 1, value{}
@@ -1954,6 +2126,10 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		res, err := m.do(parent.Verb{Key: "file.read", Argv: []string{"<", exp[0].inPath}, Path: exp[0].inPath})
 		if err != nil {
 			m.err.WriteString("parent file.read\n")
+			if exp[len(exp)-1].sink {
+				// The < read is the sink's earlier stage: nothing is sent.
+				m.err.WriteString(msgFsNotWritten + "\n")
+			}
 			return 1, value{}
 		}
 		cur = fromResult(res)
@@ -1967,6 +2143,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			rows, ok := datumRows(cur.d)
 			if !ok {
 				m.err.WriteString("type |> " + typeName(cur.d) + "\n")
+				if exp[len(exp)-1].sink {
+					m.err.WriteString(msgFsNotWritten + "\n")
+				}
 				return exitType, value{}
 			}
 			cur = rows
@@ -1987,6 +2166,9 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 		exits[i] = code
 		cur = v
 		if code == exitType || code == exitDenied || code == exitUnknown {
+			if exp[len(exp)-1].sink {
+				m.err.WriteString(msgFsNotWritten + "\n")
+			}
 			return code, cur
 		}
 	}
@@ -1997,6 +2179,12 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			break
 		}
 	}
+	if last := exp[len(exp)-1]; last.sink && (status != 0 || m.ctl != ctlNone) {
+		// Unlike >, the sink sends nothing when an earlier stage failed:
+		// the file on the host stays as it was.
+		m.err.WriteString(msgFsNotWritten + "\n")
+		return status, cur
+	}
 	if exp[len(exp)-1].outPath != "" {
 		body := render(cur)
 		v := parent.Verb{
@@ -2006,18 +2194,50 @@ func (m *machine) execPrepared(exp []expStage) (int, value) {
 			Body: []byte(body),
 		}
 		// Only template_file writes a secret, and only at 0600: a > of
-		// a secret is refused in prepare.
+		// a secret is refused in prepare, and a > of rows a per-row
+		// expression computed from a secret is refused here.
 		secret := m.secretWrite && exp[len(exp)-1].argv[0] == "template_file"
 		m.secretWrite = false
+		if m.rowSecret && !secret {
+			m.err.WriteString("a secret cannot leave sash\n")
+			if exp[len(exp)-1].sink {
+				m.err.WriteString(msgFsNotWritten + "\n")
+			}
+			return exitType, value{}
+		}
 		if secret {
 			v.Mode = "0600"
 			cur = value{kind: valData, d: secretVal{body}}
+		}
+		if last := exp[len(exp)-1]; last.sink {
+			if st, out := m.sinkSend(last, cur, v); st != 0 {
+				return st, out
+			}
+			return status, cur
 		}
 		if _, err := m.do(v); err != nil {
 			return m.doFailed("file.write", err), cur
 		}
 	}
 	return status, cur
+}
+
+// sinkSend sends fs write-atomic's write v of cur. A secret body is
+// refused here too, at the write, behind prepare's check of every stage.
+// The mode asked for rides in the frame as it is: an agent too old for it
+// refuses, and the write is not sent again without it.
+func (m *machine) sinkSend(last expStage, cur value, v parent.Verb) (int, value) {
+	if isSecret(toDatum(cur)) {
+		m.err.WriteString("a secret cannot leave sash\n")
+		return exitType, value{}
+	}
+	v.Mode = last.mode
+	m.sinkWrite = true
+	defer func() { m.sinkWrite = false }()
+	if _, err := m.do(v); err != nil {
+		return m.doFailed("file.write", err), cur
+	}
+	return 0, cur
 }
 
 func (m *machine) callFn(st expStage) (int, bool) {
@@ -2102,6 +2322,11 @@ func (m *machine) execStage(st expStage, in value) (value, int) {
 		return m.runOrigin(st.argv[1])
 	case "log":
 		return m.runLog(st)
+	case "term":
+		return m.runTerm(st)
+	case "fs":
+		// The sink passes its input on; execPrepared writes it at the end.
+		return in, 0
 	case "template":
 		return m.runTemplate(st, in)
 	case "sub":
@@ -2342,7 +2567,7 @@ func (m *machine) evalX(x Expr) (any, error) {
 }
 
 func (m *machine) evalXRaw(x Expr) (any, error) {
-	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), func(name string) (any, bool) {
+	return evalExprPinned(x, m.st.nounset, m.uuidPin(), m.wasmHook(), m.isTTY, func(name string) (any, bool) {
 		m.readProv(name)
 		v, ok := m.vars[name]
 		if !ok {
@@ -2653,7 +2878,7 @@ func init() {
 		"cd", "pushd", "popd", "dirs", "let", "if", "for", "fn", "else", "in",
 		"while", "do", "break", "continue", "return", "exit", "try", "catch", "why", "builtin",
 		"set", "shopt", "declare", "from", "to", "use", "lines", "parse", "sub", "with", "template", "template_file",
-		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic"} {
+		"retry", "timeout", "check", "checks", "log", "origin", "par", "atomic", "term", "fs"} {
 		reservedNames[n] = true
 	}
 }

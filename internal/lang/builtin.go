@@ -96,6 +96,7 @@ var builtins = []builtinRow{
 	{"use", "keyword", "file.read", "load fn and declare -r from a file", true},
 	{"template_file", "verb", "file.write", "render spec + tpl to out; --check diffs", true},
 	{"template", "verb", "file.read", "render tpl with the piped value", true},
+	{"fs write-atomic", "verb", "file.write", "| fs write-atomic path [--mode M]: write the piped value, or nothing if a stage failed", true},
 	{"retry", "keyword", "", "retry N [delay D] { }: again on failure", true},
 	{"timeout", "keyword", "", "timeout D { }: checked before each statement and verb", true},
 	{"atomic", "keyword", "file.write", "atomic [deadline D] { }: the file writes inside all stay or are all restored", true},
@@ -104,6 +105,8 @@ var builtins = []builtinRow{
 	{"checks", "builtin", "", "the check rows so far", true},
 	{"origin", "builtin", "", "origin name: where a name's value came from", true},
 	{"log", "builtin", "", "log level msg [ {fields} ]: one line on stderr", true},
+	{"term prompt", "builtin", "", "term prompt [-s] \"question\": ask the person at the terminal for one line; -s only in declare -s, no echo", true},
+	{"term confirm", "builtin", "", "term confirm \"question\": 0 for y or Y then Enter, else 1", true},
 	{"with", "keyword", "", "with set -e, loopmax N, prefix P, x = v { ... }: restored after", true},
 	{"else", "keyword", "", "the other branch of if", false},
 	{"in", "keyword", "", "the source of for", false},
@@ -119,13 +122,18 @@ var builtins = []builtinRow{
 // builtinFlags are the flags of each form that takes any, for Tab. A test
 // checks every key is a form in the table.
 var builtinFlags = map[string][]string{
-	"template_file": {"--check"},
-	"set":           {"-e", "-u", "-x", "-f", "-o"},
-	"shopt":         {"-s", "-u"},
-	"declare":       {"-r", "-i", "-a", "-A", "-p", "-s"},
-	"from csv":      {"--noheader"},
-	"from tsv":      {"--noheader"},
+	"template_file":   {"--check"},
+	"set":             {"-e", "-u", "-x", "-f", "-o"},
+	"shopt":           {"-s", "-u"},
+	"declare":         {"-r", "-i", "-a", "-A", "-p", "-s"},
+	"term prompt":     {"-s"},
+	"fs write-atomic": {"--mode"},
+	"from csv":        {"--noheader"},
+	"from tsv":        {"--noheader"},
 }
+
+// WasmBuilt reports a build that runs wasm modules (the sashwasm tag).
+func WasmBuilt() bool { return wasmBuilt }
 
 // Builtins returns a copy of the table, with each form's Flags.
 func Builtins() []Builtin {

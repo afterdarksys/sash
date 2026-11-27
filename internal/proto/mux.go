@@ -34,6 +34,9 @@ import (
 	"github.com/afterdarksys/sash/internal/parent"
 )
 
+// MuxVersion is the concurrency hello's version, for sash version --json.
+const MuxVersion = muxVersion
+
 // ErrBroken is a verb pipe that can no longer be trusted: a framing error,
 // an unknown response id, an over-limit or protocol reply, a malformed
 // hello, or id exhaustion. Every call fails closed.

@@ -250,6 +250,8 @@ func (m *machine) branchMachine(ctx context.Context, i int) *machine {
 	bm.stack = append([]string(nil), m.stack...)
 	bm.deadline = m.deadline
 	bm.trace, bm.confirm = m.trace, m.confirm
+	// A branch sees the same is_tty(); term itself is refused in par.
+	bm.term = m.term
 	bm.nl, bm.provSrc, bm.at = m.nl, m.provSrc, m.at
 	bm.depth = m.depth
 	bm.secretPipe = m.secretPipe

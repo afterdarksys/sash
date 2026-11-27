@@ -97,6 +97,8 @@ type recReq struct {
 }
 
 type recResp struct {
+	// Op is a term event's question kind: prompt, confirm, or prompt-s.
+	Op       string       `json:"op,omitempty"`
 	Kind     string       `json:"kind,omitempty"`
 	Exit     int          `json:"exit,omitempty"`
 	Cols     []string     `json:"cols,omitempty"`
@@ -134,6 +136,11 @@ type pending struct {
 	err     error
 	hasResp bool
 	value   string
+	// A term event: its op and its outcome, "" for an answer. redact is a
+	// term prompt -s: the event holds no value, no length, and no outcome.
+	op     string
+	code   string
+	redact bool
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -419,10 +426,21 @@ func (t *Tape) Finish() error {
 		if p.hasResp {
 			ev.Resp = respOf(p.res, p.err, secrets, p.tainted)
 		}
-		if p.kind == "now" || p.kind == "sleep" || p.kind == "uuid" {
+		if p.kind == "now" || p.kind == "sleep" || p.kind == "uuid" || p.kind == "tty" {
 			ev.Resp = &recResp{Value: p.value}
 			if holdsAny(p.value, secrets) {
 				ev.Resp = &recResp{Value: redacted3}
+			}
+		}
+		if p.kind == "term" {
+			// What a person answered a term question. The question is in
+			// the script, not the event.
+			ev.Resp = &recResp{Op: p.op, Value: p.value, Error: p.code}
+			if holdsAny(p.value, secrets) {
+				ev.Resp.Value = redacted3
+			}
+			if p.redact {
+				ev.Resp = &recResp{Op: p.op, Redacted: true}
 			}
 		}
 		// Every prev is 64 hex digits, so a line's size is known before
@@ -849,7 +867,7 @@ func (t *Tape) plan(v parent.Verb, tainted bool, secrets []string) {
 	}
 }
 
-// value records a reading (now, sleep, uuid) from read, or returns the
+// value records a reading (now, sleep, uuid, tty) from read, or returns the
 // recorded one on replay without calling read.
 func (t *Tape) value(kind string, read func() string) string {
 	if !t.replay {
@@ -862,6 +880,47 @@ func (t *Tape) value(kind string, read func() string) string {
 		return ""
 	}
 	return ev.Resp.Value
+}
+
+// term records what a person answered a term question (ask returns the
+// answer and its outcome), or returns the recorded answer on replay
+// without asking anyone. ok is false when the tape failed.
+func (t *Tape) term(op string, ask func() (string, string)) (answer, code string, ok bool) {
+	if !t.replay {
+		answer, code = ask()
+		t.add(pending{kind: "term", op: op, value: answer, code: code})
+		return answer, code, t.Err() == nil
+	}
+	ev, ok := t.next("term")
+	if !ok {
+		return "", "", false
+	}
+	if ev.Resp == nil || ev.Resp.Op != op || ev.Resp.Redacted {
+		t.diverge(ev.Seq)
+		return "", "", false
+	}
+	return ev.Resp.Value, ev.Resp.Error, true
+}
+
+// termSecret records that a secret was asked for (term prompt -s) and
+// nothing else: the pending event never holds the answer. A replay cannot
+// answer it, so it refuses: replay_secret <seq>, and nobody is asked.
+func (t *Tape) termSecret(ask func() (string, string)) (answer, code string, ok bool) {
+	if !t.replay {
+		answer, code = ask()
+		t.add(pending{kind: "term", op: "prompt-s", redact: true})
+		return answer, code, t.Err() == nil
+	}
+	ev, ok := t.next("term")
+	if !ok {
+		return "", "", false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.err == nil {
+		t.err = &TapeError{"replay_secret", ev.Seq}
+	}
+	return "", "", false
 }
 
 // module records a loaded wasm module's hash in the header, or, on
@@ -1009,7 +1068,7 @@ func (m *machine) secretTexts() []string {
 
 // tapeDo is machine.do's call through the tape.
 func (m *machine) tapeDo(v parent.Verb) (parent.Result, error) {
-	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe || v.Mode != "", m.secretTexts())
+	res, err := m.tape.call(m.p, v, m.sawSecret || m.secretPipe || (v.Mode != "" && !m.sinkWrite), m.secretTexts())
 	if terr := m.tape.Err(); terr != nil {
 		m.ctl = ctlHalt
 		return parent.Result{}, terr

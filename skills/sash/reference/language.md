@@ -96,7 +96,7 @@ set -e
 cat /etc/nginx/nginx.conf | egrep zzz > /srv/app/out
 ```
 
-So write to a new path and check it, or put the writes in `atomic { }` (which rolls back on a non-zero statement), and read the byte count in the plan output before the real run:
+So write with `| fs write-atomic <path>` (`features.md`), which sends nothing when a stage failed, or write to a new path and check it, or put the writes in `atomic { }` (which rolls back on a non-zero statement), and read the byte count in the plan output before the real run:
 
 ```sash
 # expect: plan 1 plan: would write /srv/app/out (0 bytes)
@@ -121,6 +121,15 @@ Functions, pure and in process (`builtin` lists them; a name not here is exit 2 
 | list | `len` `sum` `min` `max` `avg` `sort` `uniq` `reverse` `first(l, n)` `last(l, n)` `range(a, b)` `contains(list, x)` |
 | map | `keys` `values` `has(m, k)` `get(m, k, default)` `merge(a, b)` |
 | encode | `sha256(s)` `base64(s)` `unbase64(s)` `hex(s)` `uuid()` |
+| terminal | `is_tty()` |
+
+`is_tty()` takes no argument and is `true` only when a person can be asked: sash's stdin and stderr are both terminals and the script is not on stdin (`sash -c`, `sash file`, or the prompt). `sash < script`, a pipe, a job, and a replay are `false`. It is not pure like the others: it reads the terminal, and a recording pins it.
+
+```sash
+# expect: host 0
+# stdout: unattended
+if [ is_tty() ] { echo "a person is here" } else { echo unattended }
+```
 
 ```sash
 let n = [ 1 + 2 ]
@@ -301,6 +310,10 @@ Globs, braces, and history expand once, before the line or script runs, against 
 echo /srv/app/*.nomatch
 ```
 
+## Output to a terminal
+
+Byte output (`echo`, `cat`, a value printed) that goes to a terminal is escaped at the last write: a line feed and a tab pass, and every other control character, format character (bidi, zero-width), rune that draws nothing (a default-ignorable code point such as a variation selector or a Hangul filler, and the blank braille pattern U+2800), stacking combining mark past the fourth on one base, and unprintable rune prints as `<U+XXXX>`, a byte that is not UTF-8 as `<0xHH>`, and a literal `<U+` or `<0x` as `<U+003C>U+` or `<U+003C>0x`. Row cells and messages keep their own form (`\x1b`). A pipe, a file, a value, a `>` body, and a recording get the bytes unchanged, so what a script computes never depends on this. It keeps host data from driving the screen; it does not make that data trustworthy.
+
 ## Exit statuses
 
 | status | meaning |
@@ -311,7 +324,7 @@ echo /srv/app/*.nomatch
 | 126 | denied by the grant, or declined at a confirm prompt; that statement ran nothing, earlier ones did |
 | 127 | unknown name; no host binary is run |
 | 129 | hangup (SIGHUP) |
-| 130 | a `par` interrupted (Ctrl-C) |
+| 130 | a `par` interrupted (Ctrl-C), or Ctrl-C at a `term` question |
 
 ## Error strings
 
@@ -322,7 +335,7 @@ Each is one line on stderr.
 | `unknown <name>` | not in the closed table and not a `fn` (127) |
 | `denied <key>` | the grant lacks the key, or a path is outside the roots; earlier statements already ran (126) |
 | `declined <key>` | answered no at a confirm prompt (126) |
-| `command_from_value` | a command word that comes from a value, `$x status nginx` (2) |
+| `command_from_value` | a command word that comes from a value, `$x status nginx` (2); `command_from_value: a term prompt answer selects no subcommand`, a `term prompt` answer as the word that selects what `unit`, `package`, or `sysctl` does (2) |
 | `type \|>` | bytes piped into `\|>` (2) |
 | `type value` | an unset name, or a field on a value with none (2) |
 | `type fn` | a function used as a pipe stage or with a redirect (2) |
@@ -334,6 +347,16 @@ Each is one line on stderr.
 | `type glob` | a glob qualifier other than `(/)`, or a glob that matches nothing (2) |
 | `parse: ...` | `parse: try needs catch`, `parse: too deep` (65 nested blocks), `parse: env not in this series` (2) |
 | `usage <form>...` | wrong arguments to a form (2) |
+| `usage fs write-atomic` | the sink given the wrong words, or not last, or with no input, or with a `>` after it (2) |
+| `fs write-atomic: not written` | an earlier stage failed, so the sink sent nothing; the status is that stage's |
+| `term needs a terminal` | `term` with no terminal to ask; the script stops (2) |
+| `term prompt: end of input` | Ctrl-D on an empty line, or the input ended (1) |
+| `term prompt: empty answer` | Enter on an empty line: no answer, as at the end of input (1) |
+| `term prompt: answer over 4096 bytes`, `term prompt: answer is not text` | an answer that is too long or not UTF-8; there is no value (2) |
+| `term: interrupted` | Ctrl-C at a question; the script stops, `try` cannot catch it (130) |
+| `term inside par`, `atomic_irreversible: term` | a question inside `par` or `atomic { }` (2) |
+| `term prompt -s: only as declare -s name = (term prompt -s "question")` | `-s` anywhere but the whole value of a `declare -s` (2) |
+| `replay_secret <seq>` | a replay reached a `term prompt -s`; a recording never holds that answer (2) |
 | `a secret cannot decide a branch`, `a secret cannot leave sash`, `a secret ended the line` | secret rules, `features.md` (2) |
 | `atomic_irreversible: <what>`, `atomic: rolled back` | `features.md` (2) |
 | `wasm_unsupported` | the release build has no wasm (2) |

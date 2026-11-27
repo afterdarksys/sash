@@ -256,7 +256,7 @@ func (m *machine) perRow(st expStage, rows []parent.Row, cols []string) (value, 
 	var out []parent.Row
 	scalar, mapped := false, false
 	// One budget for the whole stage: each row's result is charged to it.
-	c := &evalCtx{budget: dataMaxBytes, strict: m.st.nounset, uuid: m.uuidPin(), wasm: m.wasmHook()}
+	c := &evalCtx{budget: dataMaxBytes, strict: m.st.nounset, uuid: m.uuidPin(), wasm: m.wasmHook(), tty: m.isTTY}
 	for _, r := range rows {
 		it := rowDatum(r, cols)
 		d, err := evalExprCtx(st.x, c, func(name string) (any, bool) {
@@ -305,6 +305,11 @@ func (m *machine) perRow(st expStage, rows []parent.Row, cols []string) (value, 
 		}
 		scalar = true
 		out = append(out, parent.Row{"value": textOf(d)})
+	}
+	if c.tainted {
+		// A row read a secret: what each wrote is *** or derived from
+		// it, and the pipeline may not write it out.
+		m.rowSecret = true
 	}
 	if scalar && mapped {
 		return fail("type each: map and value mixed")

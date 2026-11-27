@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// Version is the grant document version this build reads.
+const Version = "sash/1"
+
 // Grant is one sash/1 document without a signature.
 type Grant struct {
 	V            string

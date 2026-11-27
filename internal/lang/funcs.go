@@ -91,6 +91,13 @@ func init() {
 			return charged(c, string(b))
 		}},
 		"uuid": {0, 0, fnUUID},
+		// is_tty() is true when a terminal can be asked (term.go).
+		"is_tty": {0, 0, func(_ []any, c *evalCtx) (any, error) {
+			if c == nil || c.tty == nil {
+				return false, nil
+			}
+			return c.tty()
+		}},
 	}
 }
 

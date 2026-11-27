@@ -13,9 +13,14 @@ import (
 // signal to exit, so the process still ends as the signal says. stop
 // undoes the watch.
 func watchSignals(restore func() error, exit func(os.Signal, error)) (stop func()) {
+	return watchSignalsOf(restore, exit, syscall.SIGTERM, syscall.SIGHUP)
+}
+
+// watchSignalsOf is watchSignals for the signals named.
+func watchSignalsOf(restore func() error, exit func(os.Signal, error), sigs ...os.Signal) (stop func()) {
 	ch := make(chan os.Signal, 1)
 	done := make(chan struct{})
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(ch, sigs...)
 	go func() {
 		select {
 		case sig := <-ch:
@@ -60,3 +65,42 @@ var (
 	killFn      = syscall.Kill
 	exitFn      = os.Exit
 )
+
+// askEnds are the signals that end sash while a script-mode question
+// holds raw mode: the terminal is restored first, then the signal's own
+// end. In raw mode Ctrl-C and Ctrl-\ are keys, so these come from kill.
+var askEnds = []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT}
+
+// watchStop handles SIGTSTP while a question holds raw mode: suspend
+// restores the terminal, the process stops (SIGSTOP, which a shell
+// reports as a stopped job), and when it is continued (SIGCONT) resume
+// enters raw mode again before the read goes on. stop undoes the watch.
+func watchStop(suspend func() error, resume func()) (stop func()) {
+	ch := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(ch, syscall.SIGTSTP)
+	go func() {
+		for {
+			select {
+			case <-ch:
+				if err := suspend(); err != nil {
+					if _, werr := os.Stderr.WriteString("sash: terminal not restored\n"); werr != nil {
+						exitFn(1)
+					}
+				}
+				if err := killFn(os.Getpid(), syscall.SIGSTOP); err != nil {
+					exitFn(1)
+				}
+				// Continued. resume keeps its own failure for the
+				// question, which then fails closed.
+				resume()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
+}

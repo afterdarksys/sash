@@ -409,6 +409,7 @@ func TestNeedsCoversEveryBuiltinKey(t *testing.T) {
 		"use":             "use /etc/x.sash",
 		"template_file":   "template_file /s.yaml /t /o",
 		"template":        "template /t",
+		"fs write-atomic": "echo x | fs write-atomic /o/x",
 		// atomic rides on the file.write of the writes inside it.
 		"atomic": "atomic { echo x > /o/x }",
 	}

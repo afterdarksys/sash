@@ -43,6 +43,11 @@ var lintRules = map[string]string{
 	"par-same-target":     lintWarning,
 	"record-file":         lintInfo,
 	"atomic-irreversible": lintWarning,
+	// What a person typed at term prompt is untrusted text.
+	"prompt-to-mutation":    lintWarning,
+	"prompt-in-retry":       lintWarning,
+	"prompt-needs-terminal": lintInfo,
+	"prompt-subcommand":     lintError,
 }
 
 // lintFnDepth bounds how far retry-on-mutation follows fn calls.
@@ -111,6 +116,7 @@ func Lint(src string) Outcome {
 	l.parTargets()
 	l.recordFiles()
 	l.atomicBodies()
+	l.prompts()
 	l.needs()
 	return l.report(comments)
 }
@@ -1072,7 +1078,7 @@ func (l *linter) blocks(p *Program) {
 
 // lintConstant is a [ ] that reads no name and calls only pure
 // functions: every expression function is pure (contains included)
-// except uuid, which is random.
+// except uuid, which is random, and is_tty, which reads the terminal.
 func lintConstant(x Expr) bool {
 	if len(refsOf(func(o map[string]bool) { exprRefs(x, o) })) > 0 {
 		return false
@@ -1082,7 +1088,7 @@ func lintConstant(x Expr) bool {
 	walk = func(x Expr) {
 		switch x := x.(type) {
 		case exprCall:
-			if x.name == "uuid" {
+			if x.name == "uuid" || x.name == "is_tty" {
 				pure = false
 			}
 			for _, a := range x.args {
@@ -1123,6 +1129,165 @@ func lintBreaks(p *Program) bool {
 	lintEach(p, false, func(s Stmt, _ int, _ bool) {
 		if j, ok := s.(*Jump); ok && j.Kind == "break" {
 			found = true
+		}
+	})
+	return found
+}
+
+// asksPrompt reports a stage that is term prompt, and asksTerm one that is
+// any term question.
+func asksTerm(st Stage) bool { return len(st.Argv) > 0 && plain(st.Argv[0]) == "term" }
+
+func asksPrompt(st Stage) bool {
+	return asksTerm(st) && len(st.Argv) > 1 && plain(st.Argv[1]) == "prompt"
+}
+
+// prompts is the three term rules.
+//
+// prompt-to-mutation: a name bound from term prompt, or from a fn that
+// asks term prompt (it may return the answer), or anything bound from
+// either, reaches an argument, a path, or the body of a mutating stage.
+// It rides on the edges collect recorded for secret-to-sink, as a second
+// flow-insensitive fixpoint. An answer is untrusted text: a person can be
+// told what to type, and a plain prompt echoes and records it.
+//
+// prompt-in-retry: a retry body that asks, directly or through a fn called
+// by literal name, asks again on every attempt.
+//
+// prompt-subcommand (an error): an answer reaches the word that selects
+// what unit, package, or sysctl does; the run refuses it with exit 2.
+//
+// prompt-needs-terminal: once per script, at the first question: without
+// a terminal the script stops there with exit 2.
+func (l *linter) prompts() {
+	first := -1
+	prompted := map[string]bool{}
+	var work []string
+	bound := func(name string, lt *Let) {
+		if lt == nil || lt.Pipe == nil || prompted[name] {
+			return
+		}
+		for _, st := range lt.Pipe.Stages {
+			// A fn called by literal name that asks term prompt, itself or
+			// through another fn, may return the answer.
+			viaFn := false
+			if len(st.Argv) > 0 {
+				if fn := l.fns[plain(st.Argv[0])]; fn != nil {
+					viaFn = l.asksBy(&fn.Body, map[*Fn]bool{fn: true}, asksPrompt)
+				}
+			}
+			if asksPrompt(st) || viaFn {
+				prompted[name] = true
+				work = append(work, name)
+				return
+			}
+		}
+	}
+	lintEach(l.prog, true, func(s Stmt, _ int, _ bool) {
+		lintEachPipe(s, func(pl Pipeline, _ string) {
+			for _, st := range pl.Stages {
+				if asksTerm(st) && (first < 0 || st.Argv[0].Pos < first) {
+					first = st.Argv[0].Pos
+				}
+			}
+		})
+		switch s := s.(type) {
+		case *Let:
+			bound(s.Name, s)
+		case *Declare:
+			bound(s.Name, s.Value)
+		case *With:
+			for _, lt := range s.Lets {
+				bound(lt.Name, lt)
+			}
+		}
+	})
+	if first < 0 {
+		return
+	}
+	l.add(first, "prompt-needs-terminal", "term asks a person: without a terminal the script stops here with exit 2")
+	for len(work) > 0 {
+		n := work[len(work)-1]
+		work = work[:len(work)-1]
+		for _, d := range l.deps[n] {
+			if !prompted[d] {
+				prompted[d] = true
+				work = append(work, d)
+			}
+		}
+	}
+	reaches := func(refs map[string]bool) string {
+		names := make([]string, 0, len(refs))
+		for n := range refs {
+			if prompted[n] {
+				names = append(names, n)
+			}
+		}
+		if len(names) == 0 {
+			return ""
+		}
+		sort.Strings(names)
+		return names[0]
+	}
+	lintEach(l.prog, true, func(s Stmt, at int, _ bool) {
+		lintEachPipe(s, func(pl Pipeline, _ string) {
+			flowing := ""
+			for _, st := range pl.Stages {
+				if flowing == "" {
+					if name := reaches(refsOf(func(o map[string]bool) { stageRefs(st, o) })); name != "" {
+						flowing = "$" + name
+					} else if asksPrompt(st) {
+						flowing = "the answer"
+					}
+				}
+				if n := plain(st.Argv[0]); (n == "unit" || n == "package" || n == "sysctl") && len(st.Argv) > 1 {
+					if name := reaches(refsOf(func(o map[string]bool) { wordRefs(st.Argv[1], o) })); name != "" {
+						l.add(st.Argv[1].Pos, "prompt-subcommand", "what a person typed at term prompt ($"+name+") selects what "+n+" does: exit 2 command_from_value")
+					}
+				}
+				if flowing == "" {
+					continue
+				}
+				what := ""
+				if key := lintKey(st); mutating[key] {
+					what = key
+				}
+				for _, r := range st.Redirs {
+					if r.Kind == ">" {
+						what = "a > redirect"
+					}
+				}
+				if what != "" {
+					l.add(st.Argv[0].Pos, "prompt-to-mutation", "what a person typed at term prompt ("+flowing+") reaches "+what)
+				}
+			}
+		})
+		if r, ok := s.(*Retry); ok && l.asks(&r.Body, map[*Fn]bool{}) {
+			l.add(at, "prompt-in-retry", "a retry body asks the person again on every attempt")
+		}
+	})
+}
+
+// asks reports a term question p may reach, through fns called by
+// literal name, each followed once.
+func (l *linter) asks(p *Program, seen map[*Fn]bool) bool {
+	return l.asksBy(p, seen, asksTerm)
+}
+
+// asksBy is asks for the questions ask matches.
+func (l *linter) asksBy(p *Program, seen map[*Fn]bool, ask func(Stage) bool) bool {
+	found := false
+	needsEachStage(p, func(st Stage) {
+		if found || len(st.Argv) == 0 {
+			return
+		}
+		if ask(st) {
+			found = true
+			return
+		}
+		if fn := l.fns[plain(st.Argv[0])]; fn != nil && !seen[fn] {
+			seen[fn] = true
+			found = l.asksBy(&fn.Body, seen, ask)
 		}
 	})
 	return found

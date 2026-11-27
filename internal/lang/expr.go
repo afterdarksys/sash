@@ -641,13 +641,13 @@ func evalExprCtx(x Expr, c *evalCtx, lookup func(string) (any, bool)) (any, erro
 }
 
 func evalExprStrict(x Expr, strict bool, lookup func(string) (any, bool)) (any, error) {
-	return evalExprPinned(x, strict, nil, nil, lookup)
+	return evalExprPinned(x, strict, nil, nil, nil, lookup)
 }
 
 // evalExprPinned is evalExprStrict with uuid() answered by pin when it is
-// set (a recording or a replay).
-func evalExprPinned(x Expr, strict bool, pin func() (string, error), wasm func(string, string, []any, *evalCtx) (any, error), lookup func(string) (any, bool)) (any, error) {
-	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin, wasm: wasm}
+// set (a recording or a replay), and is_tty() by tty.
+func evalExprPinned(x Expr, strict bool, pin func() (string, error), wasm func(string, string, []any, *evalCtx) (any, error), tty func() (bool, error), lookup func(string) (any, bool)) (any, error) {
+	c := &evalCtx{budget: dataMaxBytes, strict: strict, uuid: pin, wasm: wasm, tty: tty}
 	d, err := evalNode(x, taintLookup(lookup, c), c)
 	if err != nil {
 		// A secret refused at a wasm call is that refusal, not a fault.
@@ -689,6 +689,8 @@ type evalCtx struct {
 	uuid func() (string, error)
 	// wasm, when set, runs a module call (wasm.go); nil refuses it.
 	wasm func(mod, fn string, args []any, c *evalCtx) (any, error)
+	// tty, when set, answers is_tty(); nil is no terminal.
+	tty func() (bool, error)
 }
 
 // taintLookup unwraps a secret for computing and marks the evaluation.

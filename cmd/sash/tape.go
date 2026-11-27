@@ -180,7 +180,9 @@ func runTape(args []string) int {
 		return 2
 	}
 	if mode == "--record" {
-		return record(src, recPath, g, fixtureParent{fx.Results}, expires)
+		// A recording at a terminal may ask the person, as any script run
+		// may; a replay never does: its answers come from the recording.
+		return record(src, recPath, g, fixtureParent{fx.Results}, expires, scriptTerm(args))
 	}
 	return replay(src, recPath, g)
 }
@@ -247,7 +249,7 @@ func (a *atomicFile) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Duration) int {
+func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Duration, term lang.Term) int {
 	if _, err := os.Lstat(recPath); err == nil || !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintln(os.Stderr, "record_exists")
 		return 2
@@ -258,12 +260,28 @@ func record(src, recPath string, g grant.Grant, p parent.Parent, expires time.Du
 		fmt.Fprintln(os.Stderr, "record_failed")
 		return 2
 	}
-	got := lang.Run(src, g, p, lang.Options{Tape: tape})
-	fmt.Fprint(os.Stdout, got.Stdout)
-	fmt.Fprint(os.Stderr, got.Stderr)
-	if err := tape.Finish(); err != nil {
+	// A hangup stops the run at its next statement, or ends a question,
+	// as without --record; the recording is still written, within grace.
+	st := lang.NewState()
+	stopHup := watchHangup(st, hupGrace, os.Exit)
+	opt := lang.Options{State: st, Tape: tape, Term: term}
+	if term != nil {
+		opt.Show = func(stdout, stderr string) {
+			emit(os.Stdout, stdout)
+			emit(os.Stderr, stderr)
+		}
+	}
+	got := lang.Run(src, g, p, opt)
+	emit(os.Stdout, got.Stdout)
+	emit(os.Stderr, got.Stderr)
+	err = tape.Finish()
+	stopHup()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, lang.SafeText(err.Error()))
 		return 2
+	}
+	if st.HungUp() {
+		return 129
 	}
 	return langExit(got.Status)
 }
@@ -319,8 +337,8 @@ func replay(src, recPath string, g grant.Grant) int {
 		return 2
 	}
 	got := lang.Run(src, g, closedParent{}, lang.Options{Tape: tape})
-	fmt.Fprint(os.Stdout, got.Stdout)
-	fmt.Fprint(os.Stderr, got.Stderr)
+	emit(os.Stdout, got.Stdout)
+	emit(os.Stderr, got.Stderr)
 	if tape.Err() != nil {
 		return 2
 	}

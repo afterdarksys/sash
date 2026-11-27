@@ -1302,12 +1302,29 @@ func Loop(in, out, errOut *os.File, g grant.Grant, p parent.Parent) int {
 		return askConfirm(keys, out, func() error { return flushInput(int(in.Fd())) }, prompt)
 	}
 	e.opt.Interrupts = parInterrupts(keys)
+	if IsTerm(errOut) {
+		// A person can be asked (is_tty, term): the prompt is in raw mode
+		// already, and the question starts on its own line.
+		e.opt.Term = &asker{in: in, out: errOut, keys: keys, lead: "\r\n\x1b[J", flush: func() error { return flushInput(int(in.Fd())) }}
+	}
+	// What a line printed before it asks is on the screen before the
+	// question, below the line as typed, escaped as writeSubmit does; the
+	// rest follows the line's end as before. A failed write is not
+	// retried here: the question and the line's end still go out.
+	e.opt.Show = func(stdout, stderr string) {
+		if err := writeAll(out, []byte("\r\n\x1b[J"+termBytes(out, stdout))); err != nil {
+			return
+		}
+		if err := writeAll(errOut, []byte(termBytes(errOut, stderr))); err != nil {
+			return
+		}
+	}
 	status := e.loop(keys, out, errOut)
 	// Logout writes a recording set -o record started, asking under
 	// confirm like any file.write.
 	fin := e.FinishRecording()
 	if text := fin.Stdout + fin.Stderr; text != "" {
-		if err := writeAll(errOut, []byte(strings.ReplaceAll(text, "\n", "\r\n"))); err != nil {
+		if err := writeAll(errOut, []byte(strings.ReplaceAll(termBytes(errOut, text), "\n", "\r\n"))); err != nil {
 			status = 1
 		}
 	}
@@ -1441,6 +1458,9 @@ func (e *Editor) termWidth() int {
 const (
 	confirmQuiet    = 200 * time.Millisecond
 	confirmQuietMax = 5 * time.Second
+	// confirmDrain bounds how long a no answer's rest is read through its
+	// Enter.
+	confirmDrain = time.Second
 )
 
 // askConfirm is set -o confirm's question. Threats: a paste, typeahead,
@@ -1453,7 +1473,9 @@ const (
 // echoed (escaped), so a y is visible before Enter. Yes is exactly y or
 // Y, then a second flush, then Enter (CR or LF). Enter alone, any other
 // first key (ESC: a paste or an arrow), y then anything but Enter, EOF,
-// or a failed flush is no; Ctrl-C is no that also stops the line. There is
+// or a failed flush is no; Ctrl-C is no that also stops the line. After a
+// no key the rest of that line is read and dropped through its Enter, for
+// at most confirmDrain, so it cannot answer the next question. There is
 // no yes to all.
 func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (yes, interrupted bool) {
 	drop := func() bool {
@@ -1474,23 +1496,11 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 			yes = false
 		}
 	}()
-	start := nowFn()
-	for {
-		b, ok, err := r.ReadByteTimeout(confirmQuiet)
-		if err != nil {
-			return false, false
-		}
-		if !ok {
-			break
-		}
-		// Ctrl-C is never discarded: it is a no that stops the line, as
-		// it is once the prompt is armed.
-		if b == 0x03 {
-			return false, true
-		}
-		if nowFn().Sub(start) >= confirmQuietMax {
-			return false, false
-		}
+	switch end, err := waitQuiet(r); {
+	case err != nil || end == quietBusy:
+		return false, false
+	case end == quietCtrlC:
+		return false, true
 	}
 	key := func() (byte, bool) {
 		b, err := r.ReadByte()
@@ -1504,14 +1514,38 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 		}
 		return b, true
 	}
+	// drain reads, echoed, the rest of a no answer through its Enter, for
+	// at most confirmDrain, so the "o" of a "no" and its Enter are not left
+	// to answer the next question. Ctrl-C still stops the line.
+	drain := func() (interrupted bool) {
+		until := nowFn().Add(confirmDrain)
+		for {
+			left := until.Sub(nowFn())
+			if left <= 0 {
+				return false
+			}
+			b, ok, err := r.ReadByteTimeout(left)
+			if err != nil || !ok || b == '\r' || b == '\n' {
+				return false
+			}
+			if b == 0x03 {
+				return true
+			}
+			if werr := writeAll(out, []byte(lang.Cell(string([]byte{b})))); werr != nil {
+				return false
+			}
+		}
+	}
 	b, ok := key()
 	switch {
 	case !ok:
 		return false, false
 	case b == 0x03:
 		return false, true
-	case b != 'y' && b != 'Y':
+	case b == '\r' || b == '\n':
 		return false, false
+	case b != 'y' && b != 'Y':
+		return false, drain()
 	}
 	if !drop() {
 		return false, false
@@ -1522,8 +1556,42 @@ func askConfirm(r keySource, out io.Writer, flush func() error, prompt string) (
 		return false, false
 	case b == 0x03:
 		return false, true
+	case b == '\r' || b == '\n':
+		return true, false
 	}
-	return b == '\r' || b == '\n', false
+	return false, drain()
+}
+
+// quietEnd is how waitQuiet ended.
+type quietEnd int
+
+const (
+	quietArmed quietEnd = iota // confirmQuiet passed with no byte
+	quietCtrlC                 // Ctrl-C arrived while waiting
+	quietBusy                  // input kept coming for confirmQuietMax
+)
+
+// waitQuiet discards input until confirmQuiet passes with no byte
+// arriving, for at most confirmQuietMax. Ctrl-C is never discarded: it
+// ends the wait as it would end the question once armed. A read error
+// (the end of input, a deadline, a hangup) is returned as it came.
+func waitQuiet(r keySource) (quietEnd, error) {
+	start := nowFn()
+	for {
+		b, ok, err := r.ReadByteTimeout(confirmQuiet)
+		if err != nil {
+			return quietArmed, err
+		}
+		if !ok {
+			return quietArmed, nil
+		}
+		if b == 0x03 {
+			return quietCtrlC, nil
+		}
+		if nowFn().Sub(start) >= confirmQuietMax {
+			return quietBusy, nil
+		}
+	}
 }
 
 func isEnter(b byte) bool { return b == '\r' || b == '\n' }
@@ -1550,13 +1618,32 @@ func writeSubmit(out, errOut io.Writer, before View, last lang.Outcome) error {
 	if err := writeAll(out, []byte(b.String())); err != nil {
 		return err
 	}
-	if err := writeAll(out, []byte(last.Stdout)); err != nil {
+	if err := writeAll(out, []byte(termBytes(out, last.Stdout))); err != nil {
 		return err
 	}
-	if err := writeAll(errOut, []byte(last.Stderr)); err != nil {
+	if err := writeAll(errOut, []byte(termBytes(errOut, last.Stderr))); err != nil {
 		return err
 	}
 	return nil
+}
+
+// isTermWriter reports a writer that is a terminal; tests replace it.
+var isTermWriter = func(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && IsTerm(f)
+}
+
+// termBytes is a line's output as it goes to w. Threats: host data (a
+// file body, a journal line, a process name) that repaints the screen,
+// sets the title, or makes the terminal answer a query. When w is a
+// terminal the text goes through lang.TermText at this last write; out
+// and errOut are judged each on its own. Anything else receives the bytes
+// unchanged.
+func termBytes(w io.Writer, s string) string {
+	if isTermWriter(w) {
+		return lang.TermText(s)
+	}
+	return s
 }
 
 func writeAll(f io.Writer, b []byte) error {

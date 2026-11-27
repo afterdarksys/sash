@@ -226,7 +226,12 @@ func (m *machine) whyCommand(command string, argv []string, literal bool) parent
 	}
 	es := expStage{argv: whyGlobDirs(argv), key: key}
 	if _, prob := m.bindPaths(&es); prob != nil {
-		return m.whyPathRow(command, key, prob, m.g.FileRead)
+		roots := m.g.FileRead
+		if argv[0] == "fs" {
+			// The sink's path is a write target.
+			roots = m.g.FileWrite
+		}
+		return m.whyPathRow(command, key, prob, roots)
 	}
 	if argv[0] == "template_file" && key == "file.write" {
 		return whyRow(command, key, "yes", "granted", "a render that reads a secret is written with mode 0600; an agent without file.write mode refuses it")

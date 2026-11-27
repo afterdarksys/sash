@@ -51,6 +51,8 @@ type origin struct {
 	key    string
 	target string // escaped and capped
 	hash   [32]byte
+	// nohash is an origin with no response to hash: a term prompt answer.
+	nohash bool
 }
 
 // unionProv merges two sorted origin lists, keeping at most provPerValue
@@ -185,7 +187,10 @@ func (m *machine) markSecret(v value) {
 				continue
 			}
 			st.secretOrigin[id] = true
-			st.secretHash[st.origins[id].hash] = true
+			// A typed answer has no response hash to hide.
+			if !st.origins[id].nohash {
+				st.secretHash[st.origins[id].hash] = true
+			}
 		}
 	}
 	mark(v.prov)
@@ -197,7 +202,9 @@ func (m *machine) markSecret(v value) {
 	if overflow {
 		for id := range st.origins {
 			st.secretOrigin[uint32(id)] = true
-			st.secretHash[st.origins[id].hash] = true
+			if !st.origins[id].nohash {
+				st.secretHash[st.origins[id].hash] = true
+			}
 		}
 	}
 	var add func(d any)
@@ -353,6 +360,9 @@ func (m *machine) runOrigin(name string) (value, int) {
 		}
 		o := m.st.origins[id]
 		hash := hex.EncodeToString(o.hash[:])
+		if o.nohash {
+			hash = "-"
+		}
 		if secret || m.st.hideHash(id) {
 			hash = redacted3
 		}
