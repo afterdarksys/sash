@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -43,9 +44,14 @@ func TestChanParseErrors(t *testing.T) {
 		"par 2 chan c(1) { send c 1; for k v in recv c { echo $k } }":              "parse: recv only as for x in recv c",
 		"par 2 chan c(1) { retry 2 { send c 1 }; " + ok + " }":                     "parse: send inside retry",
 		"par 2 chan c(1) { send c 1; retry 2 { " + ok + " } }":                     "parse: recv inside retry",
-		"fn send() { echo a }":                                                     "",
-		"fn chan() { echo a }":                                                     "",
-		"fn recv() { echo a }":                                                     "",
+		// A par inside a fn or a retry: an op directly in a fn or a retry
+		// within it is still refused.
+		"fn f() { par 2 chan c(1) { branch { fn g() { send c 1 }; send c 2 }; " + ok + " } }": "parse: send inside fn",
+		"retry 2 { par 2 chan c(1) { retry 2 { send c 1 }; " + ok + " } }":                    "parse: send inside retry",
+		"fn f() { par 2 chan c(1) { send c 1; retry 2 { " + ok + " } } }":                     "parse: recv inside retry",
+		"fn send() { echo a }": "",
+		"fn chan() { echo a }": "",
+		"fn recv() { echo a }": "",
 	} {
 		f := &fake{}
 		out := Run(src, allow(), f, Options{})
@@ -53,10 +59,13 @@ func TestChanParseErrors(t *testing.T) {
 			t.Errorf("%q: status %d err %q", src, out.Status, out.Stderr)
 		}
 	}
-	// Legal: retry inside the loop body, per item; try around an op.
+	// Legal: retry inside the loop body, per item; try around an op; a
+	// whole channel par inside a retry (each attempt a fresh par) or a fn.
 	for _, src := range []string{
 		"par 2 chan c(1) { send c 1; for j in recv c { retry 2 { echo $j } } }",
 		"par 2 chan c(1) { try { send c 1 } catch { echo no }; try { for j in recv c { echo $j } } catch { echo no } }",
+		"retry 2 { par 2 chan c(1) { send c 1; for x in recv c { echo $x } } }",
+		"fn f() { par 2 chan c(1) { send c 1; for x in recv c { echo $x } } }\nf",
 	} {
 		if out := Run(src, allow(), &fake{}, Options{}); out.Status != 0 || out.Stdout != "1\n" {
 			t.Errorf("%q: %+v", src, out)
@@ -138,6 +147,9 @@ func TestChanValueRefusals(t *testing.T) {
 	big := strings.Repeat("a", 3<<20)
 	for src, want := range map[string]string{
 		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c $b; for x in recv c { echo $x } }":                                                   "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ $b ]; for x in recv c { echo $x } }":                                               "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ [ {\"k\": $b} ] ]; for x in recv c { echo $x } }":                                  "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c ${b}; for x in recv c { echo $x } }":                                                 "type send: bytes cannot cross a channel; lift with lines or rows",
 		"let s = (cat /srv/ops/g | lines)\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }":                                           "send c: value over 8 MiB",
 		"let s = [ repeat(\"a\", 3145728) ]\npar 2 chan c(64) { for i in [ range(1, 20) ] { send c $s }; for x in recv c { echo [ len($x) ] } }": "send c: buffers over 32 MiB",
 	} {
@@ -146,6 +158,87 @@ func TestChanValueRefusals(t *testing.T) {
 		if out.Status != exitType || !strings.Contains(out.Stderr, want) {
 			t.Errorf("%q: %d %q", src[:30], out.Status, firstLine(out.Stderr))
 		}
+	}
+	// Text made from bytes is text, as echo makes it: it crosses.
+	for src, want := range map[string]string{
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c [ len($b) ]; for x in recv c { echo $x } }":         "4\n",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c \"x$b\"; for x in recv c { echo $x } }":             "xabc\n\n",
+		"let b = (cat /srv/ops/f)\nlet s = \"x$b\"\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }": "xabc\n\n",
+	} {
+		out := Run(src, g, &tplParent{files: map[string]string{"/srv/ops/f": "abc\n"}}, Options{})
+		if out.Status != 0 || out.Stdout != want {
+			t.Errorf("%q: %+v", src, out)
+		}
+	}
+}
+
+// A row set sent as a lone $r arrives as rows, with its provenance: the
+// receiver's echo $x fails as echo $r does, for walks its rows, and origin
+// names the sender's read.
+func TestChanRowsKeepKind(t *testing.T) {
+	alone := Run("let r = (ps)\necho $r", recGrant(), &hostParent{}, Options{})
+	out := Run("let r = (ps)\npar 2 chan c(1) { send c $r; for x in recv c { echo $x } }", recGrant(), &hostParent{}, Options{})
+	if alone.Status != exitType || alone.Stderr != "type value\n" || out.Status != exitType || out.Stdout != "" || !strings.HasPrefix(out.Stderr, alone.Stderr) {
+		t.Fatalf("echo: alone %+v, received %+v", alone, out)
+	}
+	out = Run("let r = (ps)\npar 2 chan c(1) { send c $r; for x in recv c { for w in $x { echo $w.user }; origin x |> select key } }", recGrant(), &hostParent{}, Options{})
+	if out.Status != 0 || out.Stdout != "root\nryan\nps\n" {
+		t.Fatalf("for: %+v", out)
+	}
+}
+
+// Every node of a value counts, as jsonValue charges it: a list of empty
+// strings sent again and again fills the par's 32 MiB, never counted as
+// nothing, and so do empty lists and rows of empty cells.
+func TestChanSizeCountsNodes(t *testing.T) {
+	empty := make([]any, 1000)
+	for i := range empty {
+		empty[i] = ""
+	}
+	_, n, why := chanCopy(value{kind: valData, d: empty})
+	if why != "" || n < 1000*chanNodeBytes {
+		t.Fatalf("empty strings: %d %q", n, why)
+	}
+	_, n, _ = chanCopy(value{kind: valData, d: []any{[]any{}, &omap{m: map[string]any{}}}})
+	if n < 3*chanNodeBytes {
+		t.Fatalf("empty list and map: %d", n)
+	}
+	rows := make([]parent.Row, 1000)
+	for i := range rows {
+		rows[i] = parent.Row{"a": ""}
+	}
+	if _, n, _ = chanCopy(value{kind: valRows, rows: rows}); n < 2000*chanNodeBytes {
+		t.Fatalf("rows: %d", n)
+	}
+	// 300000 empty strings are about 7 MiB: four fit the par, a fifth
+	// does not.
+	body := "[" + strings.Repeat(`"",`, 299999) + `""]`
+	p := &tplParent{files: map[string]string{"/srv/ops/g": body}}
+	src := "let s = (cat /srv/ops/g | from json)\npar 2 chan c(64) { for i in [ range(1, 16) ] { send c $s }; for x in recv c { break } }"
+	out := Run(src, parGrant(), p, Options{})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "send c: buffers over 32 MiB") {
+		t.Fatalf("%d %q", out.Status, firstLine(out.Stderr))
+	}
+}
+
+// A value nested past 128, or of a datum type that cannot cross, says so,
+// not that it is over 8 MiB.
+func TestChanCopyRefusals(t *testing.T) {
+	var deep any = "x"
+	for i := 0; i < 200; i++ {
+		deep = []any{deep}
+	}
+	if _, _, why := chanCopy(value{kind: valData, d: deep}); why != "value nested over 128 deep" {
+		t.Errorf("deep: %q", why)
+	}
+	if _, _, why := chanCopy(value{kind: valData, d: []any{struct{}{}}}); why != "value of a kind that cannot cross" {
+		t.Errorf("kind: %q", why)
+	}
+	if _, _, why := chanCopy(value{kind: valBytes, b: []byte("x")}); why != "value of a kind that cannot cross" {
+		t.Errorf("bytes: %q", why)
+	}
+	if _, _, why := chanCopy(value{kind: valStr, s: strings.Repeat("a", dataMaxBytes)}); why != "value over 8 MiB" {
+		t.Errorf("big: %q", why)
 	}
 }
 
@@ -258,6 +351,59 @@ func TestChanInterruptWakesWaiters(t *testing.T) {
 	waitFor(t, "goroutines back to baseline", func() bool { return runtime.NumGoroutine() <= base+1 })
 }
 
+// gateParent is a parent without the multiplexed pipe (the baton): each
+// call says it started, then waits for release.
+type gateParent struct {
+	in      chan struct{}
+	release chan struct{}
+}
+
+func (g *gateParent) Do(v parent.Verb) (parent.Result, error) {
+	g.in <- struct{}{}
+	<-g.release
+	return parent.Result{Kind: parent.KindBytes, Bytes: []byte("x\n")}, nil
+}
+
+// Under the baton, the first Ctrl-C while the holder is in a door call
+// leaves no branch waiting for the baton behind it: the two receivers,
+// one woken from its channel and one never started, end at once, before
+// the door call returns.
+func TestChanInterruptBaton(t *testing.T) {
+	g := &gateParent{in: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	release := func() { once.Do(func() { close(g.release) }) }
+	defer release()
+	intr := make(chan struct{}, 1)
+	opt := Options{Interrupts: func() (<-chan struct{}, func()) { return intr, func() {} }}
+	var ct *chanTable
+	var hookMu sync.Mutex
+	chanTableHook = func(t *chanTable) { hookMu.Lock(); ct = t; hookMu.Unlock() }
+	defer func() { chanTableHook = nil }()
+	state := func() (running, waiters, want int) {
+		hookMu.Lock()
+		defer hookMu.Unlock()
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		return ct.running, len(ct.waiters), len(ct.want)
+	}
+	src := "par 3 chan c(1) { branch { send c 1; send c 2; cat /srv/ops/a; send c 3 }; for x in recv c { echo $x }; for x in recv c { echo $x } }"
+	done := make(chan Outcome, 1)
+	go func() { done <- Run(src, parGrant(), g, opt) }()
+	<-g.in
+	// Branch 1 holds the baton in its door call; the other two are
+	// runnable and wait for it.
+	if r, w, b := state(); r != 3 || w != 0 || b != 2 {
+		t.Fatalf("before: running %d waiters %d want %d", r, w, b)
+	}
+	intr <- struct{}{}
+	waitFor(t, "receivers ended", func() bool { r, w, b := state(); return r == 1 && w == 0 && b == 0 })
+	release()
+	out := <-done
+	if out.Status != exitInterrupted || !strings.Contains(out.Stderr, "par: interrupted") {
+		t.Fatalf("%+v", out)
+	}
+}
+
 // A deadline wakes a blocked op: timeout, which try catches.
 func TestChanTimeout(t *testing.T) {
 	a := &prototest.Agent{Max: 4, Handle: func(v parent.Verb) (parent.Result, error) {
@@ -271,6 +417,16 @@ func TestChanTimeout(t *testing.T) {
 	out := Run(src, parGrant(), c, Options{})
 	if time.Since(start) > 3*time.Second || out.Stdout != "2\n" {
 		t.Fatalf("%+v", out)
+	}
+	// Under the baton: the receiver parks on the channel while the
+	// sender holds the baton in a door call past the deadline. The
+	// sender's next statement is timeout, which ends the par; the
+	// receiver is woken, never left parked.
+	src = "try { timeout 200ms { par 2 chan c(1) as r { for x in recv c { echo $x }; branch { cat /srv/ops/a; send c 1 } } } } catch e { echo $e.status }\necho [ $r[1].message ]"
+	start = time.Now()
+	out = Run(src, parGrant(), &catCounter{seen: map[string]int{}, delay: time.Second}, Options{})
+	if time.Since(start) > 3*time.Second || out.Stdout != "x\n2\ntimeout\n" {
+		t.Fatalf("baton: %v %+v", time.Since(start), out)
 	}
 }
 
@@ -411,6 +567,300 @@ func TestChanRecordReplay(t *testing.T) {
 	}
 }
 
+// A redacted event matches only a value that is secret: a recording with
+// every hash replaced by redacted is replay_diverged, and so is one that
+// also swaps two workers' receives, which only the hashes could see.
+func TestChanReplayRedactedTamper(t *testing.T) {
+	redactAll := func(c [][]byte, evs []int) {
+		for _, i := range evs {
+			if chanEv(t, c[i]).Op != "close" {
+				c[i] = edit(t, c[i], func(m map[string]any) { delete(m, "hash"); m["redacted"] = true })
+			}
+		}
+	}
+	rec, _ := record(t, chanRecSrc)
+	lines := recLines(rec)
+	evs := chanEvents(t, lines)
+	c := append([][]byte(nil), lines...)
+	redactAll(c, evs)
+	if got, err := replay(t, rechain(t, c), chanRecSrc); diverged(err) != chanEv(t, lines[evs[0]]).Seq {
+		t.Errorf("redacted: %v %+v", err, got)
+	}
+
+	src := "par 3 chan c(1) { for i in [ range(1, 10) ] { send c $i }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }"
+	rec, _ = record(t, src)
+	lines = recLines(rec)
+	evs = chanEvents(t, lines)
+	c = append([][]byte(nil), lines...)
+	swapped := false
+	for k := 0; k < len(evs) && !swapped; k++ {
+		a := chanEv(t, c[evs[k]])
+		for j := k + 1; j < len(evs) && a.Op == "recv"; j++ {
+			if b := chanEv(t, c[evs[j]]); b.Op == "recv" && b.Branch != a.Branch {
+				c[evs[k]] = edit(t, c[evs[k]], func(m map[string]any) { m["cseq"] = b.CSeq })
+				c[evs[j]] = edit(t, c[evs[j]], func(m map[string]any) { m["cseq"] = a.CSeq })
+				swapped = true
+				break
+			}
+		}
+	}
+	redactAll(c, evs)
+	if got, err := replay(t, rechain(t, c), src); !swapped || diverged(err) < 0 {
+		t.Errorf("swapped and redacted: %v %+v", err, got)
+	}
+
+	// A *** in a value, from host data or the script, is not a response
+	// replay served redacted: the swap and the redaction still diverge.
+	for _, sc := range []struct{ src, file string }{
+		{"par 3 chan c(1) { branch { let s = (cat /srv/ops/s | lines); send c [ $s[0].line ]; for i in [ range(1, 10) ] { send c $i } }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }", "masked: ***\n"},
+		{"par 3 chan c(1) { branch { send c [ \"***\" ]; for i in [ range(1, 10) ] { send c $i } }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }", ""},
+		{"par 3 chan c(1) { for i in [ range(1, 10) ] { send c \"*** $i\" }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }", ""},
+	} {
+		rec := recordFiles(t, sc.src, map[string]string{"/srv/ops/s": sc.file})
+		if _, err := replay(t, rec, sc.src); err != nil {
+			t.Fatalf("%q: honest replay %v", sc.src, err)
+		}
+		lines := recLines(rec)
+		evs := chanEvents(t, lines)
+		c := append([][]byte(nil), lines...)
+		swapped := false
+		for k := 0; k < len(evs) && !swapped; k++ {
+			a := chanEv(t, c[evs[k]])
+			for j := k + 1; j < len(evs) && a.Op == "recv"; j++ {
+				if b := chanEv(t, c[evs[j]]); b.Op == "recv" && b.Branch != a.Branch {
+					c[evs[k]] = edit(t, c[evs[k]], func(m map[string]any) { m["cseq"] = b.CSeq })
+					c[evs[j]] = edit(t, c[evs[j]], func(m map[string]any) { m["cseq"] = a.CSeq })
+					swapped = true
+					break
+				}
+			}
+		}
+		redactAll(c, evs)
+		if got, err := replay(t, rechain(t, c), sc.src); !swapped || diverged(err) < 0 {
+			t.Errorf("*** %q: %v %+v", sc.src, err, got)
+		}
+	}
+
+	// Honest recordings still replay: a value made from a response the
+	// recorder redacted holds *** on replay, not the secret's text, with
+	// the secret bound before the par or after it.
+	for _, src := range []string{
+		"par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c $l }; for j in recv c { echo got } }\ndeclare -s tok = \"hunter2-SECRET\"",
+		"declare -s tok = \"hunter2-SECRET\"\npar 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c [ \"x\" + $l[0].line ] }; for j in recv c { echo got } }",
+		"par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c [ \"x\" + $l[0].line ] }; for j in recv c { echo got } }\ndeclare -s tok = \"hunter2-SECRET\"",
+	} {
+		rec := recordFiles(t, src, map[string]string{"/srv/ops/u": "hunter2-SECRET\n"})
+		if got, err := replay(t, rec, src); err != nil || got.Status != 0 {
+			t.Errorf("%q: %v %+v", src, err, got)
+		}
+	}
+	// The same with the redacted response's origin lost to an overflow:
+	// the branch has had a redacted response, so the overflow may hide it.
+	files := map[string]string{"/srv/ops/u": "hunter2-SECRET\n"}
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 17; i++ {
+		files[fmt.Sprintf("/srv/ops/f%d", i)] = fmt.Sprintf("f%d\n", i)
+		fmt.Fprintf(&b, "let c%d = (cat /srv/ops/f%d | lines); ", i, i)
+		sum += fmt.Sprintf("$c%d[0].line + ", i)
+	}
+	src = "declare -s tok = \"hunter2-SECRET\"\npar 2 chan c(1) { branch { " + b.String() + "let l = (cat /srv/ops/u | lines); send c [ " + sum + "$l[0].line ] }; for j in recv c { echo got } }"
+	if got, err := replay(t, recordFiles(t, src, files), src); err != nil || got.Status != 0 {
+		t.Errorf("overflow: %v %+v", err, got)
+	}
+	// Two 8 MB values from a redacted response fill the keep budget on
+	// record, so the plain value after them is redacted for the budget
+	// alone; on replay they are *** and small, and the budget is no
+	// longer followed past the first of them.
+	src = "declare -s tok = \"hunter2-SECRET\"\npar 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c $l; send c $l; send c [ \"b\" * 1000000 ] }; for j in recv c { echo got } }"
+	rec = recordFiles(t, src, map[string]string{"/srv/ops/u": "hunter2-SECRET" + strings.Repeat("a", 8000000) + "\n"})
+	lines = recLines(rec)
+	n := 0
+	for _, i := range chanEvents(t, lines) {
+		if ev := chanEv(t, lines[i]); ev.Op == "send" && ev.Redacted {
+			n++
+		}
+	}
+	if got, err := replay(t, rec, src); n != 3 || err != nil || got.Status != 0 {
+		t.Errorf("budget: %d redacted sends, %v %+v", n, err, got)
+	}
+}
+
+// redactResp makes event line i's response a redacted one, as a forger
+// would.
+func redactResp(t *testing.T, c [][]byte, i int) {
+	t.Helper()
+	c[i] = edit(t, c[i], func(m map[string]any) {
+		r := m["resp"].(map[string]any)
+		m["resp"] = map[string]any{"kind": r["kind"], "exit": r["exit"], "redacted": true, "len": 5}
+	})
+}
+
+// firstCall is the index of a recording's first call event.
+func firstCall(t *testing.T, c [][]byte) int {
+	t.Helper()
+	for i, l := range c[1:] {
+		if ev := chanEv(t, l); ev.Kind == "call" && ev.Resp != nil {
+			return i + 1
+		}
+	}
+	t.Fatal("no call")
+	return 0
+}
+
+// What marks a value as made from something replay served as ***
+// belongs to that value, not to its branch: a redacted response the
+// branch read for something else does not excuse a value whose
+// provenance overflowed. The value that does hold one still replays,
+// however far it overflowed (TestChanReplayRedactedTamper), and so does
+// a term answer the recorder wrote as ***.
+func TestChanReplayStarsPerValue(t *testing.T) {
+	files := map[string]string{"/srv/ops/z": "unrelated\n"}
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 17; i++ {
+		files[fmt.Sprintf("/srv/ops/f%d", i)] = fmt.Sprintf("f%d\n", i)
+		fmt.Fprintf(&b, "let c%d = (cat /srv/ops/f%d | lines); ", i, i)
+		sum += fmt.Sprintf(" + $c%d[0].line", i)
+	}
+	src := "par 2 chan c(1) { branch { let z = (cat /srv/ops/z); " + b.String() + "let y = [ \"\"" + sum + " ]; send c $y }; for j in recv c { echo \"got $j\" } }"
+	rec := recordFiles(t, src, files)
+	for _, forged := range []bool{false, true} {
+		c := append([][]byte(nil), recLines(rec)...)
+		for _, i := range chanEvents(t, c) {
+			if chanEv(t, c[i]).Op != "close" {
+				c[i] = edit(t, c[i], func(m map[string]any) { delete(m, "hash"); m["redacted"] = true })
+			}
+		}
+		if forged {
+			redactResp(t, c, firstCall(t, c))
+		}
+		if got, err := replay(t, rechain(t, c), src); diverged(err) < 0 {
+			t.Errorf("forged %v: %v %+v", forged, err, got)
+		}
+	}
+
+	src = "let a = (term prompt \"x?\")\npar 2 chan c(1) { send c $a; for j in recv c { echo got } }\ndeclare -s tok = \"hunter2-SECRET\""
+	clocks(t)
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, src, recNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Run(src, termGrant(), &hostParent{}, Options{Tape: tape, State: NewState(), Term: &fakeTerm{answers: []string{"my hunter2-SECRET"}}})
+	if err := tape.Finish(); err != nil || out.Status != 0 {
+		t.Fatalf("record: %v %+v", err, out)
+	}
+	if got, err := replay(t, buf.Bytes(), src); err != nil || got.Status != 0 {
+		t.Errorf("term answer: %v %+v", err, got)
+	}
+}
+
+// One forged redacted response feeding a send cannot claim the whole
+// keep budget, and so switch off the value checks of every later send:
+// a value's share is at most dataMaxBytes.
+func TestChanReplayKeepForged(t *testing.T) {
+	src := "par 3 chan c(1) { branch { let s = (cat /srv/ops/s | lines); send c [ $s[0].line ]; for i in [ range(1, 10) ] { send c $i } }; for j in recv c { echo \"w1 $j\"; break }; for j in recv c { echo \"w2 $j\" } }"
+	rec := recordFiles(t, src, map[string]string{"/srv/ops/s": "plain line\n"})
+	c := append([][]byte(nil), recLines(rec)...)
+	evs := chanEvents(t, c)
+	for _, i := range evs {
+		ev := chanEv(t, c[i])
+		if ev.Op == "close" {
+			continue
+		}
+		c[i] = edit(t, c[i], func(m map[string]any) {
+			delete(m, "hash")
+			m["redacted"] = true
+			if ev.Op == "send" {
+				m["keep"] = chanKeepMax
+			}
+		})
+	}
+	redactResp(t, c, firstCall(t, c))
+	if got, err := replay(t, rechain(t, c), src); diverged(err) < 0 {
+		t.Errorf("forged keep: %v %+v", err, got)
+	}
+}
+
+// Every call sets whether replay served it redacted, and a glob listing
+// takes it: a redacted listing never marks the next verb's value.
+func TestTapeServedRedactedPairs(t *testing.T) {
+	src := "declare -s tok = \"content of /var/log/a\"\ncat /var/log/a\ncat /var/log/b"
+	rec, _ := record(t, src)
+	tape, err := LoadReplay(bytes.NewReader(rec), src, recNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verb := func(p string) parent.Verb {
+		return parent.Verb{Key: "file.read", Argv: []string{"cat", p}, Path: p}
+	}
+	// The first response is redacted in the recording.
+	check, err := LoadReplay(bytes.NewReader(rec), src, recNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := check.call(nil, verb("/var/log/a"), false, nil); err != nil || !check.takeServedRedacted() {
+		t.Fatalf("first call not served redacted: %v", err)
+	}
+	if _, err := (tapeParent{t: tape}).Do(verb("/var/log/a")); err != nil || tape.servedRedacted {
+		t.Fatalf("listing left the flag: %v %v", err, tape.servedRedacted)
+	}
+	if _, err := tape.call(nil, verb("/var/log/b"), false, nil); err != nil || tape.takeServedRedacted() {
+		t.Fatalf("plain call marked: %v", err)
+	}
+}
+
+// A send's keep total is checked: missing, on another op, or past the
+// budget is replay_bad_format; one that goes down or does not follow the
+// value's cost is replay_diverged.
+func TestChanReplayKeepTotal(t *testing.T) {
+	rec, _ := record(t, chanRecSrc)
+	lines := recLines(rec)
+	evs := chanEvents(t, lines)
+	var sends, recvs []int
+	for _, i := range evs {
+		switch chanEv(t, lines[i]).Op {
+		case "send":
+			sends = append(sends, i)
+		case "recv":
+			recvs = append(recvs, i)
+		}
+	}
+	try := func(i int, f func(map[string]any)) error {
+		c := append([][]byte(nil), lines...)
+		c[i] = edit(t, c[i], f)
+		_, err := replay(t, rechain(t, c), chanRecSrc)
+		return err
+	}
+	for name, err := range map[string]error{
+		"missing":     try(sends[0], func(m map[string]any) { delete(m, "keep") }),
+		"on a recv":   try(recvs[0], func(m map[string]any) { m["keep"] = 0 }),
+		"past budget": try(sends[3], func(m map[string]any) { m["keep"] = chanKeepMax + 1 }),
+		"negative":    try(sends[3], func(m map[string]any) { m["keep"] = -1 }),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "replay_bad_format") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, err := range map[string]error{
+		"goes down":    try(sends[5], func(m map[string]any) { m["keep"] = 0 }),
+		"off by one":   try(sends[5], func(m map[string]any) { m["keep"] = m["keep"].(float64) + 1 }),
+		"not followed": try(sends[0], func(m map[string]any) { m["keep"] = 0 }),
+		// The last send claims the budget was full and is redacted: it
+		// was not, so that is not why it was redacted.
+		"claims the budget": try(sends[len(sends)-1], func(m map[string]any) {
+			m["keep"] = chanEv(t, lines[sends[len(sends)-2]]).Keep
+			delete(m, "hash")
+			m["redacted"] = true
+		}),
+	} {
+		if diverged(err) < 0 {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // A chan event's shape is checked at load: a hash and redacted together,
 // an unknown op, a chan field on another kind, or a chan event outside a
 // par is replay_bad_format.
@@ -452,6 +902,116 @@ func TestChanRecordSecretRedacted(t *testing.T) {
 	}
 }
 
+// recordFiles records src against a parent that serves files, and
+// returns the recording.
+func recordFiles(t *testing.T, src string, files map[string]string) []byte {
+	t.Helper()
+	clocks(t)
+	var buf bytes.Buffer
+	tape, err := NewRecorder(&buf, src, recNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Run(src, parGrant(), &tplParent{files: files}, Options{Tape: tape, State: NewState()})
+	if err := tape.Finish(); err != nil || out.Status != 0 {
+		t.Fatalf("record %q: %v %+v", src, err, out)
+	}
+	return buf.Bytes()
+}
+
+// A value holding a secret's text keeps no hash, which could be guessed
+// offline, whatever shape the text has: read from a file with its
+// newline (the value lines made has none), holding a quote or a
+// backslash (escaped in JSON), or under four runes (matched as a whole
+// leaf). Each is caught when the same file is read again in the branch
+// that bound it (its origin is hidden), when another file with the same
+// text is sent and the secret is bound only after the par (the leaves,
+// checked at the end), and when the secret is computed from the value
+// (the origin alone). A plain value next to it keeps its hash.
+func TestChanRecordSecretShapes(t *testing.T) {
+	plain := "send c [ \"plain-value\" ]"
+	for _, text := range []string{"hunter2-SECRET\n", "pw\"12345", "back\\slash9", "417", "417\n"} {
+		for name, src := range map[string]string{
+			"re-read": "par 2 chan c(1) { branch { declare -s tok = (cat /srv/ops/t); let l = (cat /srv/ops/t | lines); send c $l; " + plain + " }; for j in recv c { echo got } }",
+			"later":   "par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); send c $l; " + plain + " }; for j in recv c { echo got } }\ndeclare -s tok = (cat /srv/ops/t)",
+			"origin":  "par 2 chan c(1) { branch { let l = (cat /srv/ops/u | lines); declare -s tok = [ upper($l[0].line) + \"-x\" ]; send c $l; " + plain + " }; for j in recv c { echo got } }",
+		} {
+			rec := recordFiles(t, src, map[string]string{"/srv/ops/t": text, "/srv/ops/u": text})
+			lines := recLines(rec)
+			var redacted, hashed int
+			for _, i := range chanEvents(t, lines) {
+				ev := chanEv(t, lines[i])
+				switch {
+				case ev.Op == "close":
+				case ev.Redacted && ev.Hash == "":
+					redacted++
+				default:
+					hashed++
+				}
+			}
+			// The secret's send and recv are redacted; the plain value's
+			// send and recv keep their hash.
+			if redacted != 2 || hashed != 2 {
+				t.Errorf("%q %s: %d redacted, %d hashed\n%s", text, name, redacted, hashed, rec)
+			}
+			if got, err := replay(t, rec, src); err != nil || got.Status != 0 {
+				t.Errorf("%q %s: replay %v %+v", text, name, err, got)
+			}
+		}
+	}
+}
+
+// A recording counts what it writes for a chan event, a hash, never the
+// value: six values of 6 MB record. The tape holds the leaves of the
+// first values for the check at Finish within its keep budget; past it a
+// value keeps none and is recorded redacted, and the recording replays.
+func TestChanRecordLargeValues(t *testing.T) {
+	src := "let s = [ \"a\" * 6000000 ]\npar 2 chan c(1) { for i in [ range(1, 6) ] { send c $s }; for x in recv c { echo [ len($x) ] } }"
+	rec, out := record(t, src)
+	if out.Status != 0 || out.Stdout != strings.Repeat("6000000\n", 6) || len(rec) > 1<<16 {
+		t.Fatalf("%d %q %q %d", out.Status, out.Stdout, out.Stderr, len(rec))
+	}
+	lines := recLines(rec)
+	var got []string
+	for _, i := range chanEvents(t, lines) {
+		if ev := chanEv(t, lines[i]); ev.Op == "send" {
+			got = append(got, strconv.FormatBool(ev.Redacted))
+		}
+	}
+	if strings.Join(got, " ") != "false false true true true true" {
+		t.Fatalf("redacted sends: %v", got)
+	}
+	if r, err := replay(t, rec, src); err != nil || r.Stdout != out.Stdout {
+		t.Fatalf("replay: %v %+v", err, r)
+	}
+}
+
+// A value whose provenance overflowed may have lost a hidden origin: it is
+// recorded redacted when its branch hides any origin, and keeps its hash
+// when the branch hides none.
+func TestChanRecordOverflowRedacted(t *testing.T) {
+	files := map[string]string{"/srv/ops/t": "hunter2-SECRET\n"}
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 17; i++ {
+		files[fmt.Sprintf("/srv/ops/f%d", i)] = fmt.Sprintf("f%d\n", i)
+		fmt.Fprintf(&b, "let c%d = (cat /srv/ops/f%d | lines); ", i, i)
+		sum += fmt.Sprintf(" + $c%d[0].line", i)
+	}
+	body := b.String() + "let y = [ \"\"" + sum + " ]; send c $y"
+	for hides, src := range map[bool]string{
+		true:  "par 2 chan c(1) { branch { declare -s tok = (cat /srv/ops/t); " + body + " }; for j in recv c { echo got } }",
+		false: "par 2 chan c(1) { branch { " + body + " }; for j in recv c { echo got } }",
+	} {
+		lines := recLines(recordFiles(t, src, files))
+		for _, i := range chanEvents(t, lines) {
+			if ev := chanEv(t, lines[i]); ev.Op != "close" && ev.Redacted != hides {
+				t.Errorf("hides %v: %s", hides, lines[i])
+			}
+		}
+	}
+}
+
 // A secret sent stays a secret: the receiver prints ***, a sink refuses
 // it, directly, through two channels, and nested in a list of maps, and
 // the session knows its text after the join.
@@ -472,16 +1032,25 @@ func TestChanSecretCrosses(t *testing.T) {
 			t.Errorf("%q: the session does not know the secret", src)
 		}
 	}
+	// The receiver marks what it received: a response it reads after the
+	// value crossed, holding the secret's text, is secret there, so its
+	// origin hides its hash. Only the receiver's own marking can do this;
+	// the sender's sink reaches the session only at the join.
+	src := "par 2 chan c(1) { branch { declare -s s = \"content of /srv/x\"; send c $s }; for x in recv c { let r = (cat /srv/x); origin r |> select target hash } }"
+	out := Run(src, recGrant(), &hostParent{}, Options{})
+	if out.Status != 0 || !strings.Contains(out.Stdout, "/srv/x") || !strings.Contains(out.Stdout, "***") {
+		t.Fatalf("receiver did not mark: %+v", out)
+	}
 	// Spelled into a word, a secret would cross as plain text: refused,
 	// as let refuses it.
-	out := Run("declare -s s = \"hunter2-long\"\npar 2 chan c(1) { send c \"x$s\"; for x in recv c { echo $x } }", allow(), &fake{}, Options{})
+	out = Run("declare -s s = \"hunter2-long\"\npar 2 chan c(1) { send c \"x$s\"; for x in recv c { echo $x } }", allow(), &fake{}, Options{})
 	if out.Status != exitType || !strings.Contains(out.Stderr, "a secret in a word: build it inside [ ]") || strings.Contains(out.Stdout, "hunter2") {
 		t.Fatalf("word: %+v", out)
 	}
 	// The wrapper is part of the datum at any depth.
 	v := value{kind: valData, d: []any{&omap{keys: []string{"k"}, m: map[string]any{"k": secretVal{"hunter2-long"}}}}}
-	cp, _, ok := chanCopy(v)
-	if !ok || !isSecret(cp.d.([]any)[0].(*omap).m["k"]) {
+	cp, _, why := chanCopy(v)
+	if why != "" || !isSecret(cp.d.([]any)[0].(*omap).m["k"]) {
 		t.Fatalf("nested secret lost: %+v", cp)
 	}
 }
@@ -522,7 +1091,7 @@ func TestChanAnswerCrosses(t *testing.T) {
 func TestChanOriginIDCollision(t *testing.T) {
 	src := `let a = (term prompt "q")
 par 2 chan c(1) {
-  branch { let s1 = (cat /srv/s1); let s2 = (cat /srv/s2); let s3 = (cat /srv/s3); let s4 = (cat /srv/s4); let s5 = (cat /srv/s5); send c [ $s3 ]; send c [ $s5 + $a ] }
+  branch { let s1 = (cat /srv/s1); let s2 = (cat /srv/s2); let s3 = (cat /srv/s3 | lines); let s4 = (cat /srv/s4); let s5 = (cat /srv/s5 | lines); send c [ $s3[0].line ]; send c [ $s5[0].line + $a ] }
   branch {
     let r1 = (cat /srv/r1); let r2 = (cat /srv/r2); let r3 = (cat /srv/r3); let r4 = (cat /srv/r4); let r5 = (cat /srv/r5)
     let n = 0
@@ -566,9 +1135,9 @@ func TestChanLoopMax(t *testing.T) {
 // shared (rows keep their kind).
 func TestChanDeepCopy(t *testing.T) {
 	v := value{kind: valData, d: &omap{keys: []string{"a"}, m: map[string]any{"a": []any{"x"}}}}
-	cp, _, ok := chanCopy(v)
-	if !ok {
-		t.Fatal("copy")
+	cp, _, why := chanCopy(v)
+	if why != "" {
+		t.Fatal(why)
 	}
 	cp.d.(*omap).m["a"].([]any)[0] = "y"
 	if v.d.(*omap).m["a"].([]any)[0] != "x" {

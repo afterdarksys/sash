@@ -196,6 +196,11 @@ func (m *machine) runTerm(st expStage) (value, int) {
 			answer, code, ok = m.tape.termSecret(live)
 		} else {
 			answer, code, ok = m.tape.term(op, live)
+			if m.tape.replay && answer == redacted3 {
+				// The recorder wrote *** for an answer holding a secret's
+				// text: the value is marked as made from it (chan.go).
+				m.prov = addProv(m.prov, provRedacted)
+			}
 		}
 		if !ok {
 			// Run reports the tape's error once, at the end.
@@ -276,6 +281,9 @@ func (m *machine) showPending() {
 // overflow marker that may hide one.
 func (m *machine) fromAnswer(prov []uint32) bool {
 	for _, id := range prov {
+		if id == provRedacted {
+			continue
+		}
 		if id == provOverflow || int(id) >= len(m.st.origins) || m.st.origins[id].key == "term prompt" {
 			return true
 		}

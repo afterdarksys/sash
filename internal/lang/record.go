@@ -129,7 +129,11 @@ type recEvent struct {
 	CSeq     int    `json:"cseq,omitempty"`
 	Hash     string `json:"hash,omitempty"`
 	Redacted bool   `json:"redacted,omitempty"`
-	Prev     string `json:"prev"`
+	// Keep, on a send, is the tape's keep budget total after it
+	// (chanKeep): replay follows it to tell a value redacted for the
+	// budget alone.
+	Keep *int   `json:"keep,omitempty"`
+	Prev string `json:"prev"`
 }
 
 // pending is one recorded event held in memory until Finish, unredacted,
@@ -150,10 +154,13 @@ type pending struct {
 	op     string
 	code   string
 	redact bool
-	// A chan event: its channel and cseq; op, value (the JSON hashed at
-	// Finish) and redact (a secret) as above.
-	ch   string
-	cseq int
+	// A chan event: its channel and cseq; op, value (the hash taken at
+	// send), leaves (the value's texts, checked at Finish against every
+	// secret the run bound) and redact (a secret at send) as above.
+	ch     string
+	cseq   int
+	leaves []string
+	keep   int
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -169,6 +176,18 @@ type Tape struct {
 	branch string // "" at top level
 	bseq   int    // events this branch has recorded
 	at     int
+	// servedRedacted (replay): the last call was answered from a
+	// response the recording holds redacted. Every call sets it, and
+	// every caller takes it (takeServedRedacted).
+	servedRedacted bool
+}
+
+// takeServedRedacted reports, once, whether the last call was answered
+// from a redacted response. Only this view's machine uses it.
+func (t *Tape) takeServedRedacted() bool {
+	r := t.servedRedacted
+	t.servedRedacted = false
+	return r
 }
 
 type tapeCore struct {
@@ -196,7 +215,10 @@ type tapeCore struct {
 	truncated bool
 	warn      bool
 	truncAt   int
-	// both
+	// both: chanKept is the bytes of leaves held (chanKeep); chanPend
+	// (replay) is the redacted chan events Finish checks
+	chanKept int
+	chanPend []chanPend
 	pars     int
 	nl       []int
 	err      error // first write error or divergence
@@ -304,7 +326,7 @@ func LoadReplaySegments(rs []io.Reader, script string, now time.Time) (*Tape, er
 				return nil, &TapeError{"replay_bad_segment", 1}
 			}
 			first = h
-			t = &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}}}
+			t = &Tape{tapeCore: &tapeCore{replay: true, diverged: -1, header: h, by: map[string][]int{}, used: map[string]int{}, secrets: map[string]bool{}}}
 		} else {
 			same := h
 			same.Segment, same.PrevSegment = first.Segment, first.PrevSegment
@@ -351,7 +373,7 @@ func (t *Tape) loadEvents(sc *bufio.Scanner, prevp *string, totalp *int) error {
 		if ev.Kind == "truncated" {
 			t.truncAt = ev.Seq
 		}
-		chanFields := ev.Chan != "" || ev.Op != "" || ev.CSeq != 0 || ev.Hash != "" || ev.Redacted
+		chanFields := ev.Chan != "" || ev.Op != "" || ev.CSeq != 0 || ev.Hash != "" || ev.Redacted || ev.Keep != nil
 		if (ev.Kind == "chan") != chanFields || (ev.Kind == "chan" && !chanEventOK(ev)) {
 			return &TapeError{"replay_bad_format", len(t.events) + 1}
 		}
@@ -374,21 +396,96 @@ func chanEventOK(ev recEvent) bool {
 		return false
 	}
 	switch ev.Op {
-	case "send", "recv":
-		return (ev.Hash != "") != ev.Redacted
+	case "send":
+		return (ev.Hash != "") != ev.Redacted && ev.Keep != nil && *ev.Keep >= 0 && *ev.Keep <= chanKeepMax
+	case "recv":
+		return (ev.Hash != "") != ev.Redacted && ev.Keep == nil
 	case "close":
-		return ev.Hash == "" && !ev.Redacted
+		return ev.Hash == "" && !ev.Redacted && ev.Keep == nil
 	}
 	return false
 }
 
-// chanEvent records a completed channel op of this branch (record mode).
-func (t *Tape) chanEvent(op, name string, cseq int, enc string, secret bool) {
-	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: enc, redact: secret})
+// chanKeepMax bounds the bytes of channel values' leaves a tape holds for
+// the check at Finish. Past it a value keeps none and is recorded
+// redacted: a recording of large channel traffic still fits, and fails
+// closed.
+const chanKeepMax = 16 << 20
+
+// chanKeep charges n bytes of a value's leaves to the tape's keep budget
+// (record), or reports that they do not fit; total is the budget's total
+// after it, written on the send event.
+func (t *Tape) chanKeep(n int) (kept bool, total int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if n > dataMaxBytes || t.chanKept+n > chanKeepMax {
+		return false, t.chanKept
+	}
+	t.chanKept += n
+	return true, t.chanKept
+}
+
+// chanKeepReplay follows the recorded total of a send (replay). For a
+// value replay sees as recorded, n is its cost: the total grew by n
+// (kept), or stayed where n does not fit (redacted for the budget). For
+// a stars value its size on record is unknown, so the recorded increment
+// is taken, at most one value's (dataMaxBytes) and within the budget. ok
+// is false for a total that went down, past the budget, or that does not
+// follow; the run then diverges.
+func (t *Tape) chanKeepReplay(total, n int, stars bool) (kept, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	prev := t.chanKept
+	if total < prev || total > chanKeepMax {
+		return false, false
+	}
+	d := total - prev
+	switch {
+	case stars:
+		// No value costs more than dataMaxBytes (its size), so a
+		// recorded increment past that is not a value's.
+		if d > dataMaxBytes {
+			return false, false
+		}
+		kept = d > 0
+	case d == n && n <= dataMaxBytes:
+		kept = true
+	case d == 0 && (n > dataMaxBytes || prev+n > chanKeepMax):
+		kept = false
+	default:
+		return false, false
+	}
+	t.chanKept = total
+	return kept, true
+}
+
+// chanPending notes, on replay, a redacted chan event whose value was not
+// secret when it completed: Finish diverges at it unless a leaf holds a
+// secret bound by then.
+func (t *Tape) chanPending(seq int, leaves []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.chanPend = append(t.chanPend, chanPend{seq: seq, leaves: leaves})
+}
+
+// chanPend is one event chanPending noted.
+type chanPend struct {
+	seq    int
+	leaves []string
+}
+
+// chanEvent records a completed channel op of this branch (record mode):
+// the value's hash, and its leaves unless it is already secret.
+func (t *Tape) chanEvent(op, name string, cseq int, hash string, leaves []string, secret bool, total int) {
+	if secret {
+		leaves = nil
+	}
+	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: hash, leaves: leaves, redact: secret, keep: total})
 }
 
 // chanScript is par p's chan events in cseq order (replay), or the seq of
-// the first event out of place when the cseqs are not exactly 1 to n.
+// the first event out of place when the cseqs are not exactly 1 to n or
+// a send's keep total goes down.
 func (t *Tape) chanScript(p int) ([]recEvent, int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -400,9 +497,17 @@ func (t *Tape) chanScript(p int) ([]recEvent, int) {
 		}
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].CSeq < out[b].CSeq })
+	keep := 0
 	for k, ev := range out {
 		if ev.CSeq != k+1 {
 			return nil, ev.Seq
+		}
+		if ev.Op == "send" {
+			// The keep total never goes down.
+			if *ev.Keep < keep {
+				return nil, ev.Seq
+			}
+			keep = *ev.Keep
 		}
 	}
 	return out, 0
@@ -449,6 +554,20 @@ func (t *Tape) Finish() error {
 			// A partial recording never replays as complete.
 			t.err = &TapeError{"replay_truncated", t.truncAt}
 		}
+		if len(t.chanPend) > 0 {
+			// A redacted chan event whose value holds no secret the run
+			// bound was not redacted by the recorder: an edit.
+			secrets := make([]string, 0, len(t.secrets))
+			for s := range t.secrets {
+				secrets = append(secrets, s)
+			}
+			cs := chanSecrets(secrets)
+			for _, p := range t.chanPend {
+				if (first == 0 || p.seq < first) && !leavesHold(p.leaves, cs) {
+					first = p.seq
+				}
+			}
+		}
 		if t.err == nil && first != 0 {
 			t.divergeLocked(first)
 		}
@@ -466,6 +585,7 @@ func (t *Tape) Finish() error {
 		secrets = append(secrets, s)
 	}
 	sort.Strings(secrets)
+	chanSecs := chanSecrets(secrets)
 	evs := make([]recEvent, len(t.pend))
 	sizes := make([]int, len(t.pend))
 	zero := strings.Repeat("0", 64)
@@ -493,13 +613,19 @@ func (t *Tape) Finish() error {
 		}
 		if p.kind == "chan" {
 			ev.Chan, ev.Op, ev.CSeq = p.ch, p.op, p.cseq
+			if p.op == "send" {
+				keep := p.keep
+				ev.Keep = &keep
+			}
 			if p.op != "close" {
 				// The hash of a value holding a secret's text could be
-				// guessed offline: such a value keeps no hash.
-				if p.redact || holdsAny(p.value, secrets) {
+				// guessed offline: such a value keeps no hash. Its leaves
+				// are checked, not its JSON, against each secret with and
+				// without a trailing newline.
+				if p.redact || leavesHold(p.leaves, chanSecs) {
 					ev.Redacted = true
 				} else {
-					ev.Hash = sha([]byte(p.value))
+					ev.Hash = p.value
 				}
 			}
 		}
@@ -662,11 +788,9 @@ func (t *Tape) Segments() [][]byte {
 }
 
 // see adds secret texts to the run's set. It only grows: a secret later
-// unset or reassigned is still redacted everywhere.
+// unset or reassigned is still redacted everywhere. Replay keeps the set
+// too, for the check of redacted chan events at Finish.
 func (t *Tape) see(texts []string) {
-	if t.replay {
-		return
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, s := range texts {
@@ -681,6 +805,8 @@ func (t *Tape) add(p pending) {
 	if t.err != nil {
 		return
 	}
+	// A chan event's value is its hash: its leaves are held under the
+	// keep budget (chanKeep), not written, so they do not count here.
 	n := int64(64 + len(p.value))
 	if p.v != nil {
 		n += int64(len(p.v.Path) + len(p.v.Body))
@@ -894,6 +1020,7 @@ func reqMatches(rec *recReq, v parent.Verb) bool {
 // call is one door call under the tape: recorded through p, or answered
 // from the recording.
 func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []string) (parent.Result, error) {
+	t.servedRedacted = false
 	if !t.replay {
 		res, err := p.Do(v)
 		vv := v
@@ -913,6 +1040,7 @@ func (t *Tape) call(p parent.Parent, v parent.Verb, tainted bool, secrets []stri
 		t.diverge(ev.Seq)
 		return parent.Result{}, t.Err()
 	}
+	t.servedRedacted = r.Redacted
 	res := parent.Result{Kind: parent.KindBytes, Exit: r.Exit, Cols: r.Cols, Rows: r.Rows, Bytes: r.Bytes}
 	if r.Kind == "rows" {
 		res.Kind = parent.KindRows
@@ -1029,7 +1157,11 @@ type tapeParent struct {
 }
 
 func (tp tapeParent) Do(v parent.Verb) (parent.Result, error) {
-	return tp.t.call(tp.p, v, false, nil)
+	// A listing makes no origin: its flag is taken here, never left for
+	// the next verb.
+	res, err := tp.t.call(tp.p, v, false, nil)
+	tp.t.takeServedRedacted()
+	return res, err
 }
 
 // Machine seams: every clock reading, sleep, and uuid a run makes goes
@@ -1079,6 +1211,10 @@ func (m *machine) uuidPin() func() (string, error) {
 		})
 		if rerr != nil {
 			return "", rerr
+		}
+		if m.tape.replay && v == redacted3 {
+			// Recorded as *** (it held a secret's text).
+			m.prov = addProv(m.prov, provRedacted)
 		}
 		if err := m.tape.Err(); err != nil {
 			m.ctl = ctlHalt

@@ -70,6 +70,13 @@
     "fix": "Nothing to change: this reports what happened."
   },
   {
+    "code": "chan_no_receiver",
+    "exit": 1,
+    "area": "verb",
+    "meaning": "\"send <c>: no receiver left\": every branch that receives from the channel had ended, so the send failed with status 1, which try catches",
+    "fix": "A person corrects the script: the receivers broke out or failed while a sender still had values."
+  },
+  {
     "code": "chan_recv_only",
     "exit": 2,
     "area": "parse",
@@ -80,8 +87,8 @@
     "code": "chan_send",
     "exit": 2,
     "area": "verb",
-    "meaning": "a send on a par channel failed: no receiver left (status 1), a value over 8 MiB, or the par's buffers over 32 MiB",
-    "fix": "A person reads which: the receivers ended early, or the values are too large for a channel."
+    "meaning": "\"send <c>: ...\": a send on a par channel was refused: a value over 8 MiB, nested over 128 deep, or of a kind that cannot cross, or the par's buffers over 32 MiB",
+    "fix": "A person reads which: the values are too large or too deep for a channel."
   },
   {
     "code": "chan_unread",

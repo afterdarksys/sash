@@ -19,7 +19,11 @@ package lang
 // secretVal crosses inside the datum, and the receiver marks its texts and
 // sinks them for the session); and a replay accepting another
 // interleaving (every completed op is a chan event with one cseq per par
-// and the value's hash, or redacted for a secret; replay lets an op
+// and the value's hash, or redacted for a secret: a value with a secret
+// in it, a hidden origin, an overflow while its branch hides any origin,
+// or a leaf holding any secret's text the run bound, with or without a
+// trailing newline, by the recording's whole-leaf rule for a short one;
+// replay lets an op
 // complete only when the next unused event by cseq names it, and anything
 // else, a hash that differs, or no branch able to go on, is
 // replay_diverged).
@@ -40,7 +44,8 @@ import (
 const msgRecvOnly = "recv only as for x in recv c"
 
 // chanOpsIn calls fn for every send and recv loop in p, nested bodies
-// included, fn bodies too.
+// included, fn bodies too, but not a nested par's: its ops name its own
+// channels, and chanWalk checks them against it.
 func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
 	if p == nil {
 		return
@@ -53,6 +58,8 @@ func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
 			if s.Recv != "" {
 				fn("recv", s.Recv, s)
 			}
+		case *Par:
+			continue
 		}
 		for _, b := range lintBodies(s) {
 			chanOpsIn(b, fn)
@@ -63,7 +70,10 @@ func chanOpsIn(p *Program, fn func(op, name string, s Stmt)) {
 // chanPlaces is the static channel rules (section 2): no send or recv in
 // a fn or a retry, recv only as a for source, each op naming a channel of
 // its own par, and each channel with a sender branch and a receiver
-// branch, no branch both.
+// branch, no branch both. A whole par with channels inside a fn or a
+// retry is legal (section 3.3): its ops reach only its own channels, so
+// the rule's reasons, an op the sender and receiver sets do not show and
+// a retried send, do not apply to it.
 func chanPlaces(prog *Program) error {
 	var msg string
 	needsEachStage(prog, func(st Stage) {
@@ -222,10 +232,22 @@ type chanItem struct {
 	// over is an overflowed provenance, or an id the sender could not
 	// name: the receiver keeps the overflow marker.
 	over bool
-	// enc is the value's JSON, kept only under a tape, for its hash;
-	// secret is a value holding a secret, recorded redacted.
-	enc    string
+	// Under a tape: hash is the sha256 of the value's JSON; leaves are
+	// its texts, for the check against secrets bound later (Finish),
+	// keep their cost and kept whether the tape's budget held them;
+	// secret is a value known to hold a secret at send, recorded
+	// redacted.
+	hash   string
+	leaves []string
+	keep   int
+	kept   bool
 	secret bool
+	// stars (replay) is a value whose provenance holds provRedacted:
+	// made from something replay served as *** for an event the
+	// recording holds redacted, so it no longer shows what made the
+	// recorder redact it, nor its size on record. It crosses with the
+	// value.
+	stars bool
 }
 
 // chanOrigin is one origin as it crosses: the record, and whether the
@@ -394,13 +416,20 @@ func (t *chanTable) wake(w *chanWaiter) {
 }
 
 // acquire waits for the baton: free, and this the lowest runnable
-// branch. Under t.mu.
+// branch. Under t.mu. Once the par is cancelled it returns without it:
+// the holder may be in a door call the first Ctrl-C does not stop, and a
+// branch must not stay parked behind it; the caller sees the cancel next
+// (wait's loop, or runProg before the branch's first statement).
 func (t *chanTable) acquire(i int) {
 	if !t.baton {
 		return
 	}
 	t.want[i] = true
 	for {
+		if t.ctx.Err() != nil {
+			delete(t.want, i)
+			return
+		}
 		if t.holder == -1 {
 			low := -1
 			for j := range t.want {
@@ -460,7 +489,7 @@ func (t *chanTable) end(m *machine, i int, failed bool) {
 			}
 			ch.senders--
 			if ch.senders == 0 {
-				t.took(i, "close", c, chanItem{}, late)
+				t.took(i, "close", c, &chanItem{}, late)
 			}
 		case "recv":
 			ch.receivers--
@@ -491,13 +520,24 @@ func (t *chanTable) turn(i int, op, c string) bool {
 // and a chan event; on replay, the recorded event it matched, taken from
 // the par's order and the branch's own stream, its hash checked. A late
 // close may match out of order. false is a divergence. Under t.mu.
-func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
+//
+// A send charges its leaves to the tape's keep budget, in cseq order, and
+// its event carries the budget's running total: a value past it keeps no
+// leaves and is recorded redacted. Replay follows the recorded totals
+// (chanKeepReplay).
+func (t *chanTable) took(i int, op, c string, it *chanItem, late bool) bool {
 	if t.tapes == nil {
 		return true
 	}
 	if !t.replay {
+		total := -1
+		if op == "send" {
+			if it.kept, total = t.tapes[i].chanKeep(it.keep); !it.kept {
+				it.leaves = nil
+			}
+		}
 		t.cseq++
-		t.tapes[i].chanEvent(op, c, t.cseq, it.enc, it.secret)
+		t.tapes[i].chanEvent(op, c, t.cseq, it.hash, it.leaves, it.secret || !it.kept, total)
 		return true
 	}
 	if t.div {
@@ -523,6 +563,18 @@ func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
 	t.used[k] = true
 	rec := t.script[k]
 	ev, ok := t.tapes[i].next("chan")
+	if ok && ev.Seq == rec.Seq && op == "send" {
+		kept, good := t.tapes[i].chanKeepReplay(*rec.Keep, it.keep, it.stars)
+		if !good {
+			t.tapes[i].diverge(rec.Seq)
+			t.div = true
+			t.cancel()
+			return false
+		}
+		if it.kept = kept; !kept {
+			it.leaves = nil
+		}
+	}
 	switch {
 	case !ok:
 		t.div = true
@@ -533,10 +585,17 @@ func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
 	case op == "close":
 		return true
 	case rec.Redacted:
-		// The recorder redacts against secrets bound later in the run,
-		// which replay does not know yet: a redacted event keeps no hash.
+		// A redacted event matches only a value that is secret: known
+		// at send, past the keep budget (the recorded total says so and
+		// replay checks it), made from a response replay served as
+		// redacted (its text gone), or else holding the text of a secret
+		// bound later, which Finish checks against every secret the
+		// replay bound. Anything else there is replay_diverged.
+		if !it.secret && it.kept && !it.stars {
+			t.tapes[i].chanPending(rec.Seq, it.leaves)
+		}
 		return true
-	case !it.secret && rec.Hash == sha([]byte(it.enc)):
+	case !it.secret && rec.Hash == it.hash:
 		return true
 	default:
 		t.tapes[i].diverge(rec.Seq)
@@ -657,22 +716,26 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("type send: send outside its par\n")
 		return exitType, true
 	}
-	// A lone $name keeps its kind, so bytes are seen as bytes.
-	var v value
-	if w := s.Word; len(w.Parts) == 1 && w.Parts[0].Exp {
-		v = m.vars[w.Parts[0].Lit]
+	if m.sendsBytes(s.Word) {
+		m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
+		return exitType, true
 	}
-	if v.kind != valBytes {
-		m.sawSecret = false
+	// A lone $name of a row or rows keeps its kind, with its provenance;
+	// anything else is the word's value.
+	var v value
+	m.sawSecret = false
+	if w := s.Word; len(w.Parts) == 1 && w.Parts[0].Exp {
+		if rv, ok := m.vars[w.Parts[0].Lit]; ok && (rv.kind == valRow || rv.kind == valRows) {
+			m.readProv(w.Parts[0].Lit)
+			v = rv
+		}
+	}
+	if v.kind != valRow && v.kind != valRows {
 		var err error
 		if v, err = m.wordValue(s.Word); err != nil {
 			m.err.WriteString(err.Error() + "\n")
 			return exitType, true
 		}
-	}
-	if v.kind == valBytes {
-		m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
-		return exitType, true
 	}
 	if m.sawSecret {
 		// A secret spelled into a word is plain text: it would cross as
@@ -680,13 +743,19 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("a secret in a word: build it inside [ ]\n")
 		return exitType, true
 	}
-	cp, size, ok := chanCopy(v)
-	if !ok || size > dataMaxBytes {
-		m.err.WriteString("send " + s.Chan + ": value over 8 MiB\n")
+	cp, size, why := chanCopy(v)
+	if why != "" {
+		m.err.WriteString("send " + s.Chan + ": " + why + "\n")
 		return exitType, true
 	}
 	it := chanItem{v: cp, size: size}
 	for _, id := range unionProv(v.prov, m.prov) {
+		if id == provRedacted {
+			// Only replay adds it: the value came from something
+			// replay served as *** (chan.go took).
+			it.stars = true
+			continue
+		}
 		if id == provOverflow || int(id) >= len(m.st.origins) {
 			it.over = true
 			continue
@@ -694,9 +763,24 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		it.orig = append(it.orig, chanOrigin{o: m.st.origins[id], secret: m.st.hideHash(id)})
 	}
 	if t.tapes != nil {
+		// The hash is taken now; the value itself is never kept for the
+		// tape. A value is secret when a secret is in it, when any of
+		// its origins is hidden, when its provenance overflowed while
+		// this branch hides any origin (a lost one could be hidden), or
+		// when a leaf holds a secret's text known here; Finish checks
+		// the leaves again against every secret the run bound.
 		var b strings.Builder
 		writeJSON(&b, toDatum(cp))
-		it.enc, it.secret = b.String(), holdsSecret(cp.d, 0)
+		it.hash = sha([]byte(b.String()))
+		it.leaves = chanLeaves(cp)
+		// What the leaves cost the keep budget is the value's size: at
+		// most dataMaxBytes, so one value's share is bounded.
+		it.keep = size
+		hides := len(m.st.secretOrigin) > 0 || len(m.st.secretHash) > 0
+		it.secret = (it.over && hides) || holdsSecret(cp.d, 0) || leavesHold(it.leaves, chanSecrets(m.secretTexts()))
+		for _, o := range it.orig {
+			it.secret = it.secret || o.secret
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -719,7 +803,7 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("send " + s.Chan + ": buffers over 32 MiB\n")
 		return exitType, true
 	}
-	if !t.took(i, "send", s.Chan, it, false) {
+	if !t.took(i, "send", s.Chan, &it, false) {
 		t.changed()
 		return m.chanFail(errChanDiverged)
 	}
@@ -729,44 +813,191 @@ func (m *machine) runSend(s *Send) (int, bool) {
 	return 0, false
 }
 
+// chanNodeBytes is what one node of a value costs beside its text, as
+// jsonValue charges it: an empty string, list, map, row, or cell is not
+// free.
+const chanNodeBytes = 24
+
+// chanDepthMax is the deepest a value may nest to cross.
+const chanDepthMax = 128
+
+// sendsBytes reports a send word whose value is bytes or holds them as a
+// value: a lone $b, or a [ ] expression that is $b, or a list or map
+// holding $b at any depth. Text made from bytes ("x$b", [ len($b) ]) is
+// text, as echo makes it, and crosses.
+func (m *machine) sendsBytes(w Word) bool {
+	isBytes := func(name string) bool {
+		v, ok := m.vars[name]
+		return ok && v.kind == valBytes
+	}
+	var holds func(x Expr) bool
+	holds = func(x Expr) bool {
+		switch x := x.(type) {
+		case exprRef:
+			name, _ := pathSteps(x.name)
+			return isBytes(name)
+		case exprList:
+			for _, it := range x.items {
+				if holds(it) {
+					return true
+				}
+			}
+		case exprMap:
+			for _, v := range x.vals {
+				if holds(v) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if len(w.Parts) != 1 {
+		return false
+	}
+	switch p := w.Parts[0]; {
+	case p.X != nil:
+		return holds(p.X)
+	case p.Exp:
+		name, _ := pathSteps(p.Lit)
+		return isBytes(name)
+	}
+	return false
+}
+
 // chanCopy deep-copies v, so the receiver shares no map or slice with the
-// sender, and sizes it: the bytes of its texts and keys, 8 per scalar.
-// ok is false past dataMaxBytes or for a kind that cannot cross.
-func chanCopy(v value) (value, int, bool) {
-	size := 0
+// sender, and sizes it: chanNodeBytes per node, row, and cell, plus the
+// bytes of its texts and keys. why is "" or what stops it crossing: past
+// dataMaxBytes, nested past chanDepthMax, or a kind that cannot cross.
+func chanCopy(v value) (out value, size int, why string) {
 	// Provenance ids do not cross: they index the sender's origins table
 	// (runSend carries the records beside the copy).
-	out := value{kind: v.kind, s: v.s, gcol: v.gcol}
+	out = value{kind: v.kind, s: v.s, gcol: v.gcol}
+	size = chanNodeBytes
 	switch v.kind {
 	case valStr:
-		size = len(v.s)
+		size += len(v.s)
 	case valRow:
-		out.row, size = copyRow(v.row)
+		var n int
+		out.row, n = copyRow(v.row)
+		size += n
 	case valRows:
 		out.cols = append([]string(nil), v.cols...)
+		for _, c := range v.cols {
+			size += len(c)
+		}
 		out.rows = make([]parent.Row, len(v.rows))
 		for i, r := range v.rows {
 			var n int
 			out.rows[i], n = copyRow(r)
 			if size += n; size > dataMaxBytes {
-				return value{}, size, false
+				return value{}, size, whyTooBig
 			}
 		}
 	case valData:
-		d, n, ok := copyDatum(v.d, 0, 0)
-		if !ok {
-			return value{}, n, false
+		d, n, why := copyDatum(v.d, size, 0)
+		if why != "" {
+			return value{}, n, why
 		}
 		out.d, size = d, n
 	default:
-		return value{}, 0, false
+		return value{}, 0, whyKind
 	}
-	return out, size, size <= dataMaxBytes
+	if size > dataMaxBytes {
+		return value{}, size, whyTooBig
+	}
+	return out, size, ""
+}
+
+// What stops a value crossing, after "send c: ".
+const (
+	whyTooBig = "value over 8 MiB"
+	whyDeep   = "value nested over 128 deep"
+	whyKind   = "value of a kind that cannot cross"
+)
+
+// chanLeaves is every text of v a secret's text could stand in: strings,
+// scalars as text, map keys, columns, row keys and cells. A secretVal's
+// inside is left out: holdsSecret marks the whole value.
+func chanLeaves(v value) []string {
+	var out []string
+	var walk func(d any, depth int)
+	walk = func(d any, depth int) {
+		if depth > chanDepthMax {
+			return
+		}
+		switch x := d.(type) {
+		case secretVal:
+		case []any:
+			for _, e := range x {
+				walk(e, depth+1)
+			}
+		case *omap:
+			for _, k := range x.keys {
+				out = append(out, k)
+				walk(x.m[k], depth+1)
+			}
+		default:
+			out = append(out, textOf(x))
+		}
+	}
+	row := func(r parent.Row) {
+		for k, c := range r {
+			out = append(out, k, c)
+		}
+	}
+	switch v.kind {
+	case valStr:
+		out = append(out, v.s)
+	case valRow:
+		row(v.row)
+	case valRows:
+		out = append(out, v.cols...)
+		for _, r := range v.rows {
+			row(r)
+		}
+	case valData:
+		walk(v.d, 0)
+	}
+	if v.gcol != "" {
+		out = append(out, v.gcol)
+	}
+	return out
+}
+
+// chanSecrets is each secret text and, when it ends in CR or LF, the text
+// without them: a secret read from a file keeps its newline, and a leaf
+// lines made from the same text does not.
+func chanSecrets(secrets []string) []string {
+	out := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		out = append(out, s)
+		if t := strings.TrimRight(s, "\r\n"); t != s {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// leavesHold reports whether any leaf holds a secret text by the
+// recording's rule (holdsAny): a text of secretMinRunes or more anywhere
+// in the leaf, a shorter one as the whole leaf. Leaves are compared as
+// they are, never as JSON, so a quote or a backslash in a secret is not
+// escaped away.
+func leavesHold(leaves, secrets []string) bool {
+	if len(secrets) == 0 {
+		return false
+	}
+	for _, l := range leaves {
+		if holdsAny(l, secrets) {
+			return true
+		}
+	}
+	return false
 }
 
 // holdsSecret reports a secret anywhere in d.
 func holdsSecret(d any, depth int) bool {
-	if depth > 128 {
+	if depth > chanDepthMax {
 		return true
 	}
 	switch d := d.(type) {
@@ -790,50 +1021,55 @@ func holdsSecret(d any, depth int) bool {
 
 func copyRow(r parent.Row) (parent.Row, int) {
 	out := make(parent.Row, len(r))
-	n := 0
+	n := chanNodeBytes
 	for k, v := range r {
 		out[k] = v
-		n += len(k) + len(v)
+		n += chanNodeBytes + len(k) + len(v)
 	}
 	return out, n
 }
 
-func copyDatum(d any, size, depth int) (any, int, bool) {
-	if size > dataMaxBytes || depth > 128 {
-		return nil, size, false
+// copyDatum copies d, adding its size to size; why as for chanCopy.
+func copyDatum(d any, size, depth int) (any, int, string) {
+	switch {
+	case size > dataMaxBytes:
+		return nil, size, whyTooBig
+	case depth > chanDepthMax:
+		return nil, size, whyDeep
 	}
+	size += chanNodeBytes
 	switch d := d.(type) {
 	case nil, bool, int64, float64:
-		return d, size + 8, true
+		return d, size, ""
 	case string:
-		return d, size + len(d), true
+		return d, size + len(d), ""
 	case []any:
 		out := make([]any, len(d))
 		for i, e := range d {
-			var ok bool
-			if out[i], size, ok = copyDatum(e, size, depth+1); !ok {
-				return nil, size, false
+			var why string
+			if out[i], size, why = copyDatum(e, size, depth+1); why != "" {
+				return nil, size, why
 			}
 		}
-		return out, size, true
+		return out, size, ""
 	case secretVal:
 		// The wrapper is part of the datum: a secret stays a secret.
-		in, n, ok := copyDatum(d.d, size, depth+1)
-		if !ok {
-			return nil, n, false
+		in, n, why := copyDatum(d.d, size, depth+1)
+		if why != "" {
+			return nil, n, why
 		}
-		return secretVal{in}, n, true
+		return secretVal{in}, n, ""
 	case *omap:
 		out := &omap{keys: append([]string(nil), d.keys...), m: make(map[string]any, len(d.m))}
 		for _, k := range d.keys {
-			var ok bool
-			if out.m[k], size, ok = copyDatum(d.m[k], size+len(k), depth+1); !ok {
-				return nil, size, false
+			var why string
+			if out.m[k], size, why = copyDatum(d.m[k], size+len(k), depth+1); why != "" {
+				return nil, size, why
 			}
 		}
-		return out, size, true
+		return out, size, ""
 	}
-	return nil, size, false
+	return nil, size, whyKind
 }
 
 // runRecv is for x in recv c { }: each value in send order on c, until c
@@ -863,7 +1099,7 @@ func (m *machine) runRecv(s *For) (int, bool) {
 		if err == nil && len(ch.q) > 0 {
 			it, ch.q, got = ch.q[0], ch.q[1:], true
 			t.bytes -= it.size
-			if !t.took(i, "recv", s.Recv, it, false) {
+			if !t.took(i, "recv", s.Recv, &it, false) {
 				err = errChanDiverged
 			}
 			t.changed()
@@ -925,6 +1161,9 @@ func (m *machine) internOrigins(it chanItem) []uint32 {
 	}
 	if it.over {
 		prov = addProv(prov, provOverflow)
+	}
+	if it.stars {
+		prov = addProv(prov, provRedacted)
 	}
 	if marked {
 		m.sinkSecrets()
