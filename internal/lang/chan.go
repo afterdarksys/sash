@@ -17,7 +17,12 @@ package lang
 // secret, and the receiver interns them into its own table; an overflowed
 // provenance crosses as overflow, so fromAnswer still fails closed; a
 // secretVal crosses inside the datum, and the receiver marks its texts and
-// sinks them for the session).
+// sinks them for the session); and a replay accepting another
+// interleaving (every completed op is a chan event with one cseq per par
+// and the value's hash, or redacted for a secret; replay lets an op
+// complete only when the next unused event by cseq names it, and anything
+// else, a hash that differs, or no branch able to go on, is
+// replay_diverged).
 
 import (
 	"context"
@@ -197,14 +202,13 @@ func chanSides(s *Par) string {
 // chanParMaxBytes bounds every buffered value of one par together.
 const chanParMaxBytes = 32 << 20
 
-// msgChanRecord refuses a recorded or replayed par with channels until
-// the recording holds the channel order (section 6 lifts this).
-const msgChanRecord = "type par: a par with channels cannot be recorded or replayed yet"
-
 var (
 	errChanDeadlock  = errors.New("deadlock")
 	errChanCancelled = errors.New("cancelled")
 	errChanTimeout   = errors.New("timeout")
+	// errChanDiverged is a replay that left the recorded channel order;
+	// Run reports the tape's error.
+	errChanDiverged = errors.New("replay_diverged")
 )
 
 // chanItem is one queued value. Its provenance crosses by record, never
@@ -217,6 +221,10 @@ type chanItem struct {
 	// over is an overflowed provenance, or an id the sender could not
 	// name: the receiver keeps the overflow marker.
 	over bool
+	// enc is the value's JSON, kept only under a tape, for its hash;
+	// secret is a value holding a secret, recorded redacted.
+	enc    string
+	secret bool
 }
 
 // chanOrigin is one origin as it crosses: the record, and whether the
@@ -245,6 +253,8 @@ type chanWaiter struct {
 	i     int
 	what  string
 	ready func() bool
+	// plain is the op ready but for the recorded order (replay).
+	plain func() bool
 	woken bool
 }
 
@@ -269,6 +279,16 @@ type chanTable struct {
 	want   map[int]bool
 	// slots gates door calls when eff >= 2.
 	slots chan struct{}
+	// tapes is each branch's tape view, when the run is recorded or
+	// replayed. Recording numbers every completed op (cseq); replay
+	// follows script, the par's chan events in cseq order.
+	tapes  []*Tape
+	cseq   int
+	replay bool
+	script []recEvent
+	used   []bool
+	next   int
+	div    bool
 }
 
 // chanTableHook, when set (tests), is given each new table.
@@ -317,7 +337,7 @@ func newChanTable(ctx context.Context, cancel context.CancelFunc, s *Par, bodies
 // the par is cancelled or deadlocked, then declares a deadlock when no
 // branch runs and some branch waits. Under t.mu.
 func (t *chanTable) changed() {
-	all := t.ctx.Err() != nil || t.dead != ""
+	all := t.ctx.Err() != nil || t.dead != "" || t.div
 	keep := t.waiters[:0]
 	for _, w := range t.waiters {
 		if all || w.ready() {
@@ -327,7 +347,22 @@ func (t *chanTable) changed() {
 		keep = append(keep, w)
 	}
 	t.waiters = keep
-	if t.running == 0 && len(t.waiters) > 0 && t.dead == "" {
+	if t.running == 0 && len(t.waiters) > 0 && t.replay && !t.div {
+		// No branch can go on. When an op would be ready but for the
+		// recorded order, the run left the recording: never a deadlock
+		// the recording did not have.
+		for _, w := range t.waiters {
+			if w.plain() {
+				t.diverge(w.i)
+				for _, w := range t.waiters {
+					t.wake(w)
+				}
+				t.waiters = nil
+				break
+			}
+		}
+	}
+	if t.running == 0 && len(t.waiters) > 0 && t.dead == "" && !t.div {
 		var ops []string
 		ws := append([]*chanWaiter(nil), t.waiters...)
 		for a := range ws {
@@ -400,26 +435,127 @@ func (t *chanTable) start(i int) {
 // closes when it was the last sender, and each it received from loses a
 // receiver. A failed branch cancels the par first, so a sender it leaves
 // without a receiver wakes as cancelled, as the first failure decides.
-func (t *chanTable) end(i int, failed bool) {
+// Closes happen in declaration order, each a chan event under a tape; on
+// replay a close before any cancel waits for its recorded turn.
+func (t *chanTable) end(m *machine, i int, failed bool) {
 	if failed {
 		t.cancel()
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for c, side := range t.sides[i] {
+	for _, c := range t.order {
 		ch := t.chans[c]
-		if ch == nil {
-			continue
-		}
-		if side == "send" {
+		switch t.sides[i][c] {
+		case "send":
+			// late is a close after a cancel, a deadline, or a
+			// divergence: it still happens (a sender that ended always
+			// closes), unordered.
+			late := t.ctx.Err() != nil || t.div
+			if ch.senders == 1 && t.replay && !late {
+				turn := func() bool { return t.turn(i, "close", c) }
+				if err := t.wait(m, "close "+c, turn, func() bool { return true }); err != nil {
+					late = true
+				}
+			}
 			ch.senders--
-		} else {
+			if ch.senders == 0 {
+				t.took(i, "close", c, chanItem{}, late)
+			}
+		case "recv":
 			ch.receivers--
 		}
 	}
 	t.running--
 	t.release(i)
 	t.changed()
+}
+
+// turn reports whether branch i's op on c may complete now: always, but
+// on replay only when the next unused recorded event names it.
+func (t *chanTable) turn(i int, op, c string) bool {
+	if !t.replay {
+		return true
+	}
+	for t.next < len(t.script) && t.used[t.next] {
+		t.next++
+	}
+	if t.next >= len(t.script) {
+		return false
+	}
+	ev := t.script[t.next]
+	return ev.Branch == t.tapes[i].branch && ev.Op == op && ev.Chan == c
+}
+
+// took is a completed op of branch i on c: on a recording, the next cseq
+// and a chan event; on replay, the recorded event it matched, taken from
+// the par's order and the branch's own stream, its hash checked. A late
+// close may match out of order. false is a divergence. Under t.mu.
+func (t *chanTable) took(i int, op, c string, it chanItem, late bool) bool {
+	if t.tapes == nil {
+		return true
+	}
+	if !t.replay {
+		t.cseq++
+		t.tapes[i].chanEvent(op, c, t.cseq, it.enc, it.secret)
+		return true
+	}
+	if t.div {
+		return false
+	}
+	k := -1
+	if t.turn(i, op, c) {
+		k = t.next
+	} else if op == "close" && late {
+		// Nothing else completes after a cancel, so a late close is not
+		// ordered against other ops.
+		for j, ev := range t.script {
+			if !t.used[j] && ev.Branch == t.tapes[i].branch && ev.Op == op && ev.Chan == c {
+				k = j
+				break
+			}
+		}
+	}
+	if k < 0 {
+		t.diverge(i)
+		return false
+	}
+	t.used[k] = true
+	rec := t.script[k]
+	ev, ok := t.tapes[i].next("chan")
+	switch {
+	case !ok:
+		t.div = true
+		t.cancel()
+		return false
+	case ev.Seq != rec.Seq:
+		t.tapes[i].diverge(rec.Seq)
+	case op == "close":
+		return true
+	case rec.Redacted:
+		// The recorder redacts against secrets bound later in the run,
+		// which replay does not know yet: a redacted event keeps no hash.
+		return true
+	case !it.secret && rec.Hash == sha([]byte(it.enc)):
+		return true
+	default:
+		t.tapes[i].diverge(rec.Seq)
+	}
+	t.div = true
+	t.cancel()
+	return false
+}
+
+// diverge ends a replay that cannot go on: at the next unused recorded
+// channel event, or branch i's next event when none is left. Under t.mu.
+func (t *chanTable) diverge(i int) {
+	t.turn(i, "", "")
+	if t.next < len(t.script) {
+		t.tapes[i].diverge(t.script[t.next].Seq)
+	} else {
+		t.tapes[i].divergeHere()
+	}
+	t.div = true
+	t.cancel()
 }
 
 // cancelled wakes every waiter when the par's context ends.
@@ -431,10 +567,12 @@ func (t *chanTable) cancelled() {
 
 // wait blocks branch i until ready holds, the par is cancelled or
 // deadlocked, or the deadline passes. Under t.mu.
-func (t *chanTable) wait(m *machine, what string, ready func() bool) error {
+func (t *chanTable) wait(m *machine, what string, ready, plain func() bool) error {
 	i := m.pb.idx
 	for {
 		switch {
+		case t.div:
+			return errChanDiverged
 		case t.dead != "":
 			return errChanDeadlock
 		case t.ctx.Err() != nil:
@@ -444,7 +582,7 @@ func (t *chanTable) wait(m *machine, what string, ready func() bool) error {
 		case ready():
 			return nil
 		}
-		w := &chanWaiter{i: i, what: what, ready: ready}
+		w := &chanWaiter{i: i, what: what, ready: ready, plain: plain}
 		t.waiters = append(t.waiters, w)
 		t.running--
 		var timer *time.Timer
@@ -503,6 +641,9 @@ func (m *machine) chanFail(err error) (int, bool) {
 	case errChanCancelled:
 		m.pb.stopped = true
 		m.ctl = ctlHalt
+	case errChanDiverged:
+		m.ctl = ctlHalt
+		m.haltStatus = exitType
 	default:
 		m.err.WriteString("timeout\n")
 	}
@@ -551,6 +692,11 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		}
 		it.orig = append(it.orig, chanOrigin{o: m.st.origins[id], secret: m.st.hideHash(id)})
 	}
+	if t.tapes != nil {
+		var b strings.Builder
+		writeJSON(&b, toDatum(cp))
+		it.enc, it.secret = b.String(), holdsSecret(cp.d, 0)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if ch.sends++; ch.sends > m.st.loopMax {
@@ -558,7 +704,10 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.ctl = ctlHalt
 		return exitType, true
 	}
-	if err := t.wait(m, "send "+s.Chan, func() bool { return len(ch.q) < ch.buf || ch.receivers == 0 }); err != nil {
+	i := m.pb.idx
+	ready := func() bool { return (len(ch.q) < ch.buf && t.turn(i, "send", s.Chan)) || ch.receivers == 0 }
+	plain := func() bool { return len(ch.q) < ch.buf || ch.receivers == 0 }
+	if err := t.wait(m, "send "+s.Chan, ready, plain); err != nil {
 		return m.chanFail(err)
 	}
 	if ch.receivers == 0 {
@@ -568,6 +717,10 @@ func (m *machine) runSend(s *Send) (int, bool) {
 	if t.bytes+size > chanParMaxBytes {
 		m.err.WriteString("send " + s.Chan + ": buffers over 32 MiB\n")
 		return exitType, true
+	}
+	if !t.took(i, "send", s.Chan, it, false) {
+		t.changed()
+		return m.chanFail(errChanDiverged)
 	}
 	ch.q = append(ch.q, it)
 	t.bytes += size
@@ -608,6 +761,30 @@ func chanCopy(v value) (value, int, bool) {
 		return value{}, 0, false
 	}
 	return out, size, size <= dataMaxBytes
+}
+
+// holdsSecret reports a secret anywhere in d.
+func holdsSecret(d any, depth int) bool {
+	if depth > 128 {
+		return true
+	}
+	switch d := d.(type) {
+	case secretVal:
+		return true
+	case []any:
+		for _, e := range d {
+			if holdsSecret(e, depth+1) {
+				return true
+			}
+		}
+	case *omap:
+		for _, k := range d.keys {
+			if holdsSecret(d.m[k], depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func copyRow(r parent.Row) (parent.Row, int) {
@@ -674,12 +851,20 @@ func (m *machine) runRecv(s *For) (int, bool) {
 	status, iter := 0, 0
 	for {
 		t.mu.Lock()
-		err := t.wait(m, "recv "+s.Recv, func() bool { return len(ch.q) > 0 || ch.senders == 0 })
+		i := m.pb.idx
+		ready := func() bool {
+			return (len(ch.q) > 0 && t.turn(i, "recv", s.Recv)) || (ch.senders == 0 && len(ch.q) == 0)
+		}
+		plain := func() bool { return len(ch.q) > 0 || ch.senders == 0 }
+		err := t.wait(m, "recv "+s.Recv, ready, plain)
 		var it chanItem
 		got := false
 		if err == nil && len(ch.q) > 0 {
 			it, ch.q, got = ch.q[0], ch.q[1:], true
 			t.bytes -= it.size
+			if !t.took(i, "recv", s.Recv, it, false) {
+				err = errChanDiverged
+			}
 			t.changed()
 		}
 		t.mu.Unlock()

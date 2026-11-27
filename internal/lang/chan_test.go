@@ -2,6 +2,7 @@ package lang
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -308,18 +309,146 @@ par 3 chan c(1) {
 	}
 }
 
-// Until the recording holds the channel order (section 6), a par with
-// channels is refused when recorded.
-func TestChanRecordRefusedForNow(t *testing.T) {
-	src := "par 2 chan c(1) { send c 1; for x in recv c { echo $x } }"
-	var buf bytes.Buffer
-	tape, err := NewRecorder(&buf, src, time.Now().Add(time.Hour))
-	if err != nil {
+// chanRecSrc is a producer, three workers, and an aggregator over 50
+// items, for record and replay.
+const chanRecSrc = `par 5 chan jobs(4), done(2) {
+  for i in [ range(1, 50) ] { send jobs $i }
+  for j in recv jobs { cat /srv/ops/$j; send done [ {"j": $j} ] }
+  for j in recv jobs { cat /srv/ops/$j; send done [ {"j": $j} ] }
+  for j in recv jobs { cat /srv/ops/$j; send done [ {"j": $j} ] }
+  branch { let n = 0; for d in recv done { let n = [ $n + 1 ] }; echo "seen $n" }
+}`
+
+// chanEvents is the index of every chan event line of a recording.
+func chanEvents(t *testing.T, lines [][]byte) []int {
+	t.Helper()
+	var out []int
+	for i, l := range lines[1:] {
+		var ev recEvent
+		if err := json.Unmarshal(l, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == "chan" {
+			out = append(out, i+1)
+		}
+	}
+	return out
+}
+
+func chanEv(t *testing.T, line []byte) recEvent {
+	t.Helper()
+	var ev recEvent
+	if err := json.Unmarshal(line, &ev); err != nil {
 		t.Fatal(err)
 	}
-	out := Run(src, allow(), &fake{}, Options{Tape: tape})
-	if out.Status != exitType || !strings.Contains(out.Stderr, msgChanRecord) {
+	return ev
+}
+
+// A par with channels records every send, recv, and close with one cseq
+// per par and the value's hash, and replays to the same output in the
+// recorded order. An edited cseq (moved or duplicated), an edited hash,
+// and a deleted chan event each diverge.
+func TestChanRecordReplay(t *testing.T) {
+	rec, out := record(t, chanRecSrc)
+	if out.Status != 0 || !strings.HasSuffix(out.Stdout, "seen 50\n") {
 		t.Fatalf("record: %+v", out)
+	}
+	lines := recLines(rec)
+	evs := chanEvents(t, lines)
+	// 50 sends and recvs on jobs and on done, and a close of each.
+	if len(evs) != 202 {
+		t.Fatalf("%d chan events", len(evs))
+	}
+	for k, i := range evs {
+		ev := chanEv(t, lines[i])
+		if ev.CSeq != k+1 || ev.Branch == "" || (ev.Op != "close" && len(ev.Hash) != 64) {
+			t.Fatalf("event %d: %s", k, lines[i])
+		}
+	}
+	got, err := replay(t, rec, chanRecSrc)
+	if err != nil || got.Stdout != out.Stdout || got.Status != 0 {
+		t.Fatalf("replay: %v %+v", err, got)
+	}
+
+	tampered := map[string][]byte{}
+	// Two workers' receives on jobs, their cseqs swapped: each would
+	// take the other's item.
+	for k := 0; k < len(evs) && tampered["swapped cseq"] == nil; k++ {
+		a := chanEv(t, lines[evs[k]])
+		for j := k + 1; j < len(evs) && a.Op == "recv" && a.Chan == "jobs"; j++ {
+			if b := chanEv(t, lines[evs[j]]); b.Op == "recv" && b.Chan == "jobs" && b.Branch != a.Branch {
+				c := append([][]byte(nil), lines...)
+				c[evs[k]] = edit(t, c[evs[k]], func(m map[string]any) { m["cseq"] = b.CSeq })
+				c[evs[j]] = edit(t, c[evs[j]], func(m map[string]any) { m["cseq"] = a.CSeq })
+				tampered["swapped cseq"] = rechain(t, c)
+				break
+			}
+		}
+	}
+	c := append([][]byte(nil), lines...)
+	c[evs[10]] = edit(t, c[evs[10]], func(m map[string]any) { m["cseq"] = 10 })
+	tampered["duplicate cseq"] = rechain(t, c)
+	c = append([][]byte(nil), lines...)
+	c[evs[20]] = edit(t, c[evs[20]], func(m map[string]any) { m["cseq"] = 9999 })
+	tampered["cseq out of range"] = rechain(t, c)
+	for _, k := range []int{3, 60} {
+		c = append([][]byte(nil), lines...)
+		c[evs[k]] = edit(t, c[evs[k]], func(m map[string]any) { m["hash"] = strings.Repeat("0", 64) })
+		tampered[fmt.Sprintf("hash %d", k)] = rechain(t, c)
+	}
+	for _, k := range []int{7, len(evs) - 1} {
+		c = append(append([][]byte(nil), lines[:evs[k]]...), lines[evs[k]+1:]...)
+		tampered[fmt.Sprintf("deleted %d", k)] = rechain(t, c)
+	}
+	if len(tampered) != 7 {
+		t.Fatalf("%d cases", len(tampered))
+	}
+	for name, r := range tampered {
+		got, err := replay(t, r, chanRecSrc)
+		if diverged(err) < 0 || got.Status != exitType || !strings.Contains(got.Stderr, "replay_diverged") {
+			t.Errorf("%s: %v %d %q", name, err, got.Status, got.Stderr)
+		}
+	}
+}
+
+// A chan event's shape is checked at load: a hash and redacted together,
+// an unknown op, a chan field on another kind, or a chan event outside a
+// par is replay_bad_format.
+func TestChanRecordBadFormat(t *testing.T) {
+	rec, _ := record(t, chanRecSrc)
+	lines := recLines(rec)
+	evs := chanEvents(t, lines)
+	for name, f := range map[string]func(map[string]any){
+		"hash and redacted": func(m map[string]any) { m["redacted"] = true },
+		"unknown op":        func(m map[string]any) { m["op"] = "peek" },
+		"no cseq":           func(m map[string]any) { delete(m, "cseq") },
+		"outside par":       func(m map[string]any) { delete(m, "branch"); delete(m, "bseq") },
+		"not chan":          func(m map[string]any) { m["kind"] = "now" },
+	} {
+		c := append([][]byte(nil), lines...)
+		c[evs[0]] = edit(t, c[evs[0]], f)
+		if _, err := replay(t, rechain(t, c), chanRecSrc); err == nil || !strings.Contains(err.Error(), "replay_bad_format") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A secret sent is recorded redacted, with no hash and no text, and the
+// recording still replays.
+func TestChanRecordSecretRedacted(t *testing.T) {
+	src := "declare -s s = \"hunter2-long\"\npar 3 chan c(1), d(1) { send c $s; for x in recv c { send d [ {\"k\": $x} ] }; for y in recv d { echo $y } }"
+	rec, out := record(t, src)
+	if out.Status != 0 || out.Stdout != "***\n" || bytes.Contains(rec, []byte("hunter2")) {
+		t.Fatalf("%+v\n%s", out, rec)
+	}
+	for _, i := range chanEvents(t, recLines(rec)) {
+		ev := chanEv(t, recLines(rec)[i])
+		if ev.Op != "close" && (!ev.Redacted || ev.Hash != "") {
+			t.Fatalf("not redacted: %+v", ev)
+		}
+	}
+	if got, err := replay(t, rec, src); err != nil || got.Stdout != out.Stdout {
+		t.Fatalf("replay: %v %+v", err, got)
 	}
 }
 
@@ -450,5 +579,22 @@ func TestChanDeepCopy(t *testing.T) {
 	cr.rows[0]["a"] = "2"
 	if r.rows[0]["a"] != "1" || cr.kind != valRows {
 		t.Fatal("rows shared")
+	}
+}
+
+// A recorded failure (a worker fails, the par is cancelled, the producer
+// closes late), a recorded deadlock, and a receiver that breaks replay to
+// the same outcome.
+func TestChanRecordReplayFailures(t *testing.T) {
+	for _, src := range []string{
+		"par 2 chan c(1) { for i in [ range(1, 10) ] { send c $i }; for x in recv c { cat /srv/ops/$x; egrep zz <<< a } }",
+		"par 2 chan a(1), b(1) { for x in recv a { send b $x }; for y in recv b { send a $y } }",
+		"par 3 chan c(2) { branch { send c 1; send c 2 }; for x in recv c { cat /srv/ops/$x }; for x in recv c { break } }",
+	} {
+		rec, out := record(t, src)
+		got, err := replay(t, rec, src)
+		if err != nil || got.Status != out.Status || got.Stdout != out.Stdout || got.Stderr != out.Stderr {
+			t.Errorf("%q: %v\nrecord %+v\nreplay %+v", src, err, out, got)
+		}
 	}
 }

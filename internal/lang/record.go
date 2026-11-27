@@ -8,7 +8,8 @@ package lang
 // calls a parent. Events are call, plan, now, sleep, uuid, and fault, each
 // {seq, line, kind, req, resp, prev}, where prev is the sha256 of the line
 // before it, starting from the header {v, script_sha256, sash_version,
-// modules, expires}.
+// modules, expires}; and chan, a par channel op {chan, op, cseq, hash or
+// redacted}, which holds a hash, never the value.
 //
 // Threats: a recording concentrates host data, so it is off by default
 // and offline only in this build (in-session recording waits for
@@ -120,7 +121,15 @@ type recEvent struct {
 	BSeq   int      `json:"bseq,omitempty"`
 	Req    *recReq  `json:"req,omitempty"`
 	Resp   *recResp `json:"resp,omitempty"`
-	Prev   string   `json:"prev"`
+	// A chan event (a par channel op, chan.go): the channel, send, recv,
+	// or close, its place in the par's total order of channel ops, and
+	// the sha256 of the value's JSON, or redacted for a secret.
+	Chan     string `json:"chan,omitempty"`
+	Op       string `json:"op,omitempty"`
+	CSeq     int    `json:"cseq,omitempty"`
+	Hash     string `json:"hash,omitempty"`
+	Redacted bool   `json:"redacted,omitempty"`
+	Prev     string `json:"prev"`
 }
 
 // pending is one recorded event held in memory until Finish, unredacted,
@@ -141,6 +150,10 @@ type pending struct {
 	op     string
 	code   string
 	redact bool
+	// A chan event: its channel and cseq; op, value (the JSON hashed at
+	// Finish) and redact (a secret) as above.
+	ch   string
+	cseq int
 }
 
 // Tape is one recording, being written (record) or read back (replay),
@@ -149,7 +162,8 @@ type pending struct {
 // recording appends events in completion order (the chain covers that
 // merged order), and replay answers each branch from its own events in
 // its own order, never comparing the merged order, and requires every
-// event to be used exactly once.
+// event to be used exactly once. Channel ops are the exception: their
+// cseq is a total order per par, and replay follows it (chan.go).
 type Tape struct {
 	*tapeCore
 	branch string // "" at top level
@@ -337,6 +351,10 @@ func (t *Tape) loadEvents(sc *bufio.Scanner, prevp *string, totalp *int) error {
 		if ev.Kind == "truncated" {
 			t.truncAt = ev.Seq
 		}
+		chanFields := ev.Chan != "" || ev.Op != "" || ev.CSeq != 0 || ev.Hash != "" || ev.Redacted
+		if (ev.Kind == "chan") != chanFields || (ev.Kind == "chan" && !chanEventOK(ev)) {
+			return &TapeError{"replay_bad_format", len(t.events) + 1}
+		}
 		t.by[ev.Branch] = append(t.by[ev.Branch], len(t.events))
 		t.events = append(t.events, ev)
 	}
@@ -347,6 +365,47 @@ func (t *Tape) loadEvents(sc *bufio.Scanner, prevp *string, totalp *int) error {
 		return &TapeError{"replay_bad_format", len(t.events) + 1}
 	}
 	return nil
+}
+
+// chanEventOK is a chan event's shape: in a par branch, a known op, a
+// cseq, and a hash or redacted on a send or recv, neither on a close.
+func chanEventOK(ev recEvent) bool {
+	if ev.Branch == "" || ev.Chan == "" || ev.CSeq < 1 {
+		return false
+	}
+	switch ev.Op {
+	case "send", "recv":
+		return (ev.Hash != "") != ev.Redacted
+	case "close":
+		return ev.Hash == "" && !ev.Redacted
+	}
+	return false
+}
+
+// chanEvent records a completed channel op of this branch (record mode).
+func (t *Tape) chanEvent(op, name string, cseq int, enc string, secret bool) {
+	t.add(pending{kind: "chan", op: op, ch: name, cseq: cseq, value: enc, redact: secret})
+}
+
+// chanScript is par p's chan events in cseq order (replay), or the seq of
+// the first event out of place when the cseqs are not exactly 1 to n.
+func (t *Tape) chanScript(p int) ([]recEvent, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	prefix := strconv.Itoa(p) + "."
+	var out []recEvent
+	for _, ev := range t.events {
+		if ev.Kind == "chan" && strings.HasPrefix(ev.Branch, prefix) {
+			out = append(out, ev)
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].CSeq < out[b].CSeq })
+	for k, ev := range out {
+		if ev.CSeq != k+1 {
+			return nil, ev.Seq
+		}
+	}
+	return out, 0
 }
 
 // begin gives the tape the text being run, for line numbers.
@@ -430,6 +489,18 @@ func (t *Tape) Finish() error {
 			ev.Resp = &recResp{Value: p.value}
 			if holdsAny(p.value, secrets) {
 				ev.Resp = &recResp{Value: redacted3}
+			}
+		}
+		if p.kind == "chan" {
+			ev.Chan, ev.Op, ev.CSeq = p.ch, p.op, p.cseq
+			if p.op != "close" {
+				// The hash of a value holding a secret's text could be
+				// guessed offline: such a value keeps no hash.
+				if p.redact || holdsAny(p.value, secrets) {
+					ev.Redacted = true
+				} else {
+					ev.Hash = sha([]byte(p.value))
+				}
 			}
 		}
 		if p.kind == "term" {

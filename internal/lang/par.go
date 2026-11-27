@@ -342,9 +342,6 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		m.bindParRows(s.As, nil)
 		return 0, false
 	}
-	if len(s.Chans) > 0 && m.tape != nil {
-		return fail(msgChanRecord)
-	}
 	eff := min(n, len(branches))
 	switch {
 	case m.st.confirm, m.tape != nil && m.tape.replay:
@@ -395,6 +392,21 @@ func (m *machine) runPar(s *Par) (int, bool) {
 		}
 		machines[i] = bm
 	}
+	if ct != nil && m.tape != nil {
+		for _, bm := range machines {
+			ct.tapes = append(ct.tapes, bm.tape)
+		}
+		if m.tape.replay {
+			// Replay follows the recorded order of channel ops.
+			script, bad := m.tape.chanScript(tapePar)
+			if bad != 0 {
+				m.tape.diverge(bad)
+				m.ctl = ctlHalt
+				return exitType, true
+			}
+			ct.replay, ct.script, ct.used = true, script, make([]bool, len(script))
+		}
+	}
 	results := make(chan parResult, len(branches))
 	go func() {
 		sem := make(chan struct{}, eff)
@@ -420,7 +432,7 @@ func (m *machine) runPar(s *Par) (int, bool) {
 				st, stop := bm.runProg(branches[i].body)
 				cancelled := ctx.Err() != nil
 				if ct != nil {
-					ct.end(i, (stop || st != 0 || bm.ctl != ctlNone) && !cancelled)
+					ct.end(bm, i, (stop || st != 0 || bm.ctl != ctlNone) && !cancelled)
 				}
 				bm.pb.mu.Lock()
 				bm.pb.done = true
