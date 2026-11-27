@@ -9,16 +9,21 @@ The scenario is one JSON object on argv[1]:
   env      the whole environment
   cwd      the working directory
   steps    a list of {"expect": text}, {"send": text}, {"signal": name},
-           {"sleep": seconds}, {"eof": true}; expect waits for text on the terminal
+           {"sleep": seconds}, {"eof": true}, {"winsize": [rows, cols]};
+           expect waits for text on the terminal; winsize sets the
+           terminal's size (send the WINCH signal after it: the child has
+           no controlling terminal, so the kernel does not)
   wait     seconds to wait for the exit (default 5)
 The report: {"code", "tty", "stdout", "stderr", "restored", "error"}; the
 captured text is latin-1, so every byte survives.
 """
+import fcntl
 import json
 import os
 import pty
 import select
 import signal
+import struct
 import subprocess
 import sys
 import termios
@@ -112,6 +117,9 @@ try:
             os.write(master, step["send"].encode("latin-1"))
         elif "signal" in step:
             os.kill(process.pid, getattr(signal, "SIG" + step["signal"]))
+        elif "winsize" in step:
+            rows, cols = step["winsize"]
+            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         elif "sleep" in step:
             end_at = time.monotonic() + step["sleep"]
             while time.monotonic() < end_at:
