@@ -17,34 +17,34 @@ import (
 func TestChanParseErrors(t *testing.T) {
 	ok := "for r in recv c { echo $r }"
 	for src, want := range map[string]string{
-		"par 4 as r for x in [ [1] ] chan c(4) { echo $x }":             "parse: chan needs par N { }",
-		"par 4 for x in [ [1] ] chan c(4) { echo $x }":                  "parse: chan needs par N { }",
-		"par 4 as r chan c(4) { send c 1; " + ok + " }":                 "parse: chan needs par N { }",
-		"par 4 chan c(4) for x in [ [1] ] { echo $x }":                  "parse: chan needs par N { }",
-		"par 2 chan c(0) { send c 1; " + ok + " }":                      "parse: chan buffer is 1 to 64",
-		"par 2 chan c(65) { send c 1; " + ok + " }":                     "parse: chan buffer is 1 to 64",
-		"par 2 chan c($n) { send c 1; " + ok + " }":                     "parse: chan buffer is 1 to 64",
+		"par 4 as r for x in [ [1] ] chan c(4) { echo $x }":                "parse: chan needs par N { }",
+		"par 4 for x in [ [1] ] chan c(4) { echo $x }":                     "parse: chan needs par N { }",
+		"par 4 as r chan c(4) { send c 1; " + ok + " }":                    "parse: chan needs par N { }",
+		"par 4 chan c(4) for x in [ [1] ] { echo $x }":                     "parse: chan needs par N { }",
+		"par 2 chan c(0) { send c 1; " + ok + " }":                         "parse: chan buffer is 1 to 64",
+		"par 2 chan c(65) { send c 1; " + ok + " }":                        "parse: chan buffer is 1 to 64",
+		"par 2 chan c($n) { send c 1; " + ok + " }":                        "parse: chan buffer is 1 to 64",
 		"par 2 chan c(1), d(1), e(1), f(1), g(1) { send c 1; " + ok + " }": "parse: par has at most 4 chans",
-		"par 2 chan c(1), c(2) { send c 1; " + ok + " }":                "parse: chan c declared twice",
-		"par 2 chan c(1) { echo a; " + ok + " }":                        "parse: chan c: no sender",
-		"par 2 chan c(1) { send c 1; echo a }":                          "parse: chan c: no receiver",
-		"par 2 chan c(1) { branch { send c 1; " + ok + " }; echo a }":   "parse: chan c: one branch sends and receives",
-		"par 2 chan c(1) { send d 1; " + ok + " }":                      "parse: send outside its par",
-		"par 2 chan c(1) { send c 1; for r in recv d { echo $r } }":     "parse: recv outside its par",
-		"send c 1":                                                     "parse: send outside its par",
-		"for r in recv c { echo $r }":                                  "parse: recv outside its par",
-		"par 2 { send c 1; echo a }":                                   "parse: send outside its par",
-		"fn f() { send c 1 }":                                          "parse: send inside fn",
-		"fn f() { for r in recv c { echo $r } }":                       "parse: recv inside fn",
+		"par 2 chan c(1), c(2) { send c 1; " + ok + " }":                   "parse: chan c declared twice",
+		"par 2 chan c(1) { echo a; " + ok + " }":                           "parse: chan c: no sender",
+		"par 2 chan c(1) { send c 1; echo a }":                             "parse: chan c: no receiver",
+		"par 2 chan c(1) { branch { send c 1; " + ok + " }; echo a }":      "parse: chan c: one branch sends and receives",
+		"par 2 chan c(1) { send d 1; " + ok + " }":                         "parse: send outside its par",
+		"par 2 chan c(1) { send c 1; for r in recv d { echo $r } }":        "parse: recv outside its par",
+		"send c 1":                               "parse: send outside its par",
+		"for r in recv c { echo $r }":            "parse: recv outside its par",
+		"par 2 { send c 1; echo a }":             "parse: send outside its par",
+		"fn f() { send c 1 }":                    "parse: send inside fn",
+		"fn f() { for r in recv c { echo $r } }": "parse: recv inside fn",
 		"par 2 chan c(1) { branch { fn f() { send c 1 }; send c 2 }; " + ok + " }": "parse: send inside fn",
-		"par 2 chan c(1) { send c 1; let x = (recv c) }":                "parse: recv only as for x in recv c",
-		"par 2 chan c(1) { send c 1; recv c }":                          "parse: recv only as for x in recv c",
-		"par 2 chan c(1) { send c 1; for k v in recv c { echo $k } }":   "parse: recv only as for x in recv c",
-		"par 2 chan c(1) { retry 2 { send c 1 }; " + ok + " }":          "parse: send inside retry",
-		"par 2 chan c(1) { send c 1; retry 2 { " + ok + " } }":          "parse: recv inside retry",
-		"fn send() { echo a }":                                         "",
-		"fn chan() { echo a }":                                         "",
-		"fn recv() { echo a }":                                         "",
+		"par 2 chan c(1) { send c 1; let x = (recv c) }":                           "parse: recv only as for x in recv c",
+		"par 2 chan c(1) { send c 1; recv c }":                                     "parse: recv only as for x in recv c",
+		"par 2 chan c(1) { send c 1; for k v in recv c { echo $k } }":              "parse: recv only as for x in recv c",
+		"par 2 chan c(1) { retry 2 { send c 1 }; " + ok + " }":                     "parse: send inside retry",
+		"par 2 chan c(1) { send c 1; retry 2 { " + ok + " } }":                     "parse: recv inside retry",
+		"fn send() { echo a }":                                                     "",
+		"fn chan() { echo a }":                                                     "",
+		"fn recv() { echo a }":                                                     "",
 	} {
 		f := &fake{}
 		out := Run(src, allow(), f, Options{})
@@ -136,8 +136,8 @@ func TestChanValueRefusals(t *testing.T) {
 	g := parGrant()
 	big := strings.Repeat("a", 3<<20)
 	for src, want := range map[string]string{
-		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c $b; for x in recv c { echo $x } }": "type send: bytes cannot cross a channel; lift with lines or rows",
-		"let s = (cat /srv/ops/g | lines)\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }": "send c: value over 8 MiB",
+		"let b = (cat /srv/ops/f)\npar 2 chan c(1) { send c $b; for x in recv c { echo $x } }":                                                   "type send: bytes cannot cross a channel; lift with lines or rows",
+		"let s = (cat /srv/ops/g | lines)\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }":                                           "send c: value over 8 MiB",
 		"let s = [ repeat(\"a\", 3145728) ]\npar 2 chan c(64) { for i in [ range(1, 20) ] { send c $s }; for x in recv c { echo [ len($x) ] } }": "send c: buffers over 32 MiB",
 	} {
 		p := &tplParent{files: map[string]string{"/srv/ops/f": big, "/srv/ops/g": strings.Repeat(strings.Repeat("a", 1000)+"\n", 9000)}}
@@ -308,19 +308,9 @@ par 3 chan c(1) {
 	}
 }
 
-// Until provenance crosses by record (section 5), a secret or a term
-// prompt answer is refused at send; until the recording holds the channel
-// order (section 6), a par with channels is refused when recorded.
-func TestChanTemporaryRefusals(t *testing.T) {
-	for _, src := range []string{
-		"declare -s s = \"hunter2\"\npar 2 chan c(1) { send c $s; for x in recv c { echo $x } }",
-		"declare -s s = \"hunter2\"\npar 2 chan c(1) { send c [ {\"k\": $s} ]; for x in recv c { echo $x } }",
-	} {
-		out := Run(src, allow(), &fake{}, Options{})
-		if out.Status != exitType || !strings.Contains(out.Stderr, msgChanUnsafe) {
-			t.Errorf("%q: %+v", src, out)
-		}
-	}
+// Until the recording holds the channel order (section 6), a par with
+// channels is refused when recorded.
+func TestChanRecordRefusedForNow(t *testing.T) {
 	src := "par 2 chan c(1) { send c 1; for x in recv c { echo $x } }"
 	var buf bytes.Buffer
 	tape, err := NewRecorder(&buf, src, time.Now().Add(time.Hour))
@@ -330,6 +320,107 @@ func TestChanTemporaryRefusals(t *testing.T) {
 	out := Run(src, allow(), &fake{}, Options{Tape: tape})
 	if out.Status != exitType || !strings.Contains(out.Stderr, msgChanRecord) {
 		t.Fatalf("record: %+v", out)
+	}
+}
+
+// A secret sent stays a secret: the receiver prints ***, a sink refuses
+// it, directly, through two channels, and nested in a list of maps, and
+// the session knows its text after the join.
+func TestChanSecretCrosses(t *testing.T) {
+	for src, want := range map[string]string{
+		"par 2 chan c(1) { branch { declare -s s = \"hunter2-long\"; send c $s }; for x in recv c { echo $x; unit status $x } }":                                                         "***\n",
+		"par 3 chan a(1), b(1) { branch { declare -s s = \"hunter2-long\"; send a $s }; for x in recv a { send b $x }; for y in recv b { echo $y; unit status $y } }":                    "***\n",
+		"par 2 chan c(1) { branch { declare -s s = \"hunter2-long\"; send c [ [ {\"k\": [ $s ]} ] ] }; for x in recv c { echo $x; unit status [ $x[0].k[0] ] } }":                        "***\n",
+		"declare -s s = \"hunter2-long\"\nlet rs = [ [ {\"a\": 1, \"k\": $s}, {\"a\": 2, \"k\": \"x\"} ] ]\npar 2 chan c(1) { send c $rs; for x in recv c { echo $x; unit status $x } }": "***\n",
+	} {
+		st := NewState()
+		f := &fake{}
+		out := Run(src, allow(), f, Options{State: st})
+		if out.Status != exitType || out.Stdout != want || !strings.Contains(out.Stderr, "a secret cannot leave sash") || strings.Contains(out.Stdout+out.Stderr, "hunter2") || len(f.calls) != 0 {
+			t.Errorf("%q: %+v calls %v", src, out, f.calls)
+		}
+		if !st.secretText["hunter2-long"] {
+			t.Errorf("%q: the session does not know the secret", src)
+		}
+	}
+	// Spelled into a word, a secret would cross as plain text: refused,
+	// as let refuses it.
+	out := Run("declare -s s = \"hunter2-long\"\npar 2 chan c(1) { send c \"x$s\"; for x in recv c { echo $x } }", allow(), &fake{}, Options{})
+	if out.Status != exitType || !strings.Contains(out.Stderr, "a secret in a word: build it inside [ ]") || strings.Contains(out.Stdout, "hunter2") {
+		t.Fatalf("word: %+v", out)
+	}
+	// The wrapper is part of the datum at any depth.
+	v := value{kind: valData, d: []any{&omap{keys: []string{"k"}, m: map[string]any{"k": secretVal{"hunter2-long"}}}}}
+	cp, _, ok := chanCopy(v)
+	if !ok || !isSecret(cp.d.([]any)[0].(*omap).m["k"]) {
+		t.Fatalf("nested secret lost: %+v", cp)
+	}
+}
+
+// An origin the sender hides (a response a secret came from) stays
+// hidden in the receiver, which never bound that secret itself.
+func TestChanSecretOriginFlagCrosses(t *testing.T) {
+	src := `par 2 chan c(1) {
+  branch { declare -s tok = (cat /srv/token); let l = (cat /srv/token | lines); send c $l }
+  for j in recv c { origin j |> select target hash }
+}`
+	out := Run(src, recGrant(), &hostParent{}, Options{})
+	if out.Status != 0 || !strings.Contains(out.Stdout, "/srv/token") || !strings.Contains(out.Stdout, "***") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// A term prompt answer bound before the par still selects no subcommand
+// after it crosses: as the value, inside a map, and through two channels.
+func TestChanAnswerCrosses(t *testing.T) {
+	for _, src := range []string{
+		"let a = (term prompt \"q\")\npar 2 chan c(1) { send c $a; for j in recv c { unit $j nginx } }",
+		"let a = (term prompt \"q\")\npar 2 chan c(1) { send c [ {\"op\": $a} ]; for j in recv c { unit $j.op nginx } }",
+		"let a = (term prompt \"q\")\npar 3 chan c(1), d(1) { send c $a; for j in recv c { send d $j }; for k in recv d { unit $k nginx } }",
+	} {
+		p := &recParent{}
+		out := Run(src, termGrant(), p, Options{Term: &fakeTerm{answers: []string{"restart"}}})
+		if out.Status != exitType || !strings.Contains(out.Stderr, msgSubFromAnswer) || len(p.calls) != 0 {
+			t.Errorf("%q: %+v calls %v", src, out, p.calls)
+		}
+	}
+}
+
+// Origin ids never cross. Sender and receiver each bind five origins
+// after the fork, so the same id names a different read in each: the
+// receiver's origin rows name the sender's reads, with the sender's
+// lines, and the answer in the value still selects no subcommand.
+func TestChanOriginIDCollision(t *testing.T) {
+	src := `let a = (term prompt "q")
+par 2 chan c(1) {
+  branch { let s1 = (cat /srv/s1); let s2 = (cat /srv/s2); let s3 = (cat /srv/s3); let s4 = (cat /srv/s4); let s5 = (cat /srv/s5); send c [ $s3 ]; send c [ $s5 + $a ] }
+  branch {
+    let r1 = (cat /srv/r1); let r2 = (cat /srv/r2); let r3 = (cat /srv/r3); let r4 = (cat /srv/r4); let r5 = (cat /srv/r5)
+    let n = 0
+    for j in recv c { let n = [ $n + 1 ]; if [ $n == 1 ] { origin j |> select target line } else { unit $j nginx } }
+  }
+}`
+	out := Run(src, termGrant(), &hostParent{}, Options{Term: &fakeTerm{answers: []string{"restart"}}})
+	if !strings.Contains(out.Stdout, "/srv/s3") || strings.Contains(out.Stdout, "/srv/r") || !strings.Contains(out.Stderr, msgSubFromAnswer) || out.Status != exitType {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// A provenance cut at 16 origins crosses as overflow: the answer it may
+// hide still selects nothing on the receiving side.
+func TestChanOverflowCrosses(t *testing.T) {
+	var b strings.Builder
+	sum := ""
+	for i := 0; i < 16; i++ {
+		fmt.Fprintf(&b, "let c%d = (cat /srv/f%d)\n", i, i)
+		sum += fmt.Sprintf("$c%d + ", i)
+	}
+	b.WriteString("let x = (term prompt \"q\")\nlet y = [ " + sum + "$x ]\n")
+	b.WriteString("par 2 chan c(1) { send c $y; for j in recv c { origin j |> where origin == overflow |> select target; unit $j nginx } }")
+	p := &recParent{}
+	out := Run(b.String(), termGrant(), p, Options{Term: &fakeTerm{answers: []string{"restart"}}})
+	if out.Status != exitType || !strings.Contains(out.Stdout, "truncated") || !strings.Contains(out.Stderr, msgSubFromAnswer) || len(p.calls) != 16 {
+		t.Fatalf("%+v calls %d", out, len(p.calls))
 	}
 }
 

@@ -12,10 +12,12 @@ package lang
 // block and branch end, never a timer); a dropped item being a dropped
 // action (values left at the join fail the par); a received value sharing
 // a map with its sender (every value is deep-copied at send); and an
-// origin id meaning another origin in the receiving branch (until
-// provenance crosses by record, a value holding a secret or a term prompt
-// answer is refused at send, and a par with channels is refused under
-// recording and replay).
+// origin id meaning another origin in the receiving branch (ids never
+// cross: a value's origins cross as records, each with whether its hash is
+// secret, and the receiver interns them into its own table; an overflowed
+// provenance crosses as overflow, so fromAnswer still fails closed; a
+// secretVal crosses inside the datum, and the receiver marks its texts and
+// sinks them for the session).
 
 import (
 	"context"
@@ -195,11 +197,6 @@ func chanSides(s *Par) string {
 // chanParMaxBytes bounds every buffered value of one par together.
 const chanParMaxBytes = 32 << 20
 
-// msgChanUnsafe refuses what cannot cross yet: origin ids would name
-// other origins in the receiving branch, so a secret or an answer could
-// lose what it is (section 5 lifts this).
-const msgChanUnsafe = "type send: a secret or a term prompt answer cannot cross a channel yet"
-
 // msgChanRecord refuses a recorded or replayed par with channels until
 // the recording holds the channel order (section 6 lifts this).
 const msgChanRecord = "type par: a par with channels cannot be recorded or replayed yet"
@@ -210,9 +207,23 @@ var (
 	errChanTimeout   = errors.New("timeout")
 )
 
+// chanItem is one queued value. Its provenance crosses by record, never
+// by id: ids index the sender's origins table, which grew apart from the
+// receiver's after the fork.
 type chanItem struct {
 	v    value
 	size int
+	orig []chanOrigin
+	// over is an overflowed provenance, or an id the sender could not
+	// name: the receiver keeps the overflow marker.
+	over bool
+}
+
+// chanOrigin is one origin as it crosses: the record, and whether the
+// sender hides its hash (a secret produced it).
+type chanOrigin struct {
+	o      origin
+	secret bool
 }
 
 // pchan is one channel: its queue, and how many of its sender and
@@ -521,9 +532,10 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("type send: bytes cannot cross a channel; lift with lines or rows\n")
 		return exitType, true
 	}
-	prov := unionProv(v.prov, m.prov)
-	if m.sawSecret || m.chanUnsafe(prov) || holdsSecretDatum(toDatum(v), 0) {
-		m.err.WriteString(msgChanUnsafe + "\n")
+	if m.sawSecret {
+		// A secret spelled into a word is plain text: it would cross as
+		// text nobody knows is secret. As let refuses it.
+		m.err.WriteString("a secret in a word: build it inside [ ]\n")
 		return exitType, true
 	}
 	cp, size, ok := chanCopy(v)
@@ -531,12 +543,13 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("send " + s.Chan + ": value over 8 MiB\n")
 		return exitType, true
 	}
-	for _, id := range prov {
-		if id == provOverflow {
-			// Overflow is a marker, not an id: it crosses, so the
-			// receiver still fails closed where an answer may hide.
-			cp.prov = []uint32{provOverflow}
+	it := chanItem{v: cp, size: size}
+	for _, id := range unionProv(v.prov, m.prov) {
+		if id == provOverflow || int(id) >= len(m.st.origins) {
+			it.over = true
+			continue
 		}
+		it.orig = append(it.orig, chanOrigin{o: m.st.origins[id], secret: m.st.hideHash(id)})
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -556,47 +569,10 @@ func (m *machine) runSend(s *Send) (int, bool) {
 		m.err.WriteString("send " + s.Chan + ": buffers over 32 MiB\n")
 		return exitType, true
 	}
-	ch.q = append(ch.q, chanItem{v: cp, size: size})
+	ch.q = append(ch.q, it)
 	t.bytes += size
 	t.changed()
 	return 0, false
-}
-
-// chanUnsafe reports a provenance holding a term prompt answer or a
-// secret origin. An overflow crosses as overflow instead (runSend).
-func (m *machine) chanUnsafe(prov []uint32) bool {
-	for _, id := range prov {
-		if id == provOverflow {
-			continue
-		}
-		if int(id) >= len(m.st.origins) || m.st.origins[id].key == "term prompt" || m.st.hideHash(id) {
-			return true
-		}
-	}
-	return false
-}
-
-func holdsSecretDatum(d any, depth int) bool {
-	if depth > 128 {
-		return true
-	}
-	switch d := d.(type) {
-	case secretVal:
-		return true
-	case []any:
-		for _, e := range d {
-			if holdsSecretDatum(e, depth+1) {
-				return true
-			}
-		}
-	case *omap:
-		for _, k := range d.keys {
-			if holdsSecretDatum(d.m[k], depth+1) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // chanCopy deep-copies v, so the receiver shares no map or slice with the
@@ -604,9 +580,8 @@ func holdsSecretDatum(d any, depth int) bool {
 // ok is false past dataMaxBytes or for a kind that cannot cross.
 func chanCopy(v value) (value, int, bool) {
 	size := 0
-	// Provenance ids do not cross: they index the sender's origins table.
-	// Until origins cross by record (section 5), a value with a secret or
-	// an answer in it is refused before this, and the copy carries none.
+	// Provenance ids do not cross: they index the sender's origins table
+	// (runSend carries the records beside the copy).
 	out := value{kind: v.kind, s: v.s, gcol: v.gcol}
 	switch v.kind {
 	case valStr:
@@ -663,6 +638,13 @@ func copyDatum(d any, size, depth int) (any, int, bool) {
 			}
 		}
 		return out, size, true
+	case secretVal:
+		// The wrapper is part of the datum: a secret stays a secret.
+		in, n, ok := copyDatum(d.d, size, depth+1)
+		if !ok {
+			return nil, n, false
+		}
+		return secretVal{in}, n, true
 	case *omap:
 		out := &omap{keys: append([]string(nil), d.keys...), m: make(map[string]any, len(d.m))}
 		for _, k := range d.keys {
@@ -707,7 +689,9 @@ func (m *machine) runRecv(s *For) (int, bool) {
 		if !got {
 			return status, false
 		}
-		m.vars[s.Name] = m.withProv(it.v)
+		v := it.v
+		v.prov = m.internOrigins(it)
+		m.vars[s.Name] = m.withProv(v)
 		st, stop, brk := m.loopBody(&s.Body, &iter)
 		status = st
 		if stop {
@@ -717,6 +701,49 @@ func (m *machine) runRecv(s *For) (int, bool) {
 			return status, false
 		}
 	}
+}
+
+// internOrigins adds a received value's origins to this branch's own
+// table and returns their ids here: the same record gets the same id
+// again, an origin the sender hides stays hidden (its id, and its hash
+// for every later response), and an overflow stays overflow. Past the
+// table's cap addOrigin hands out overflow, which fails closed too.
+func (m *machine) internOrigins(it chanItem) []uint32 {
+	var prov []uint32
+	marked := false
+	for _, c := range it.orig {
+		id, seen := m.chanOrigins[c.o]
+		if !seen {
+			id = m.st.addOrigin(c.o)
+			if id != provOverflow {
+				if m.chanOrigins == nil {
+					m.chanOrigins = map[origin]uint32{}
+				}
+				m.chanOrigins[c.o] = id
+			}
+		}
+		prov = addProv(prov, id)
+		if !c.secret {
+			continue
+		}
+		if m.st.secretOrigin == nil {
+			m.st.secretOrigin, m.st.secretHash, m.st.secretText = map[uint32]bool{}, map[[32]byte]bool{}, map[string]bool{}
+		}
+		if id != provOverflow {
+			m.st.secretOrigin[id] = true
+		}
+		if !c.o.nohash {
+			m.st.secretHash[c.o.hash] = true
+		}
+		marked = true
+	}
+	if it.over {
+		prov = addProv(prov, provOverflow)
+	}
+	if marked {
+		m.sinkSecrets()
+	}
+	return prov
 }
 
 // unread is a line per channel with values left at the join.

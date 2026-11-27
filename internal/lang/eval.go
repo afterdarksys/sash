@@ -276,6 +276,9 @@ type machine struct {
 	// Options.Interrupts.
 	pb         *parBranch
 	interrupts func() (<-chan struct{}, func())
+	// chanOrigins is, on a par branch, the id each origin record received
+	// over a channel got in this branch's table (chan.go).
+	chanOrigins map[origin]uint32
 	// term is Options.Term: nil when there is no terminal to ask.
 	term Term
 	// show is Options.Show. shownOut and shownErr are how much of out and
