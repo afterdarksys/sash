@@ -18,5 +18,8 @@ func IsTerm(f *os.File) bool {
 // termWidth is unknown here, so the right prompt is never drawn.
 func termWidth(fd int) int { return 0 }
 
+// termSize is unknown here.
+func termSize(fd int) (rows, cols int) { return 0, 0 }
+
 // flushInput cannot flush here, so confirm always answers no.
 func flushInput(fd int) error { return errors.New("no flush") }

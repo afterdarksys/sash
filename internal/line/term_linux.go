@@ -49,3 +49,13 @@ func termWidth(fd int) int {
 	}
 	return int(ws.Col)
 }
+
+// termSize is the terminal's rows and columns, or 0, 0 when fd is not a
+// terminal or the size is unknown.
+func termSize(fd int) (rows, cols int) {
+	var ws struct{ Row, Col, X, Y uint16 }
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws))); errno != 0 {
+		return 0, 0
+	}
+	return int(ws.Row), int(ws.Col)
+}
