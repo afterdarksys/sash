@@ -1,0 +1,527 @@
+[
+  {
+    "code": "atomic_irreversible",
+    "exit": 2,
+    "area": "atomic",
+    "meaning": "the block holds something atomic cannot hold: a verb it cannot undo, use, par, a nested atomic, or a question to the person",
+    "fix": "A person moves that step outside the block."
+  },
+  {
+    "code": "atomic_rolled_back",
+    "exit": 2,
+    "area": "atomic",
+    "meaning": "\"atomic: rolled back\": the block failed and the agent restored its file writes; the run does not end 0",
+    "fix": "A person reads the failure above this line."
+  },
+  {
+    "code": "atomic_unavailable",
+    "exit": 2,
+    "area": "atomic",
+    "meaning": "\"atomic unavailable\": the agent is too old for atomic, or the grant has no file write target; the block did not run",
+    "fix": "The operator decides when the agent is updated; a tenant admin decides the grant's write targets."
+  },
+  {
+    "code": "cancelled",
+    "exit": 1,
+    "area": "verb",
+    "meaning": "the agent dropped the verb before it started: nothing ran",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "check_max",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "\"check max\": more check rows than a session keeps",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "command_from_value",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a command word, or a word that selects what a form does, came from a value",
+    "fix": "A person writes the command word as a literal; a value never names a command."
+  },
+  {
+    "code": "confirm_locked",
+    "exit": 2,
+    "area": "verb",
+    "meaning": "\"confirm is locked\": confirm mode cannot be cleared from a script or a line",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "confirm_no_terminal",
+    "exit": 2,
+    "area": "verb",
+    "meaning": "\"confirm needs a terminal\": confirm mode is on and there is no terminal to ask, so the mutating verb did not run",
+    "fix": "A person runs the mutating step at a terminal."
+  },
+  {
+    "code": "csv",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "CSV or TSV text that could not be read or written",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "data_too_large",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "\"<format> too large\": data past the size a value may have",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "declined",
+    "exit": 126,
+    "area": "verb",
+    "meaning": "a person answered no at a confirm question; the verb did not run",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "denied",
+    "exit": 126,
+    "area": "grant",
+    "meaning": "the grant lacks the key, or the path is outside the grant's roots; that statement ran nothing, earlier ones did",
+    "fix": "A tenant admin decides what this session's grant holds."
+  },
+  {
+    "code": "fn_depth",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "\"fn depth\": a call deeper than eight",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "frame",
+    "exit": 2,
+    "area": "session",
+    "meaning": "a frame on the verb pipe is malformed or too large",
+    "fix": "The operator checks the agent; the session cannot go on."
+  },
+  {
+    "code": "grant_bad_shape",
+    "exit": 2,
+    "area": "grant",
+    "meaning": "the grant document is not a sash/1 grant",
+    "fix": "The operator checks the control plane and the agent; no verb ran."
+  },
+  {
+    "code": "grant_bad_sig",
+    "exit": 2,
+    "area": "grant",
+    "meaning": "the grant's signature does not verify against the fleet key",
+    "fix": "The operator checks the control plane and the agent; no verb ran."
+  },
+  {
+    "code": "grant_expired",
+    "exit": 2,
+    "area": "grant",
+    "meaning": "the grant's expiry has passed",
+    "fix": "A person opens a new session."
+  },
+  {
+    "code": "grant_missing",
+    "exit": 2,
+    "area": "grant",
+    "meaning": "the session was started without a grant document",
+    "fix": "The operator checks how the session was started; no verb ran."
+  },
+  {
+    "code": "grant_root_slash",
+    "exit": 2,
+    "area": "grant",
+    "meaning": "the grant names \"/\" as a file root, which sash never accepts",
+    "fix": "The operator checks the control plane; no verb ran."
+  },
+  {
+    "code": "grant_star",
+    "exit": 2,
+    "area": "grant",
+    "meaning": "the grant holds \"*\", which sash never accepts as an entitlement",
+    "fix": "The operator checks the control plane; no verb ran."
+  },
+  {
+    "code": "hangup",
+    "exit": 129,
+    "area": "session",
+    "meaning": "the session's terminal hung up (SIGHUP); the run stopped at its next statement or verb",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "json",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "JSON text that could not be read or written",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "late",
+    "exit": 0,
+    "area": "verb",
+    "meaning": "\"late: ...\": the outcome of a verb that answered after its par had stopped waiting",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "lex",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "the text could not be split into words: an unclosed quote, a bare !, a bad $ reference, or & (there are no background jobs)",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "loop_max",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "\"loop max\": a loop passed the session's loop cap; the line ended",
+    "fix": "A person decides whether the loop is right; the cap's ceiling is the grant's."
+  },
+  {
+    "code": "mode_unsupported",
+    "exit": 2,
+    "area": "file",
+    "meaning": "\"agent too old for file.write mode\": the write needs a file mode this agent cannot set, and it is never sent without one",
+    "fix": "The operator decides when the host's agent is updated."
+  },
+  {
+    "code": "mux_refused",
+    "exit": 1,
+    "area": "session",
+    "meaning": "the agent's answer to the concurrency hello is malformed, it reported mux_over_limit or mux_protocol, or a response named a request that was not outstanding",
+    "fix": "The operator checks the agent; a person opens a new session."
+  },
+  {
+    "code": "outcome_unknown",
+    "exit": 1,
+    "area": "verb",
+    "meaning": "a verb passed the agent's deadline, or its par stopped waiting: it may have run",
+    "fix": "A person checks the host's state before running it again."
+  },
+  {
+    "code": "par",
+    "exit": 2,
+    "area": "verb",
+    "meaning": "a par block failed: a branch failed, the count is wrong, or it was interrupted (130); the message says which",
+    "fix": "A person reads the branch's own output above this line."
+  },
+  {
+    "code": "parent",
+    "exit": 1,
+    "area": "verb",
+    "meaning": "\"parent <key>\": the call to the agent failed or the agent could not perform it",
+    "fix": "A person reads the host's state before running the step again; the operator checks the agent."
+  },
+  {
+    "code": "parse",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "the script does not parse; the message names what was expected",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "prefix_unset",
+    "exit": 2,
+    "area": "file",
+    "meaning": "a relative path or glob with no session prefix",
+    "fix": "A person writes the absolute path; a script starts with no prefix."
+  },
+  {
+    "code": "readonly",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a declare -r name was bound again",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "record",
+    "exit": 2,
+    "area": "file",
+    "meaning": "a session recording could not start or was not written; the message says why",
+    "fix": "A person decides whether to record again; the session's verbs were not stopped."
+  },
+  {
+    "code": "record_failed",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording could not be built or written",
+    "fix": "A person records again."
+  },
+  {
+    "code": "record_too_large",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording passed its size or event cap",
+    "fix": "A person records a shorter run."
+  },
+  {
+    "code": "refused",
+    "exit": 2,
+    "area": "file",
+    "meaning": "\"refused file.write: <code>\": the agent refused a file write; the code and its meaning follow",
+    "fix": "A person reads the code; the file is as the agent reports it."
+  },
+  {
+    "code": "replay_bad_chain",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording's hash chain does not hold: a line was changed, removed, or added",
+    "fix": "A person records again; this file is not what was recorded."
+  },
+  {
+    "code": "replay_bad_format",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording is not a sash recording, or a line of it is malformed",
+    "fix": "A person checks which file was given."
+  },
+  {
+    "code": "replay_bad_segment",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "a segment of a segmented recording is missing or out of order",
+    "fix": "A person gives the first segment, with the others beside it."
+  },
+  {
+    "code": "replay_diverged",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the script did something the recording does not hold at that point",
+    "fix": "A person replays the script that was recorded, unchanged."
+  },
+  {
+    "code": "replay_expired",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording is past its expiry",
+    "fix": "A person records again."
+  },
+  {
+    "code": "replay_module",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "a wasm module's hash differs from the one in the recording",
+    "fix": "A person replays with the module that was recorded."
+  },
+  {
+    "code": "replay_other_script",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording was made from another script",
+    "fix": "A person replays the script that was recorded."
+  },
+  {
+    "code": "replay_secret",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the replay reached a term prompt -s; a recording never holds that answer",
+    "fix": "A person runs the script at a terminal instead of replaying it."
+  },
+  {
+    "code": "replay_too_large",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording is larger than a replay reads",
+    "fix": "A person checks which file was given."
+  },
+  {
+    "code": "replay_truncated",
+    "exit": 2,
+    "area": "replay",
+    "meaning": "the recording stopped at its size cap, and the run went past that point",
+    "fix": "A person records a shorter run."
+  },
+  {
+    "code": "secret_cannot_decide",
+    "exit": 2,
+    "area": "secret",
+    "meaning": "\"a secret cannot decide a branch\": a secret was an if, while, or for condition",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "secret_cannot_leave",
+    "exit": 2,
+    "area": "secret",
+    "meaning": "\"a secret cannot leave sash\": a secret was a verb argument, a path, a > body, or a fn argument",
+    "fix": "A person keeps the secret inside sash; the binding is what makes it secret."
+  },
+  {
+    "code": "secret_fault",
+    "exit": 2,
+    "area": "secret",
+    "meaning": "\"a secret ended the line\": an evaluation that read a secret failed, and the line ended so the failure tells nothing",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "secret_in_word",
+    "exit": 2,
+    "area": "secret",
+    "meaning": "\"a secret in a word: build it inside [ ]\": a secret was pasted into a word",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "set_ceiling",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "\"set ... above the ceiling\": set may lower loopmax or verbmax, never raise one past its ceiling",
+    "fix": "A person keeps the cap at or below its ceiling; the ceiling is the grant's."
+  },
+  {
+    "code": "spec",
+    "exit": 2,
+    "area": "file",
+    "meaning": "a template_file spec that does not match its schema",
+    "fix": "A person corrects the spec or the schema; nothing was written."
+  },
+  {
+    "code": "template",
+    "exit": 2,
+    "area": "file",
+    "meaning": "a template that could not be rendered; the message names the line",
+    "fix": "A person corrects the template or the values; nothing was written."
+  },
+  {
+    "code": "term_answer_long",
+    "exit": 2,
+    "area": "term",
+    "meaning": "\"term prompt: answer over 4096 bytes\": the rest of the line was discarded and there is no value",
+    "fix": "A person gives a shorter answer."
+  },
+  {
+    "code": "term_answer_not_text",
+    "exit": 2,
+    "area": "term",
+    "meaning": "\"term prompt: answer is not text\": the answer is not UTF-8 and there is no value",
+    "fix": "A person types the answer as text."
+  },
+  {
+    "code": "term_eof",
+    "exit": 1,
+    "area": "term",
+    "meaning": "\"term prompt: end of input\": Ctrl-D on an empty line, or the input ended; the value is empty",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "term_inside_par",
+    "exit": 2,
+    "area": "term",
+    "meaning": "\"term inside par\": a question inside a par branch",
+    "fix": "A person asks before the par."
+  },
+  {
+    "code": "term_interrupted",
+    "exit": 130,
+    "area": "term",
+    "meaning": "\"term: interrupted\": Ctrl-C at a question; the script stopped",
+    "fix": "Nothing to change: this reports what happened."
+  },
+  {
+    "code": "term_no_terminal",
+    "exit": 2,
+    "area": "term",
+    "meaning": "\"term needs a terminal\": the script asks a person and there is no terminal to ask; it stopped there",
+    "fix": "A person runs the script at a terminal."
+  },
+  {
+    "code": "term_secret_misplaced",
+    "exit": 2,
+    "area": "term",
+    "meaning": "\"term prompt -s: only as declare -s name = (term prompt -s \"question\")\": -s anywhere else",
+    "fix": "A person binds the secret with declare -s."
+  },
+  {
+    "code": "timeout",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a timeout block's deadline passed, before a statement, a verb, or while a person was asked",
+    "fix": "A person decides whether the work or the deadline is wrong; a verb already in flight finished."
+  },
+  {
+    "code": "toml",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "TOML text that could not be read or written",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "type",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a value or a pipe has the wrong shape: bytes into |>, an unset name, a failed [ ] expression",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "unknown",
+    "exit": 127,
+    "area": "parse",
+    "meaning": "the name is not in the closed table and is not a fn; no host binary is run",
+    "fix": "A person uses a name from the closed table (sash --skill verbs lists it)."
+  },
+  {
+    "code": "unset",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a name, a map key, or a wasm module that was never bound",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "usage",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a form was given the wrong arguments; the message names the form",
+    "fix": "A person corrects the script; nothing on that line ran."
+  },
+  {
+    "code": "use",
+    "exit": 2,
+    "area": "file",
+    "meaning": "a use file that could not be read, is too large, or holds something other than fn and declare -r",
+    "fix": "A person corrects the library file; nothing from it was loaded."
+  },
+  {
+    "code": "verb_max",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "\"verb max\": the run passed the session's verb cap; the line ended",
+    "fix": "A person decides whether the run is right; the cap's ceiling is the grant's."
+  },
+  {
+    "code": "verb_pipe_broken",
+    "exit": 1,
+    "area": "session",
+    "meaning": "\"verb pipe broken\": the pipe to the agent closed or failed; no further verb is sent",
+    "fix": "A person opens a new session; the operator checks the agent."
+  },
+  {
+    "code": "wasm_hash",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a wasm module's bytes do not match the sha256 the script names",
+    "fix": "A person checks which module the script means; it was not loaded."
+  },
+  {
+    "code": "wasm_refused",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "a wasm module was refused or stopped: it imports something, passes a limit, is too large, does not compile, trapped, breaks the call ABI, is busy, or was handed a secret",
+    "fix": "A person checks the module; it has no access to the host either way."
+  },
+  {
+    "code": "wasm_unsupported",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "this build runs no wasm modules",
+    "fix": "The operator decides which build is installed."
+  },
+  {
+    "code": "with_prefix",
+    "exit": 2,
+    "area": "file",
+    "meaning": "\"with prefix: cannot stat\": the prefix of a with block could not be checked",
+    "fix": "A person checks the path; the block did not run."
+  },
+  {
+    "code": "yaml",
+    "exit": 2,
+    "area": "parse",
+    "meaning": "YAML text that could not be read or written",
+    "fix": "A person corrects the script; nothing on that line ran."
+  }
+]

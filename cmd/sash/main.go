@@ -6,6 +6,8 @@
 // and prints advisory findings; it runs nothing either. --record and
 // --replay run a script offline against a fixture or a recording (tape.go).
 // --skill prints the embedded Claude skill for the language (skill.go).
+// version --json and codes --json print what the build is and the catalog
+// of what it prints (version.go).
 package main
 
 import (
@@ -35,6 +37,9 @@ func main() {
 	args := os.Args[1:]
 	if skillMode(args) {
 		os.Exit(runSkill(args, os.Stdout))
+	}
+	if infoMode(args) {
+		os.Exit(runInfo(args, os.Stdout, os.Stderr))
 	}
 	if flagMode(args, "--lint") {
 		os.Exit(runLint(args))
@@ -195,7 +200,7 @@ func scriptTerm(args []string) lang.Term {
 	return line.ScriptTerm(os.Stdin, os.Stderr)
 }
 
-const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list"
+const usage = "usage: sash [--session] [--plan] [-c script | file]; sash --needs [--policy] [-c script | file]; sash --lint [-c script | file]; sash --skill [features | language | verbs]; sash --skill --list; sash version --json; sash codes --json"
 
 // needsMode is true when --needs is among the leading flags.
 func needsMode(args []string) bool { return flagMode(args, "--needs") }

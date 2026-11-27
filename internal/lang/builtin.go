@@ -130,6 +130,9 @@ var builtinFlags = map[string][]string{
 	"from tsv":      {"--noheader"},
 }
 
+// WasmBuilt reports a build that runs wasm modules (the sashwasm tag).
+func WasmBuilt() bool { return wasmBuilt }
+
 // Builtins returns a copy of the table, with each form's Flags.
 func Builtins() []Builtin {
 	out := make([]Builtin, len(builtins))

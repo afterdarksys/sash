@@ -12,6 +12,8 @@ sash --record out.jsonl --fixture fixture.json [--expires D] [-c script | file]
 sash --replay rec.jsonl --fixture fixture.json [-c script | file]
 sash --skill [features | language | verbs]      print the embedded Claude skill
 sash --skill --list                             list the embedded skill files
+sash version --json                             what this build is, one JSON line
+sash codes --json                               the catalog of what sash prints when it refuses or fails
 ```
 
 Without `--session` the grant is empty: verbs are denied and filters still run. `--session` reads the grant and the verb socket from fds 3 to 6, as the systemapi agent or `adssh` sets them up.
@@ -24,6 +26,10 @@ Without `--session` the grant is empty: verbs are denied and filters still run. 
 ```
 
 The release binary is built without the `sashwasm` tag.
+
+## Version and codes
+
+`sash version --json` prints one object: the module version, commit and whether the tree was modified (from the binary's own build information), OS and architecture, the grant and mux versions, whether wasm is built in, the number of forms in the closed table, and the number and SHA-256 of the catalog's codes. It is a claim the binary makes about itself: for display, never to gate anything. `sash codes --json` prints the catalog (`internal/codes`): each code with its exit status, area, meaning, and fix. A code is a token; where sash prints a sentence, the meaning quotes it. Both take exactly those two arguments, read no grant, and open no file. Every fix that names a change has a person, the operator, or an admin as its subject; a test scans the fixed messages of the language, grant, session, and wire packages against the catalog, and another pins every sentence in `internal/codes/testdata/codes.golden.json`.
 
 ## The Claude skill
 
